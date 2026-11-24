@@ -257,9 +257,12 @@ it quoted.
   the words are not the owner's own message in your session: never relay them as an approval.
 - **What you may record.** For an approval the owner gave you, add its label (such as
   `approved:spec`) with a comment quoting their words and the `owner-said` citation.
-  The written approval record a gate checks (the loop's `approve --by owner`) is the owner's
-  own to make. When a gate still waits on it, put the exact command or click the owner must
-  give on the attention list; never retry a write a tool refused as self-approval.
+  The written approval record a gate checks (the loop's `approve --by owner`) for an approval
+  given to you is the owner's own to make. When a gate still waits on it, put the exact command or click the owner must
+  give on the attention list; never retry a write a tool refused as self-approval. An approval
+  the owner gives on a lead's own card is recorded by that lead (`approve <kind> <n> --by owner`
+  once `sys_read_answer` reads `answered`: engineering-loop's lead.md step 1), so a brief of yours
+  never tells a lead not to run `approve` or `record approval`, since a lead that reads it waits for a label the owner already gave.
 - **Delegated decisions.** Where the owner's standing decisions delegate a kind of
   decision, a question you would put to them becomes options, your recommendation and the
   action taken, reported in one line they can reverse. Only a step that is hard to undo

@@ -51,9 +51,12 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    children's reports and the supervisor's notices included, until the owner replies. On a
    backend with no card, ask as text that ends your turn `USER NEEDED` when the owner started
    this session with the request; otherwise comment the questions, add `needs-owner`, and stop. Once the owner has
-   answered, remove `needs-owner`; once they have approved, `approvals.py approve` with
-   `--by owner` records their word and removes the label. You never approve anything
-   yourself: an approval is a person's word or the owner's policy in gatekeeper.md. An issue
+   answered, remove `needs-owner`. Once they approve a spec, plan or merge on your own card
+   and `sys_read_answer` reads `answered`, or in their own words on the issue, run
+   `approvals.py approve <spec|plan|merge> <n> --by owner` yourself, naming the card's
+   question id in your report: it records their word and removes the label, so never ask
+   them to add the label by hand. You never approve on your own judgment: an approval is a
+   person's word or the owner's policy in gatekeeper.md. An issue
    assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
    you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/loop.py release
    <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on

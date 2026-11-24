@@ -73,6 +73,10 @@ def test_the_text_names_the_merge_go_and_the_critical_paths() -> None:
     text = omnigent_agent.DELEGATION
     assert "approve merge <pr> --head <sha> --by delegate" in text
     assert "risk:high" in text and "risk.critical_paths" in text and "sys_ask_user_question" in text
+    # the owner's card answer is recorded by the lead, never left for the owner to label by hand (#2170)
+    assert (
+        "approve spec <n> --by owner" in text and "answered" in text and "never run it" not in text
+    )
     gk = omnigent_agent._load_gatekeeper()
     assert gk is not None  # the flags are those gatekeeper's `approve` takes
     src = Path(gk.__file__).read_text()
@@ -104,6 +108,10 @@ def test_a_top_level_lead_start_carries_the_text_only_under_delegate_all(
             )
             plain = plain.format(report=report, role="")
         assert Path(f"{report}.brief").read_text() == "AGENT_SIGNATURE=cc/?/?\n" + plain + "do X"
+        # #2170: no generated lead brief tells a lead not to record the owner's answered card, or it waits on a given label
+        brief = " ".join(Path(f"{report}.brief").read_text().split()).lower()
+        assert "never run it" not in brief and "don't record" not in brief
+        assert ("approve spec <n> --by owner" in brief) == delegated
 
 
 def test_a_missing_or_broken_policy_reader_gives_todays_wording(
