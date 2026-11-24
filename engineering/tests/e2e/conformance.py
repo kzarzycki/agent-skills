@@ -8,10 +8,12 @@ from pathlib import Path
 
 from engineering.tests.test_consumer_e2e import (
     PACKAGE,
+    _copy_package,
+    _dependencies,
     _expected_skills,
     _file_manifest,
     _isolated_env,
-    _no_bytecode,
+    _publish,
     _run,
     _write_manifest,
 )
@@ -71,6 +73,19 @@ class InstalledFixture:
         return adapter.catalog(self.consumer)
 
 
+def source_manifest() -> dict[str, str]:
+    """Every skill file an install deploys: engineering's and those of the packages it depends on. APM deploys
+    skills into one directory, so a folder name two packages hold is deployed from the last one only, whole."""
+    deployed: dict[str, dict[str, str]] = {}
+    for package in (PACKAGE, *_dependencies()):
+        skills = package / "skills"
+        for folder in sorted(path for path in skills.iterdir() if path.is_dir()):
+            deployed[folder.name] = {
+                f"{folder.name}/{path}": digest for path, digest in file_manifest(folder).items()
+            }
+    return {path: digest for files in deployed.values() for path, digest in files.items()}
+
+
 def _catalog_state(root: Path) -> dict[str, str]:
     if not root.exists():
         return {}
@@ -100,8 +115,8 @@ def assert_catalog_matches(source: dict[str, str], catalog: SkillCatalog) -> Non
 
 def pack_catalog(tmp_path: Path) -> Path:
     env = _isolated_env(tmp_path)
-    package_copy = tmp_path / "engineering"
-    shutil.copytree(PACKAGE, package_copy, ignore=_no_bytecode)
+    package_copy = _copy_package(tmp_path / "source")
+    _publish(tmp_path, env, tmp_path / "source")
     pack_dir = tmp_path / "packed"
     _run(["apm", "pack", "--output", str(pack_dir)], cwd=package_copy, env=env)
     manifests = list(pack_dir.rglob("plugin.json"))
@@ -112,8 +127,8 @@ def pack_catalog(tmp_path: Path) -> Path:
 def install_fixture(tmp_path: Path) -> InstalledFixture:
     global_catalogs_before = _global_catalogs()
     env = _isolated_env(tmp_path)
-    package_copy = tmp_path / "engineering"
-    shutil.copytree(PACKAGE, package_copy, ignore=_no_bytecode)
+    package_copy = _copy_package(tmp_path / "source")
+    _publish(tmp_path, env, tmp_path / "source")
     consumer = tmp_path / "consumer"
     shutil.copytree(FIXTURE_REPOSITORY, consumer)
     _write_manifest(consumer / "apm.yml", {"path": str(package_copy)})

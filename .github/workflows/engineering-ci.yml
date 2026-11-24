@@ -2,16 +2,28 @@ name: Engineering capability pack
 
 on:
   # Every PR, since `qualify` is a required check: a skipped run never reports, so GitHub never merges it (#394).
+  # Drafts too: the Mergify merge queue tests each batch as a draft PR from `mergify/merge-queue/<id>` into main, and
+  # this trigger runs `qualify` on it, GATE_BASE its base. No `push` trigger on those branches, which would run it twice.
+  # The tests run once per tree, on that batch: a PR head runs only the cheap steps, and its `qualify` still reports.
   pull_request:
-  # A push to main runs the tests it touches, like a PR; the full suite runs nightly (mise check-fast, tools/affected_tests.py).
+  # A push to main runs the cheap checks: the batch that made its tree already ran the tests.
   push:
     branches:
       - main
   schedule:
     - cron: "17 2 * * *"
+  # The owner's break-glass proof (gatekeeper's breakglass.md) runs the tests a red `qualify` failed alone on the head: `gh workflow run`
+  # with `tests` set to their ids, whose run publishes them as `selected` in the `failed-tests` artifact.
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: "Test ids to run alone, space-separated; empty runs the usual check"
+        required: false
+        default: ""
 
 permissions:
   contents: read
+  actions: read # tools/tested_tree.py reads the batch run and the last green from the forge
 
 jobs:
   qualify:
@@ -21,41 +33,93 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+      # R7 (#2179): main's push run and the nightly run nothing for a tree a batch tested, or a head the last green ran;
+      # the answer and the run it names go to the step summary. Every later step of those two events checks `skip`.
+      - id: tested
+        if: github.event_name == 'push' || github.event_name == 'schedule'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/tested_tree.py ${{ github.event_name }}
+      - if: steps.tested.outputs.skip != 'true'
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
           version: 2026.9.2
           install: false
-      - run: mise install
-      - run: uv sync --frozen
+      - if: steps.tested.outputs.skip != 'true'
+        run: mise install
+      - if: steps.tested.outputs.skip != 'true'
+        run: uv sync --frozen
       # The test map (tools/affected_tests.py): the newest the nightly saved. Missing, the selector falls back to the name match.
-      - if: github.event_name != 'schedule'
+      - if: startsWith(github.head_ref, 'mergify/merge-queue/')
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .test-map
           key: test-map-restore
           restore-keys: test-map-
-      # A PR or a push runs lint and the tests it touches; the nightly schedule runs the full suite, with a context per test.
-      - if: github.event_name != 'schedule'
+      # A ready PR's head whose tree a worker already passed through `local-ci --record` runs nothing again (R1): the
+      # record is for the head's tree, not the test merge commit this job checked out. `qualify` still reports success.
+      - id: record
+        if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'mergify/merge-queue/')
         env:
-          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/pr_head_record.py "$HEAD_SHA"
+      # A PR or a push runs the cheap checks: vendor check, lint, config and repo checks.
+      - if: >-
+          github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
+          && steps.tested.outputs.skip != 'true' && steps.record.outputs.recorded != 'true'
         run: mise run check-fast
-      - if: github.event_name == 'schedule'
+      # A release PR (the Release workflow's `release/` branch) is exactly the fold of its branch point, `cli
+      # cut-release` rerun there, or it fails: a hand edit beyond the fold never lands without a verifier (#1861).
+      # The PR's own head, not the merge commit, so a main that moved since the cut leaves the check green.
+      - if: startsWith(github.head_ref, 'release/')
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: uv run python -m tools.capability_pack.cli release-verify --base "$BASE_SHA" --head "$HEAD_SHA"
+      # Only a Mergify batch's draft PR runs the tests, the ones the batch touches against main (#1821). A step-level
+      # `if`, never a job-level one: a PR head's `qualify` must still run and report success, or Mergify never queues it.
+      # The prefix is `.mergify.yml`'s `queue_branch_prefix`.
+      - if: startsWith(github.head_ref, 'mergify/merge-queue/')
+        env:
+          GATE_BASE: ${{ github.event.pull_request.base.sha }}
+          # one file per run: a check that starts several pytest runs keeps the last one's
+          PYTEST_ADDOPTS: --junitxml=.qualify/junit.xml
+        run: mise run test-batch
+      - if: github.event_name == 'workflow_dispatch' && inputs.tests != ''
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: uv run pytest -q $TESTS --junitxml=.qualify/junit.xml
+      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
         run: |
           mkdir -p .test-map
           git rev-parse HEAD > .test-map/sha
-      - if: github.event_name == 'schedule'
+      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
         env:
           COVERAGE_FILE: .test-map/coverage
-          PYTEST_ADDOPTS: --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
+          # the tests it skips, which leave no coverage context (tools/test_map_plugin.py)
+          TEST_MAP_SKIPPED: ${{ github.workspace }}/.test-map/skipped
+          GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
+          PYTEST_ADDOPTS: -n 0 --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.
-      - if: github.event_name == 'schedule'
+      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .test-map
           key: test-map-${{ github.sha }}
+      # The tests this run ran and failed, as JSON (tools/failed_tests.py), whatever happened before: the owner's
+      # break-glass proof reads them (gatekeeper's breakglass.md). No JUnit file (tests are off, or the run died)
+      # writes two empty lists, which the proof reads as a failure with no test ids.
+      - if: always()
+        run: python3 tools/failed_tests.py .qualify/junit.xml .qualify/failed-tests.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: failed-tests
+          path: .qualify/failed-tests.json
       - name: Check changed-file whitespace
-        if: github.event_name != 'schedule'
+        # Not skipped on a record: `check-fast`, the command the record proves, never runs `git diff --check`.
+        if: github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' && steps.tested.outputs.skip != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |

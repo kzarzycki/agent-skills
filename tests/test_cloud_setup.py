@@ -80,10 +80,27 @@ def publish(root: Path, assets: dict[str, dict[str, bytes]]) -> None:
         path.write_text("\n".join(lines) + "\n")
 
 
-def run_setup(tmp_path: Path, corrupt: str = "") -> tuple[str, Path, dict[str, str]]:
+GH_QUOTA = ROOT / "github" / "skills" / "gh-quota" / "scripts"
+
+
+def gh_quota_pinned(setup: str, files: Path) -> str:
+    """cloud-setup.sh with its gh-quota sums swapped for the sums of `files`, the same two files, so a test serves
+    this checkout's gh-quota in place of the pinned commit's, which a shallow clone may not hold."""
+    for name in ("gh", "gh_quota.py"):
+        digest = hashlib.sha256((files / name).read_bytes()).hexdigest()
+        setup, n = re.subn(
+            rf"^[0-9a-f]{{64}}  {re.escape(name)}$", f"{digest}  {name}", setup, flags=re.MULTILINE
+        )
+        assert n == 1, name
+    return setup
+
+
+def run_setup(
+    tmp_path: Path, corrupt: str = "", gh_quota_sum: str = ""
+) -> tuple[str, Path, dict[str, str]]:
     """Run cloud-setup.sh against file:// release assets, in an empty mise home and a checkout pinning every tool
     but node (the one mise fetches itself), with mise's network refused and no other copy of a pinned tool on PATH. `corrupt` names an asset
-    whose checksum list is wrong."""
+    whose checksum list is wrong; `gh_quota_sum` a gh-quota file whose pinned sum is wrong."""
     mise = shutil.which("mise")
     assert mise, "mise runs this suite"
     home, repo, releases, bin_ = (tmp_path / d for d in ("home", "repo", "releases", "bin"))
@@ -107,7 +124,7 @@ def run_setup(tmp_path: Path, corrupt: str = "") -> tuple[str, Path, dict[str, s
     (repo / "mise.toml").write_text(
         "[tools]\n" + "".join(f'"{t}" = "{p}"\n' for t, p in pins.items())
     )
-    for fake in ("apt-get", "codex", "ssh-keygen"):  # outside this test: the image's packages
+    for fake in ("apt-get", "codex", "ssh-keygen", "gh"):  # outside this test: the image's packages
         (bin_ / fake).write_text("#!/bin/sh\n")
         (bin_ / fake).chmod(0o755)
     env = {
@@ -136,9 +153,16 @@ def run_setup(tmp_path: Path, corrupt: str = "") -> tuple[str, Path, dict[str, s
         "CLOUD_SETUP_LOG": str(tmp_path / "setup.log"),
         "CLOUD_SETUP_REPO": str(repo),
         "CLOUD_SETUP_RELEASES": releases.as_uri(),
+        "CLOUD_SETUP_GH_QUOTA": GH_QUOTA.as_uri(),
     }
+    setup = gh_quota_pinned(SETUP, GH_QUOTA)
+    if gh_quota_sum:
+        setup = re.sub(
+            rf"^[0-9a-f]{{64}}(?=  {re.escape(gh_quota_sum)}$)", "0" * 64, setup, flags=re.MULTILINE
+        )
+    (tmp_path / "cloud-setup.sh").write_text(setup)
     subprocess.run(
-        ["bash", str(ROOT / ".claude" / "cloud-setup.sh")],
+        ["bash", str(tmp_path / "cloud-setup.sh")],
         env=env,
         check=True,
         capture_output=True,
@@ -192,3 +216,32 @@ def test_mise_prefers_offline_before_it_installs() -> None:
         < SETUP.find("step mise-offline mise settings set prefer_offline true")
         < SETUP.index("step mise-install ")
     )
+
+
+def test_gh_quota_shim_goes_ahead_of_the_images_gh(tmp_path: Path) -> None:
+    """Setup puts gh-quota's shim in ~/.local/bin, ahead of the image's gh on a session's PATH, so each later
+    session logs its gh calls with no step of its own, and keeps gh_quota.py beside it for `counts`."""
+    log, _repo, _env = run_setup(tmp_path)
+    home = tmp_path / "home"
+    assert "gh-quota: exit 0" in log, log + (tmp_path / "setup.log.out").read_text()
+    assert (home / ".local" / "bin" / "gh").read_bytes() == (GH_QUOTA / "gh").read_bytes()
+    assert (home / ".local" / "share" / "gh-quota" / "gh_quota.py").is_file()
+    assert SETUP.index("step gh-quota ") < SETUP.index('cd "$repo"')  # it needs no checkout
+
+
+@pytest.mark.parametrize("name", ["gh", "gh_quota.py"])
+def test_a_gh_quota_sum_mismatch_installs_no_shim(tmp_path: Path, name: str) -> None:
+    """A file that is not the pinned one is never run: the step fails, setup goes on, and the image's gh stays."""
+    log, _repo, _env = run_setup(tmp_path, gh_quota_sum=name)
+    assert "FAILED: gh-quota\n" in log, log
+    assert "setup done" in log
+    assert not (tmp_path / "home" / ".local" / "bin" / "gh").exists()
+    assert not (tmp_path / "home" / ".local" / "share" / "gh-quota").exists()
+
+
+def test_the_gh_quota_pin_names_a_commit_and_both_sums() -> None:
+    """The step reads the pack at one commit, never a branch, and checks each of the two files it runs."""
+    assert re.search(r"^ghq=[0-9a-f]{40}$", SETUP, re.MULTILINE)
+    assert "/$ghq/github/skills/gh-quota/scripts" in SETUP
+    for name in ("gh", "gh_quota.py"):
+        assert re.search(rf"^[0-9a-f]{{64}}  {re.escape(name)}$", SETUP, re.MULTILINE), name

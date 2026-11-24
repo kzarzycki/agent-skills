@@ -1,5 +1,5 @@
-"""The landing gate's test selection (tools/affected_tests.py): a change runs the tests it touches, and anything the
-map cannot judge runs everything."""
+"""The affected-test selection (tools/affected_tests.py): a change runs the tests it touches, and anything it can't
+judge runs nothing and says so, never the whole suite (#1872)."""
 
 import subprocess
 from pathlib import Path
@@ -20,9 +20,15 @@ def test_a_docs_only_change_runs_only_the_repo_wide_checks() -> None:
     assert a.targets(["docs/agents/loop.md", "content/skills/x/SKILL.md"]) == a.CHEAP
 
 
+def test_a_loop_doc_change_runs_the_test_that_holds_its_old_path_copy() -> None:
+    assert a.targets(["loop/skills/engineering-loop/verifier.md"]) == sorted(
+        [*a.CHEAP, "tests/test_old_paths.py"]
+    )
+
+
 def test_a_script_change_runs_the_tests_that_name_it() -> None:
-    picked = a.targets(["engineering/skills/engineering-loop/scripts/gatekeeper.py"])
-    assert "engineering/tests/test_approvals.py" in picked
+    picked = a.targets(["gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"])
+    assert "gatekeeper/tests/test_approvals.py" in picked
     assert set(a.CHEAP) <= set(picked)
 
 
@@ -30,14 +36,23 @@ def test_a_changed_test_file_runs() -> None:
     assert "tests/test_affected_tests.py" in a.targets(["tests/test_affected_tests.py"])
 
 
-def test_test_setup_or_no_base_runs_everything() -> None:
-    assert a.targets(["pyproject.toml"]) == a.ALL
-    assert a.targets(["tools/gate_workers.py"]) == a.ALL
-    assert a.targets(None) == a.ALL
+def test_no_base_cant_tell_and_runs_nothing(capsys) -> None:
+    """#1872: the "can't tell" case runs no test at all, and says so."""
+    assert a.targets(None, "origin/main") == []
+    assert "affected-tests: nothing: no diff against origin/main" in capsys.readouterr().err
 
 
-def test_a_conftest_anywhere_runs_everything() -> None:
-    assert a.targets(["engineering/tests/conftest.py"]) == a.ALL
+def test_test_setup_runs_the_tests_that_name_it_never_the_suite(capsys) -> None:
+    """#1872: the map can't judge test setup, so it runs what names it, as any other file, never the whole suite."""
+    picked = a.targets(["mise.toml"])
+    assert "tests/test_check_fast_selection.py" in picked and "tests" not in picked
+    assert "mise.toml: test setup, which the map cannot judge" in capsys.readouterr().err
+    assert a.targets(["engineering/tests/conftest.py"]) != a.ALL
+
+
+def test_a_test_named_plugin_outside_the_suites_runs_the_tests_that_name_it() -> None:
+    """`tools/test_map_plugin.py` holds no tests: its own tests are found by the name match."""
+    assert "tests/test_test_map_plugin.py" in a.targets(["tools/test_map_plugin.py"])
 
 
 def test_a_non_python_file_runs_the_tests_that_name_its_file_name(tmp_path, monkeypatch) -> None:
@@ -159,10 +174,14 @@ def test_a_test_the_file_no_longer_has_runs_as_its_file(mapped) -> None:
     assert "tests/test_both.py" in a.targets(mapped("return 2", "return 22"))
 
 
-def test_a_node_id_with_a_space_runs_as_its_file(tmp_path, monkeypatch) -> None:
+def test_a_parametrized_id_with_a_space_runs_as_its_function(tmp_path, monkeypatch) -> None:
+    """#1609: the gate splits targets on whitespace, so `test_p[a b]` runs as `test_p`, every parameter, not its file."""
     monkeypatch.chdir(tmp_path)
     Path("t.py").write_text("def test_p(): pass\n")
-    assert a.node_files({"t.py::test_p[a b]", "t.py::test_p[a]"}) == {"t.py", "t.py::test_p[a]"}
+    assert a.node_files({"t.py::test_p[a b]", "t.py::test_p[a]"}) == {
+        "t.py::test_p",
+        "t.py::test_p[a]",
+    }
 
 
 def land_on_main(name: str, text: str) -> str:
@@ -216,3 +235,196 @@ def test_a_test_that_can_skip_runs_by_name_beside_the_map(mapped) -> None:
 
 def test_a_changed_line_no_test_ran_selects_only_the_cheap_checks(mapped) -> None:
     assert a.targets(mapped("\n\n\ndef two", "\n# c\n\ndef two")) == a.CHEAP
+
+
+def test_stderr_names_the_rule_behind_each_target(mapped, capsys) -> None:
+    """#1609: a slow run's log says why: the map, a test, a name match and why, or everything and which file."""
+    a.targets(mapped("return 1", "return 11") + ["tests/test_one.py", "notes.md"])
+    said = capsys.readouterr().err
+    assert "affected-tests: map of " in said
+    assert "affected-tests: pkg/mod.py: 2 tests from the map" in said
+    assert "affected-tests: tests/test_one.py: a changed test" in said
+    a.targets(["pyproject.toml"])
+    assert "affected-tests: pyproject.toml: test setup" in capsys.readouterr().err
+
+
+def test_a_new_function_beside_a_def_line_selects_only_the_tests_around_it(mapped) -> None:
+    """#1609: a function inserted after `one` borders `def two` (line 5), which only the import ran; that line is not
+    changed, so it doesn't send the whole file to the name match."""
+    picked = a.targets(mapped("\n\ndef two()", "\n\ndef new():\n    return 0\n\n\ndef two()"))
+    assert "tests/test_one.py" not in picked and "tests/test_both.py" not in picked
+
+
+def test_a_map_with_a_skip_list_adds_only_the_skipped_tests(mapped) -> None:
+    """#1609: a test file that can skip no longer runs whole beside the map: only the tests the map's run skipped do."""
+    Path("tests/test_skips.py").write_text(
+        "import pytest\nfrom pkg import mod\n\n\n@pytest.mark.skipif(True, reason='x')\ndef test_s(): mod.two()\n\n\n"
+        "def test_kept(): pass\n"
+    )
+    (a.MAP / "skipped").write_text("tests/test_skips.py::test_s\n")
+    picked = a.targets(mapped("return 2", "return 22"))
+    assert "tests/test_skips.py::test_s" in picked
+    assert "tests/test_skips.py" not in picked
+
+
+@pytest.mark.parametrize(
+    "inserted",
+    [
+        "@staticmethod\n",
+        "LIMIT = 0\n\n\n",
+        "import os\n\n\n",
+        "def new():\n    return 0\n\n\nLIMIT = 0\n\n\n",
+    ],
+    ids=["decorator", "constant", "import", "def then constant"],
+)
+def test_code_that_runs_at_import_beside_a_def_line_falls_back_to_the_name_match(
+    mapped, inserted
+) -> None:
+    """Verifier F2 on #1617: only a whole new undecorated def or class leaves the import run of the line beside it out."""
+    picked = a.targets(mapped("def two()", inserted + "def two()"))
+    assert {"tests/test_one.py", "tests/test_both.py"} <= set(picked)
+
+
+def test_a_class_test_id_with_a_space_runs_as_its_method(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    Path("t.py").write_text("class TestK:\n    def test_m(self): pass\n")
+    assert a.node_files({"t.py::TestK::test_m[a b]"}) == {"t.py::TestK::test_m"}
+
+
+def suite(root, names: int, naming: int) -> None:
+    """A suite of `names` test files, the first `naming` of them naming `tool`."""
+    (root / "tests").mkdir(parents=True)
+    for n in range(names):
+        (root / "tests" / f"test_{n:02}.py").write_text(
+            "# uses tool\n" if n < naming else "# other\n"
+        )
+    (root / "tool.py").write_text("")
+
+
+def test_a_selection_of_over_half_the_test_files_runs_only_them(monkeypatch, tmp_path) -> None:
+    """#1872: a near-whole selection runs as picked, never as the whole suite, which only the nightly runs."""
+    suite(tmp_path, 20, 11)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+    assert a.targets(["tool.py"]) == [f"tests/test_{n:02}.py" for n in range(11)]
+
+
+def test_the_cheap_checks_and_a_changed_e2e_file_are_picked_as_they_are(
+    monkeypatch, tmp_path
+) -> None:
+    """Half the suite named, plus a cheap check and a changed e2e test, all picked as they are."""
+    suite(tmp_path, 20, 10)
+    (tmp_path / "tests" / "test_skill_x.py").write_text("# uses tool\n")
+    (tmp_path / "tests" / "e2e").mkdir()
+    (tmp_path / "tests" / "e2e" / "test_live.py").write_text("# other\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "ALL", ["tests"])
+    monkeypatch.setattr(a, "CHEAP", ["tests/test_skill_x.py"])
+    picked = a.targets(["tool.py", "tests/e2e/test_live.py"])
+    named = [f"tests/test_{n:02}.py" for n in range(10)]
+    assert picked == sorted([*named, "tests/test_skill_x.py", "tests/e2e/test_live.py"])
+
+
+SCRIPT_UNDER_PACKAGE = "omnigent/skills/omnigent-agents/scripts/omnigent_agent.py"
+WAKE_TEST = "omnigent/tests/test_omnigent_agent_wake.py"
+
+
+def test_a_package_script_nothing_names_selects_the_packages_whole_test_dir(
+    monkeypatch, tmp_path
+) -> None:
+    """#2157: a changed script under a package's `scripts/` that no test names or ran falls back to that package's tests."""
+    monkeypatch.chdir(tmp_path)
+    for name in (
+        "omnigent/skills/s/scripts/lonely.py",
+        "omnigent/tests/test_a.py",
+        "omnigent/tests/test_b.py",
+    ):
+        Path(name).parent.mkdir(parents=True, exist_ok=True)
+        Path(name).write_text("")
+    monkeypatch.setattr(a, "ALL", ["omnigent/tests"])
+    assert a.targets(["omnigent/skills/s/scripts/lonely.py"]) == sorted(
+        [*a.CHEAP, "omnigent/tests/test_a.py", "omnigent/tests/test_b.py"]
+    )
+
+
+def test_a_script_outside_scripts_and_src_gets_no_package_fallback(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name in ("omnigent/skills/s/lonely.py", "omnigent/tests/test_a.py"):
+        Path(name).parent.mkdir(parents=True, exist_ok=True)
+        Path(name).write_text("")
+    monkeypatch.setattr(a, "ALL", ["omnigent/tests"])
+    assert a.targets(["omnigent/skills/s/lonely.py"]) == a.CHEAP
+
+
+def test_a_change_to_omnigent_agent_selects_the_wake_test() -> None:
+    assert WAKE_TEST in a.targets([SCRIPT_UNDER_PACKAGE])
+
+
+def test_a_mapped_package_script_whose_changed_lines_no_test_ran_selects_the_packages_tests(
+    monkeypatch, tmp_path
+) -> None:
+    """The map measures the script but no test ran the changed line: the package's tests run, wake test included."""
+    monkeypatch.setattr(a, "MAP", tmp_path / ".map")
+    a.MAP.mkdir()
+    (a.MAP / "sha").write_text(git("rev-parse", "HEAD"))
+    (a.MAP / "skipped").write_text(
+        ""
+    )  # a map with a skip list: no test is picked by name beside it
+    data = CoverageData(basename=str(a.MAP / "coverage"))
+    data.set_context("omnigent/tests/test_other.py::test_x|run")
+    data.add_lines({SCRIPT_UNDER_PACKAGE: [1]})
+    data.write()
+    monkeypatch.setattr(a, "load_map", lambda: (git("rev-parse", "HEAD"), data))
+    monkeypatch.setattr(a, "executed_by", lambda *args: set())
+    assert WAKE_TEST in a.targets([SCRIPT_UNDER_PACKAGE])
+
+
+def package(tmp_path, monkeypatch, named: str = "") -> None:
+    """A repo with one package: a script `scripts/unique_script.py`, `tests/test_ran.py` (names `named`) and
+    `tests/test_other.py` (names nothing)."""
+    monkeypatch.chdir(tmp_path)
+    for name, text in {
+        "omnigent/skills/s/scripts/unique_script.py": "def f(): pass\n",
+        "omnigent/tests/test_ran.py": f"{named}\n\n\ndef test_x(): pass\n",
+        "omnigent/tests/test_other.py": "def test_y(): pass\n",
+    }.items():
+        Path(name).parent.mkdir(parents=True, exist_ok=True)
+        Path(name).write_text(text)
+    monkeypatch.setattr(a, "ALL", ["omnigent/tests"])
+    monkeypatch.setattr(a, "CHEAP", [])
+
+
+def test_a_script_a_test_names_selects_only_that_test_never_the_package(
+    tmp_path, monkeypatch
+) -> None:
+    package(tmp_path, monkeypatch, named="import unique_script")
+    assert a.targets(["omnigent/skills/s/scripts/unique_script.py"]) == [
+        "omnigent/tests/test_ran.py"
+    ]
+
+
+def test_a_mapped_script_a_test_ran_selects_only_that_test_never_the_package(
+    tmp_path, monkeypatch
+) -> None:
+    package(tmp_path, monkeypatch)
+    monkeypatch.setattr(a, "MAP", tmp_path / ".map")
+    monkeypatch.setattr(a, "load_map", lambda: ("sha", object()))
+    monkeypatch.setattr(a, "executed_by", lambda *args: {"omnigent/tests/test_ran.py::test_x"})
+    assert a.targets(["omnigent/skills/s/scripts/unique_script.py"]) == [
+        "omnigent/tests/test_ran.py::test_x"
+    ]
+
+
+def test_a_mapped_script_whose_test_the_map_skipped_selects_that_test_never_the_package(
+    tmp_path, monkeypatch
+) -> None:
+    package(tmp_path, monkeypatch, named="import unique_script")
+    monkeypatch.setattr(a, "MAP", tmp_path / ".map")
+    a.MAP.mkdir()
+    (a.MAP / "skipped").write_text("omnigent/tests/test_ran.py::test_x\n")
+    monkeypatch.setattr(a, "load_map", lambda: ("sha", object()))
+    monkeypatch.setattr(a, "executed_by", lambda *args: set())
+    assert a.targets(["omnigent/skills/s/scripts/unique_script.py"]) == [
+        "omnigent/tests/test_ran.py::test_x"
+    ]

@@ -68,7 +68,7 @@ commit that is pushed. A change to an overlay is followed by a rerun of
 ## 4. Gates
 
 With a clean `git status`, these all exit 0: `mise run vendor-engineering-check`,
-`mise run test`, `mise run test-engineering-package`, and
+`mise run test`, `mise run test-slow`, `mise run test-engineering-package`, and
 `git diff --check origin/main...HEAD`.
 
 ## 5. Independent verification

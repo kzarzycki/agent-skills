@@ -12,12 +12,9 @@ exclusions:
 owned_skills:
   - agent-hygiene
   - audit-third-party-software
-  - chief-of-staff
+  - browsing
   - context-extractor
   - demo
-  - engineering-loop
-  - omnigent-telemetry
-  - operating-omnigent
   - orchestrating-agents
 owned_overlays:
   - source: overlays/skills/ask-matt

@@ -10,6 +10,10 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = (
+    pytest.mark.slow
+)  # runs the packaged gate over a mutated marketplace, 15-20 s each (#1610)
+
 REPOSITORY = Path(__file__).resolve().parents[1]
 
 
@@ -26,9 +30,16 @@ def test_the_check_task_runs_the_gates_ci_runs_in_its_order() -> None:
     workflow = (REPOSITORY / ".github" / "workflows" / "engineering-ci.yml").read_text()
     ran = re.findall(r"^\s*run: (mise run \S+)$", workflow, re.MULTILINE)
 
-    # CI runs the landing gate on a PR or push and the full check on the nightly schedule
-    assert ran == ["mise run check-fast", "mise run check"]
+    # CI runs the cheap checks on a PR or push, the tests on a Mergify batch's draft PR (#1821) and the full check
+    # on the nightly schedule
+    assert ran == ["mise run check-fast", "mise run test-batch", "mise run check"]
     assert tasks["check"]["run"][0] == "mise run vendor-engineering-check"
+
+
+def test_the_nightly_check_runs_the_full_suite() -> None:
+    """#1872: no PR runs the whole suite, so the nightly `check` must, slow tests included."""
+    tasks = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]
+    assert {"mise run test", "mise run test-slow"} <= set(tasks["check"]["run"])
 
 
 @pytest.mark.timeout(300)  # it runs the package gate in a subprocess: 20-40 s, more under load
@@ -88,3 +99,19 @@ def test_advertised_package_gate_rejects_marketplace_mutation(
     assert "test_claude_marketplace_exposes_only_the_owned_engineering_package" in (
         result.stdout + result.stderr
     )
+
+
+def test_the_affected_tests_line_runs_the_selected_tests() -> None:
+    """#2232 row 1: the worker's recorded `Affected tests:` run proves the PR's tests, so the batch floor (#2178) may
+    drop them; a line naming check-fast alone proves lint only."""
+    line = re.search(
+        r"^Affected tests:[ \t]*(.+?)[ \t]*$",
+        (REPOSITORY / "docs" / "agents" / "loop.md").read_text(),
+        re.MULTILINE,
+    )
+    assert line and line[1] == "mise run check-affected"
+    tasks = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]
+    assert tasks["check-affected"]["run"].splitlines() == [
+        "mise run check-fast",
+        "mise run test-batch",
+    ]

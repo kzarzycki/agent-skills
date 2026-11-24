@@ -251,15 +251,24 @@ def validate_release_candidate(package_root: Path, tag: str) -> None:
         ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "HEAD"],
         cwd=repository,
     ).splitlines()
-    other_manifests = sorted(
-        path
-        for path in changed
-        if re.fullmatch(r"[^/]+/\.claude-plugin/plugin\.json", path)
-        and not path.startswith(f"{package.name}/")
-    )
-    if other_manifests:
+    # One release commit may cut several packages (#1861), as long as every manifest it changes is released on it:
+    # each package keeps its own tag, which consumers pin, so a manifest change with no tag here is a version no
+    # release names.
+    tagged = set(_git_output(["tag", "--points-at", "HEAD"], cwd=repository).split())
+    untagged = []
+    for path in sorted(changed):
+        manifest = re.fullmatch(r"([^/]+)/\.claude-plugin/plugin\.json", path)
+        if not manifest or manifest.group(1) == package.name:
+            continue
+        try:
+            version = json.loads((repository / path).read_text()).get("version")
+        except OSError, json.JSONDecodeError:
+            version = None
+        if f"{manifest.group(1)}-v{version}" not in tagged:
+            untagged.append(f"{path} ({manifest.group(1)}-v{version} is not tagged on this commit)")
+    if untagged:
         raise ConfigurationError(
-            "release commit changes other package manifest(s): " + ", ".join(other_manifests)
+            "release commit changes package manifest(s) it doesn't release: " + ", ".join(untagged)
         )
 
 
@@ -1030,6 +1039,18 @@ def _run_package_tests(stage: Path) -> tuple[str, str]:
     return command_text, "PASS"
 
 
+def _sibling_dependencies(package: Path) -> list[Path]:
+    """The packages beside `package` that its apm.yml pulls in by git (`<owner>/<repo>/<name>`), and theirs."""
+    found: list[Path] = []
+    path = package / "apm.yml"
+    manifest = (yaml.safe_load(path.read_text()) if path.is_file() else None) or {}
+    for item in (manifest.get("dependencies") or {}).get("apm") or []:
+        name = str(item.get("git", "")).rsplit("/", 1)[-1] if isinstance(item, dict) else ""
+        if name and (sibling := package.parent / name).joinpath("apm.yml").is_file():
+            found += [sibling, *_sibling_dependencies(sibling)]
+    return list(dict.fromkeys(found))
+
+
 def _replace_atomically(package: Path, staged: Path) -> None:
     backup = Path(tempfile.mkdtemp(prefix=f".{package.name}-backup-", dir=package.parent))
     backup.rmdir()
@@ -1102,6 +1123,9 @@ def qualify(
     staged = temporary / package.name
     try:
         shutil.copytree(package, staged, symlinks=True)
+        # the sibling packages it depends on go beside it, as a release tag holds them, so its tests find them
+        for sibling in _sibling_dependencies(package):
+            shutil.copytree(sibling, temporary / sibling.name, symlinks=True)
         for name in retired:
             shutil.rmtree(staged / "skills" / name, ignore_errors=True)
         committed_config = config
