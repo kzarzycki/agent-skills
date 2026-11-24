@@ -161,7 +161,7 @@ one; a new or changed item raises ``[owner]``), for a lead marked ``direct`` not
 that lost its runner, which the owner can't see in its session; ``--fyi post`` posts every line as without it too,
 ``--decisions`` names the owner's standing decisions for the small model. The chief of staff's console (not a manager's) also
 follows each live top-level session labelled ``omni.role=lead`` that no registry holds (none beside its own, nor a ``leads=``
-one), with a ``follow`` line and one ``adopted`` event, unless a followed lead created it, so a lead started with no
+one), with a ``follow`` line and one ``adopted`` event, unless a followed lead created it or it is under ``ADOPT_GRACE_SECONDS`` old (its launcher may still be writing its registry line), so a lead started with no
 registry is supervised all the same. Without it, it writes none of these and posts every line.
 A long-lived supervisor runs as ``supervise --registry <file> ... --install --log <file>``: it writes
 a user service running that same command line less ``--install`` and ``--log`` (a systemd user unit
@@ -356,6 +356,8 @@ TURN_END_SECONDS = 30.0
 PROMPT_CONFIRM_SECONDS = 120.0
 # how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
 CREATED_SECONDS = 30.0
+# A session younger than this is not adopted: its launcher may still be writing it to its own supervisor's registry (#2313).
+ADOPT_GRACE_SECONDS = 60.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
 # A loaded server times out reads the child never noticed; a GET is retried after each of these.
 RETRY_SECONDS = (2.0, 5.0, 15.0, 30.0, 60.0)  # a GET outlasts a server restart
@@ -10908,6 +10910,9 @@ def supervise_registry(
                 or og.info(sid).get("archived")  # the listing may be 30 s old
             ):
                 continue
+            made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            if made and time.time() - made < ADOPT_GRACE_SECONDS:
+                continue  # its launcher may not have written its registry line yet: a later poll adopts it (#2313)
             # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing.
             # Upgrade: read it from the lead's brief (its preamble names the report path) if a followed lead ever owes one.
             arm(registry, sid, Path(f"tmp/loop/{sid}.report.md"), followed=True)
