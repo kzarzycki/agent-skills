@@ -1,0 +1,295 @@
+"""gatekeeper.md's `timeouts` block: every time limit of a run derived from one place (#2228).
+
+`timeouts.test` is one test's limit, which a project maps onto its runner's own per-test option; `timeouts.run` is one
+selection run's, the queue's check included. The queue's checks timeout (the `.mergify.yml` the pack renders), a CI
+job's `timeout-minutes` and `land --wait`'s ceiling all follow `run`, so raising it moves them together; with nothing
+set they keep today's values (1 hour, 60 minutes, 2 hours). A run over the budget, or a gate that times out, is a
+timeout and never a test's failure: no eviction, no red count.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import pytest
+from approvals_harness import (
+    LOOP,
+    add,
+    approvals,
+    git_in,
+    lands,  # noqa: F401
+)
+from test_approvals_affected_tests import worker  # noqa: F401
+from test_approvals_cloud_queue import cloud_queue  # noqa: F401
+from test_approvals_github_queue import (  # noqa: F401
+    RED_AT,
+    labels_of,
+    notes_on,
+    queue,
+    run,
+)
+from test_approvals_mergify_queue import land_statuses, mergify  # noqa: F401
+
+TEMPLATE = Path(approvals.__file__).resolve().parent.parent / "mergify.yml"
+
+
+def timed(settings: str) -> str:
+    """The harness's policy with `settings` under `timeouts`."""
+    return add(LOOP, "timeouts", settings)
+
+
+# --- the policy reader
+
+
+def test_nothing_set_keeps_todays_limits() -> None:
+    assert approvals.timeouts(LOOP) == {"test": 60, "run": 3600}
+    assert approvals.timeouts(None) == {"test": 60, "run": 3600}
+
+
+def test_the_reader_takes_both_keys_and_each_alone() -> None:
+    assert approvals.timeouts(timed("test: 90s\nrun: 4h15m\n")) == {"test": 90, "run": 15300}
+    assert approvals.timeouts(timed("run: 4h\n")) == {"test": 60, "run": 14400}
+    assert approvals.timeouts(timed("test: 2m\n")) == {"test": 120, "run": 3600}
+
+
+@pytest.mark.parametrize("key", ["test", "run"])
+@pytest.mark.parametrize("text", ["'soon'", "'4 hours'", "'30m4h'", "'0s'", "'-1h'"])
+def test_a_malformed_duration_is_refused_naming_its_key(key: str, text: str) -> None:
+    with pytest.raises(approvals.Refused, match=rf"`timeouts\.{key}` is"):
+        approvals.settings(timed(f"{key}: {text}\n"))
+
+
+def test_a_bare_number_and_an_unknown_key_are_refused_naming_the_key() -> None:
+    with pytest.raises(approvals.Refused, match=r"timeouts\.run.* must be a string"):
+        approvals.settings(timed("run: 60\n"))
+    with pytest.raises(approvals.Refused, match="job"):
+        approvals.settings(timed("job: 60m\n"))
+
+
+# --- every other limit follows `timeouts.run`
+
+
+@pytest.mark.parametrize(
+    ("settings", "checks", "minutes", "ceiling"),
+    [
+        (None, "1 hour", 60, 2 * 3600),
+        ("run: 4h\n", "4 hours", 240, 8 * 3600),
+        ("run: 4h15m\n", "4 hours 15 minutes", 255, 8 * 3600 + 30 * 60),
+        ("run: 90s\n", "1 minute 30 seconds", 2, 180),
+    ],
+)
+def test_the_queue_timeout_the_job_limit_and_the_land_wait_ceiling_follow_the_run(
+    settings: str | None, checks: str, minutes: int, ceiling: int
+) -> None:
+    """The ceiling is the queue's checks timeout plus a margin of one more run: 2 hours with nothing set."""
+    loop = LOOP if settings is None else timed(settings)
+    rendered = approvals.mergify_rendered(loop)
+    assert f"    checks_timeout: {checks}\n" in rendered
+    assert approvals.job_minutes(loop) == minutes
+    assert approvals.ceiling_of(loop) == ceiling
+    # nothing but the one line differs from the template
+    template = TEMPLATE.read_text()
+    assert rendered == template.replace("checks_timeout: 1 hour", f"checks_timeout: {checks}")
+
+
+def test_with_nothing_set_the_rendered_file_is_the_template_byte_for_byte() -> None:
+    assert approvals.mergify_rendered(LOOP) == TEMPLATE.read_text()
+
+
+def test_land_wait_waits_until_the_derived_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    for policy, ceiling in ((LOOP, 7200), (timed("run: 4h\n"), 28800)):
+        monkeypatch.setattr(approvals, "project", lambda policy=policy: (None, policy))
+        assert approvals.land_wait() == ceiling
+    # the landing lock's staleness is no project's setting
+    assert approvals.CEILING == 2 * 60 * 60
+
+
+def test_a_land_wait_set_before_the_derivation_still_wins_with_a_deprecation_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(approvals, "DEPRECATED", set())
+    loop = add(timed("run: 4h\n"), "land", "wait: 4h30m\n")
+    assert approvals.ceiling_of(loop) == 16200
+    assert "deprecated: land.wait" in capsys.readouterr().err
+
+
+# --- the drift check: the repo's `.mergify.yml` against the policy
+
+
+@pytest.fixture
+def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A git checkout with a gatekeeper.md policy and `.mergify.yml` copied from the template."""
+    git_in(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs" / "agents" / "gatekeeper.md").write_text(policy_md(""))
+    (tmp_path / ".mergify.yml").write_text(TEMPLATE.read_text())
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def policy_md(timeouts: str) -> str:
+    return f"# Gatekeeper\n\n## Policy\n\n```yaml\nspec:\n  auto: true\n{timeouts}```\n"
+
+
+def verb(*args: str) -> tuple[int, str]:
+    found = subprocess.run(
+        [sys.executable, approvals.__file__, "timeouts", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return found.returncode, found.stdout + found.stderr
+
+
+def test_the_check_passes_in_step_and_fails_once_the_run_moves(checkout: Path) -> None:
+    assert verb("--check")[0] == 0
+    (checkout / "docs" / "agents" / "gatekeeper.md").write_text(policy_md("timeouts:\n  run: 4h\n"))
+    code, out = verb("--check")
+    assert code == 1
+    assert "`checks_timeout` is '1 hour', but the policy's `timeouts.run` makes it '4 hours'" in out
+    # rendered from the policy, the file is in step again
+    code, rendered = verb("--mergify")
+    assert code == 0 and "checks_timeout: 4 hours\n" in rendered
+    (checkout / ".mergify.yml").write_text(
+        approvals.mergify_rendered(None).replace("1 hour", "4 hours")
+    )
+    assert verb("--check")[0] == 0
+
+
+def test_the_check_names_drift_beyond_the_timeout(checkout: Path) -> None:
+    (checkout / ".mergify.yml").write_text(
+        TEMPLATE.read_text().replace("batch_size: 3", "batch_size: 5")
+    )
+    code, out = verb("--check")
+    assert code == 1 and "differs from this skill's mergify.yml beyond `checks_timeout`" in out
+
+
+def test_check_setup_names_a_checks_timeout_out_of_step(
+    checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (checkout / "docs" / "agents" / "gatekeeper.md").write_text(policy_md("timeouts:\n  run: 4h\n"))
+    monkeypatch.setattr(approvals, "toplevel", lambda: checkout)
+    monkeypatch.setattr(approvals, "project", lambda **_: (None, None))
+    monkeypatch.setattr(approvals, "setup_problems", lambda root: [])
+    assert approvals.setup() == 1
+    assert "`checks_timeout` is '1 hour'" in capsys.readouterr().out
+
+
+def test_the_verb_prints_every_derived_limit(checkout: Path) -> None:
+    (checkout / "docs" / "agents" / "gatekeeper.md").write_text(policy_md("timeouts:\n  run: 4h\n"))
+    code, out = verb("--json")
+    assert code == 0
+    assert out.strip().splitlines()[-1] == (
+        '{"test": 60, "run": 14400, "checks_timeout": "4 hours", "job_timeout_minutes": 240, "land_wait": 28800}'
+    )
+
+
+# --- a run over `timeouts.run`
+
+
+def test_a_step_over_its_budget_is_killed_with_its_group_and_reads_as_a_timeout(
+    tmp_path: Path,
+) -> None:
+    child = tmp_path / "child.pid"
+    began = time.monotonic()
+    code, output = approvals.run_heavy(
+        ["sh", "-c", f"sleep 30 & echo $! > {child}; wait"], budget=0.5
+    )
+    assert (code, output) == (approvals.TIMED_OUT, approvals.SPENT)
+    assert time.monotonic() - began < 10
+    pid = int(child.read_text())
+    assert not alive(pid)
+
+
+def alive(pid: int) -> bool:
+    """Whether `pid` still runs: gone, or a zombie no init reaped yet, is dead."""
+    for _ in range(50):
+        stat = Path(f"/proc/{pid}/stat")
+        try:
+            state = stat.read_text().rsplit(")", 1)[1].split()[0]
+        except FileNotFoundError, ProcessLookupError:
+            return False
+        if state == "Z":
+            return False
+        time.sleep(0.1)
+    return True
+
+
+def test_a_command_exiting_124_itself_is_no_timeout() -> None:
+    assert approvals.run_heavy(["sh", "-c", "exit 124"], budget=30) == (124, None)
+
+
+def test_affected_tests_over_the_budget_says_so_in_one_line(
+    worker: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    slow = worker["repo"].parent / "tools" / "slow.py"
+    slow.write_text("import time\ntime.sleep(30)\n")
+    worker["set_loop"](f"# Loop\n\nAffected tests: {sys.executable} {slow}\n")
+    worker["commit"]("app.py", "value = 2\n")
+    worker["commit"]("lib.py", "value = 3\n")  # with loop.md and app.py: 3 files
+    monkeypatch.setitem(approvals.TIMEOUTS, "run", "1s")
+    assert approvals.main(["affected-tests"]) == approvals.TIMED_OUT
+    [line] = [each for each in capsys.readouterr().err.splitlines() if "timed out" in each]
+    assert line.startswith(
+        "affected-tests: timed out after `timeouts.run` (1 second) running the tests 3 changed"
+    )
+    assert "unsharded (no `select.shards`)" in line
+    assert "a timeout, not a test failure" in line
+
+
+# --- a queue's timeout is no red
+
+
+def test_a_github_queue_group_red_only_by_a_timeout_counts_for_nothing(
+    queue: dict[str, Any],
+) -> None:
+    head = queue["opened"](7)
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    queue["checks"]["g1"] = [run("qualify", "timed_out", 410)]
+    code, lines = queue["land"]("7")
+    assert code == 0, lines
+    assert queue["enqueued"] == [(7, head)]
+    assert notes_on(queue, 7, approvals.QUEUE_RED) == []
+    assert not queue["pulls"][7]["isDraft"]
+
+
+def test_a_github_queue_group_with_a_real_failure_beside_a_timeout_still_counts(
+    queue: dict[str, Any],
+) -> None:
+    queue["opened"](7)
+    queue["remove"](7, approvals.FAILED_CHECKS, at=RED_AT, group="g1")
+    queue["checks"]["g1"] = [run("qualify", "failure", 410)]
+    queue["logs"][410] = ["boom"]
+    queue["land"]("7")
+    assert len(notes_on(queue, 7, approvals.QUEUE_RED)) == 1
+
+
+def test_a_mergify_dequeue_on_a_timeout_queues_the_pr_again_and_evicts_no_one(
+    mergify: dict[str, Any],
+    hub: dict[str, list[dict[str, Any]]],
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    dequeued = run("Mergify Merge Queue", "failure", 551)
+    dequeued["output"] = {
+        "title": "The pull request has been removed from the queue `default`",
+        "summary": "The checks have timed out after 1 hour.",
+    }
+    mergify["checks"][head] = [run("qualify", "success", 550), dequeued]
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert any("on a timeout" in line and "not evicted" in line for line in lines), lines
+    assert land_statuses(hub, head)[0] == ("success", f"Queued for Mergify at {head}")
+    assert labels_of(mergify, 7) & {"loop:queued", "loop:dequeued"} == {"loop:queued"}
+    assert mergify["pulls"][7]["isDraft"] is False
+    assert notes_on(mergify, 7, "Evicted from the merge queue") == []
+    assert [
+        body for n, body in mergify.get("raw", []) if n == 7 and body.startswith(approvals.REQUEUE)
+    ]

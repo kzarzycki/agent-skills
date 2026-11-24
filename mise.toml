@@ -131,10 +131,10 @@ run = """mise run vendor-engineering-check
 mise run lint"""
 
 [tasks.check-fast]
-description = "The PR head's check (`qualify`): vendor check, lint and the Mergify template drift check, no tests. The tests run once per tree, on the batch (test-batch)."
+description = "The PR head's check (`qualify`): vendor check, lint and the Mergify drift check (the pack template rendered with gatekeeper.md's `timeouts`), no tests. The tests run once per tree, on the batch (test-batch)."
 run = """mise run vendor-engineering-check
 mise run lint
-cmp .mergify.yml gatekeeper/skills/gatekeeper/mergify.yml || { echo 'error: .mergify.yml drifted from the pack template gatekeeper/skills/gatekeeper/mergify.yml' >&2; exit 1; }"""
+uv run gatekeeper/skills/gatekeeper/scripts/gatekeeper.py timeouts --check || { echo 'error: .mergify.yml drifted from the pack template gatekeeper/skills/gatekeeper/mergify.yml rendered with gatekeeper.md'"'"'s timeouts' >&2; exit 1; }"""
 
 [tasks.test-batch]
 description = "The tests `qualify` runs on a Mergify batch's draft PR: only the ones the batch touches against GATE_BASE (tools/affected_tests.py), never the whole suite"

@@ -129,10 +129,13 @@ def test_a_pr_head_runs_only_cheap_checks_and_the_batch_runs_the_tests() -> None
 
 
 def test_the_repo_file_is_the_pack_template_and_the_head_check_catches_drift() -> None:
-    """A repo copies the template unchanged, so any difference is drift; check-fast fails on it on every PR head."""
+    """A repo copies the template unchanged but for the `checks_timeout` gatekeeper.md's `timeouts.run` sets (#2228),
+    so any other difference is drift; check-fast fails on it on every PR head. This repo sets no `timeouts`, so its
+    file is the template byte for byte."""
+    assert "timeouts" not in policy()
     assert (ROOT / ".mergify.yml").read_bytes() == TEMPLATE.read_bytes()
     cheap = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["check-fast"]["run"]
-    assert "cmp .mergify.yml gatekeeper/skills/gatekeeper/mergify.yml" in cheap
+    assert "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py timeouts --check" in cheap
 
 
 def test_batches_of_three_wait_five_minutes_and_a_silent_check_times_out() -> None:
