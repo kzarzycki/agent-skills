@@ -1,5 +1,5 @@
 """A followed coordinator (a manager with its own leads registry) whose turn closes on a bare ``DONE`` reports no
-result: it is recorded, not raised as ``act`` and not delivered (#2309). A lead's ``DONE: <result>`` and a ``USER
+result: it wakes no one but the leads waiting on it (#2309). A lead's ``DONE: <result>`` and a ``USER
 NEEDED`` route as before."""
 
 from test_omnigent_agent import omnigent_agent as oa
@@ -15,16 +15,19 @@ def routed(text: str, **event: object) -> tuple[str, str, str]:
     return oa.route({"kind": "ended", "last": text, **event}, lambda: ("none", ""))
 
 
-def test_a_coordinators_bare_done_is_recorded() -> None:
-    assert routed(NOTHING, coordinator=True)[1] == "record"
+def test_a_coordinators_bare_done_is_told_only_to_its_waiters() -> None:
+    assert routed(NOTHING, coordinator=True)[1:] == (
+        "done",
+        "a coordinator's DONE with no result on its line: told only to its waiters",
+    )
 
 
-def test_a_bare_done_with_only_a_report_path_is_recorded() -> None:
-    assert routed("DONE. Report: /tmp/r.md", coordinator=True)[1] == "record"
+def test_a_bare_done_with_only_a_report_path_has_no_result() -> None:
+    assert "waiters" in routed("DONE. Report: /tmp/r.md", coordinator=True)[2]
 
 
 def test_a_coordinators_done_with_a_result_routes_done() -> None:
-    assert routed("DONE: PR #5 merged as abc1234", coordinator=True)[1] == "done"
+    assert routed("DONE: PR #5 merged as abc1234", coordinator=True)[2].startswith("done: its")
 
 
 def test_a_leads_done_with_a_result_still_routes_done() -> None:

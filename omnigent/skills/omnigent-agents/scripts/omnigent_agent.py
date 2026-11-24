@@ -8827,7 +8827,11 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "record", "parked: waits on host capacity"
     if ending == "DONE" and event.get("coordinator") and not done_result(text):
         # a manager's turn that says nothing and closes on a bare DONE has no result to deliver (#2309)
-        return "rule", "record", "a coordinator's DONE with no result: nothing to deliver"
+        return (
+            "rule",
+            "done",
+            "a coordinator's DONE with no result on its line: told only to its waiters",
+        )
     if ending == "DONE":
         if event.get("relayed"):  # it sent its result to the notified session itself (#2090)
             return (
@@ -9351,6 +9355,13 @@ def supervise_registry(
             "relayed": bool(info.get("archived")) or relayed_to(items, notify, last),
         }
 
+        # a coordinator's turn with nothing on its DONE line (#2309): its notified session is not woken for it
+        quiet = bool(
+            event["coordinator"]
+            and ending_of(parsed or "") == "DONE"
+            and not done_result(parsed or "")
+        )
+
         def ask() -> tuple[str, str]:
             if eid in answers:  # asked before a later write failed: the call is spent
                 return answers[eid]
@@ -9417,7 +9428,7 @@ def supervise_registry(
         elif action == "relay":  # a dequeue to its PR's lead, which ``relay`` unarchives first
             act_on(eid, [(sid, "dequeued", f"Supervisor: {line}")])
         elif action in ("act", "owner") or (
-            action == "done" and not event["direct"] and not event["relayed"]
+            action == "done" and not event["direct"] and not event["relayed"] and not quiet
         ):
             item = line if kind in ("loop-owner", "dequeued") else line.splitlines()[0]
             if asked := question_for(lead_ev, parsed):
@@ -9432,12 +9443,14 @@ def supervise_registry(
             for parked in state["leads"].values():
                 if (parked.get("retrying") or {}).get("limit"):
                     parked.pop("retrying")
-        if action == "done":
+        if (
+            action == "done"
+        ):  # ``quiet``: only its waiters are told, and it is no end of a followed session
             result = LEAD_TOLD.format(lead=head, line=lead.get("last_line") or "")
             waiters = [other for other, owes in owed.items() if owes[4] == sid]
             act_on(eid, [(other, "tell", result) for other in waiters])
             # a followed lead is taken once its follower is told
-            if waiters and not event["direct"]:
+            if waiters and not event["direct"] and not quiet:
                 finish_relayed(sid)
         logged_line = {"at": int(time.time()), "id": eid, "session": sid, "kind": kind}
         logged_line.update(line=line, settled=by, action=action, why=why)

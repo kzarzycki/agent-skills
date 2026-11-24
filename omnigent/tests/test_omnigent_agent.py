@@ -14702,6 +14702,32 @@ def test_a_followed_sessions_leads_registry_makes_its_bare_done_no_act_line_2309
     assert run("manager", f"\tleads={tmp_path / 'manager' / 'leads.registry'}") == []
 
 
+def test_a_managers_prose_result_over_a_bare_done_still_tells_the_lead_waiting_on_it_2309(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Option (a) of #2309: a manager's ``PR #5 merged as abc1234.`` above a bare ``DONE`` wakes no notified session, and
+    the lead registered ``after=`` it is told; the manager's ``leads=`` field is read from the real registry line."""
+    leads = tmp_path / "leads.registry"
+    leads.write_text("")
+    registry = tmp_path / "registry"
+    registry.write_text(
+        f"m={tmp_path / 'm.md'}\tfollow\tleads={leads}\nb={tmp_path / 'b.md'}\tfollow\tafter=m\n"
+    )
+    og = Leads(
+        m=[told("brief", 60)],
+        b=[told("brief", 60), ending("STILL WORKING: waiting on lead m", 5)],
+    )
+
+    def done(poll: int) -> None:
+        if poll == 1:
+            og.histories["m"].append(ending("PR #5 merged as abc1234.\n\nDONE", 0))
+
+    supervised(og, registry, monkeypatch, 3, done, notify="cos", console=True)
+    assert acts_of(og, "cos") == [] and posted(og) == []
+    assert [(s, t) for s, t in og.inbox if s == "b" and "the lead you wait on, ended" in t]
+    assert "m" in state_of(registry)["leads"]  # still followed
+
+
 def test_a_send_that_is_not_the_result_leaves_the_done_an_act_line_2090(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
