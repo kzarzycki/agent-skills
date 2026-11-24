@@ -10140,17 +10140,20 @@ def queue_select(
     return 0
 
 
-def failed_tests_of(path: str) -> list[str]:
-    """The test ids a red run wrote (`{"failed": [...]}`, as tools/failed_tests.py writes it): the run's own output,
+def failed_tests_of(path: str) -> tuple[list[str], list[str]]:
+    """The test ids a red run wrote (`{"failed": [...], "selected": [...]}`, as tools/failed_tests.py writes it), its
+    failed tests and the tests its report listed (none where the file names no `selected`): the run's own output,
     read before any rerun. Refused for a file that is not there or not that JSON, since a rerun before the red is read
     is never run."""
     try:
-        failed = json.loads(Path(path).read_text())["failed"]
-        if not isinstance(failed, list) or not all(isinstance(item, str) for item in failed):
-            raise ValueError("`failed` is not a list of test ids")
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+        data = json.loads(Path(path).read_text())
+        lists = data["failed"], data.get("selected", [])
+        for key, ids in zip(("failed", "selected"), lists):
+            if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+                raise ValueError(f"`{key}` is not a list of test ids")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise Refused(f"rerun-tests: {path} holds no red run's failed tests: {exc}") from None
-    return failed
+    return lists
 
 
 def blob_of(rev: str, name: str) -> str | None:
@@ -10245,15 +10248,17 @@ def tests_in(report: Path) -> int:
         return 0
 
 
-def rerun(red: str, base: str | None, text: str, had: bool = False) -> int | None:
+def rerun(red: str, base: str | None, text: str, red_ran: bool) -> int | None:
     """The rerun's selection against `base` with the red head's loop.md `text`: its exit, or None when it ran no test
     (no base, a command that can't start, a `mise run` task that isn't there, or a `Test report:` that shows zero tests
-    where the red run `had` some), having said why (did_not_run). The report is removed before the run, so a report an
-    earlier run left is never counted as this one's."""
+    where the red run ran some, `red_ran`), having said why (did_not_run). The report is removed before the run, so a
+    report an earlier run left is never counted as this one's. Zero tests counts only for a green exit or a report the
+    run wrote: a red exit with no report failed before its tests ran (a lint step, a check ahead of the runner), and
+    that is red again, as any red rerun is."""
     if base is None:
         return did_not_run("no base to select against")
     found = TEST_REPORT.search(text)
-    report = toplevel() / found.group(1).strip() if found else None
+    report = toplevel() / found.group(1) if found else None
     if report:
         report.unlink(missing_ok=True)
     try:
@@ -10266,7 +10271,7 @@ def rerun(red: str, base: str | None, text: str, had: bool = False) -> int | Non
         return did_not_run(
             f"{red}'s loop.md runs `mise run {task}`, a task mise doesn't define here"
         )
-    if report and had and not tests_in(report):
+    if report and red_ran and (code == 0 or report.exists()) and not tests_in(report):
         return did_not_run("zero tests collected")
     return code
 
@@ -10287,9 +10292,8 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
     pass writes one, so a red head never has one; read it first if a red run ever records). A rerun that ran no test
     (rerun), its `Test report:` showing zero tests where the red had some included, exits DID_NOT_RUN, never as red
     again or as a flake that passed."""
-    failed = failed_tests_of(path)
-    # the red run ran tests: some failed, or its report listed some (tools/failed_tests.py's `selected`)
-    had = bool(failed) or bool(json.loads(Path(path).read_text()).get("selected"))
+    failed, selected = failed_tests_of(path)
+    red_ran = bool(failed or selected)
     try:
         git("rev-parse", "--verify", "--quiet", f"{red}^{{commit}}")
     except subprocess.CalledProcessError:
@@ -10308,7 +10312,7 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
             " reaches run",
             file=sys.stderr,
         )
-        code = rerun(red, red, text, had)
+        code = rerun(red, red, text, red_ran)
         return DID_NOT_RUN if code is None else code
     for test in candidates:
         print(f"rerun-tests: flake candidate: {test}", file=sys.stderr)
@@ -10317,7 +10321,7 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
         " runs: alone, a test that fails only after others would pass",
         file=sys.stderr,
     )
-    code = rerun(red, here or base, text, had)
+    code = rerun(red, here or base, text, red_ran)
     if code is None:
         return DID_NOT_RUN
     if code == 0 and candidates:
