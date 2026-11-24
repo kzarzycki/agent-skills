@@ -39,8 +39,36 @@ def test_the_run_job_reads_the_rating_first_and_runs_the_rest_only_when_a_rerun_
     assert all("needed == 'true'" in one.get("if", "") for one in steps[rating + 1 : -1])
     record = next(one for one in steps if one.get("id") == "record")
     assert "local-ci --record --rerun --no-push" in record["run"]
-    checkout = steps[0]
-    assert checkout["with"]["persist-credentials"] is False
+    checkouts = [one for one in steps if one.get("uses", "").startswith("actions/checkout@")]
+    assert all(one["with"]["persist-credentials"] is False for one in checkouts)
+
+
+def checkouts_before(steps: list[dict[str, Any]], index: int) -> list[str]:
+    """The refs checked out before step `index`, in order."""
+    return [
+        one["with"]["ref"]
+        for one in steps[:index]
+        if one.get("uses", "").startswith("actions/checkout@")
+    ]
+
+
+def test_the_rating_runs_the_base_branchs_gatekeeper_and_the_head_is_checked_out_only_for_the_run() -> (
+    None
+):
+    """#2383: `check rerun` runs from the base branch's tip, so a PR can't change what rates its own rerun and a
+    branch cut before the verb existed is still rated; the PR's head is checked out after, only where a rerun is
+    needed, for the selection run."""
+    steps = workflow()["jobs"]["rerun"]["steps"]
+    rating = next(i for i, one in enumerate(steps) if one.get("id") == "rating")
+    record = next(i for i, one in enumerate(steps) if one.get("id") == "record")
+    assert checkouts_before(steps, rating) == ["${{ github.event.pull_request.base.ref }}"]
+    assert checkouts_before(steps, record)[-1] == "${{ github.event.pull_request.head.sha }}"
+    head = next(
+        one
+        for one in steps[rating + 1 : record]
+        if one.get("with", {}).get("ref") == "${{ github.event.pull_request.head.sha }}"
+    )
+    assert head["if"] == "steps.rating.outputs.needed == 'true'"
 
 
 def test_the_push_job_checks_out_and_runs_nothing_of_the_pr() -> None:
@@ -195,8 +223,8 @@ def test_a_rating_raised_after_the_push_triggers_the_rerun_and_it_runs_on_the_he
     events = found[True]
     assert "labeled" in events["pull_request"]["types"]
     assert events["pull_request_review"] == {"types": ["submitted"]}
-    checkout = found["jobs"]["rerun"]["steps"][0]
-    assert checkout["uses"].startswith("actions/checkout@")
-    assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha }}"
+    steps = found["jobs"]["rerun"]["steps"]
+    record = next(i for i, one in enumerate(steps) if one.get("id") == "record")
+    assert checkouts_before(steps, record)[-1] == "${{ github.event.pull_request.head.sha }}"
     script = step(found["jobs"]["push"], "Push the record branch")["run"]
     assert 'git fetch -q --no-tags --depth=1 origin "$HEAD_SHA"' in script
