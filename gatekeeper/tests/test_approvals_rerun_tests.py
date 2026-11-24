@@ -306,3 +306,50 @@ def test_a_red_head_with_no_selector_did_not_run(
     assert code == approvals.DID_NOT_RUN
     assert "names no `Affected tests:` selector" in err and "Flaky" not in err
     assert worker["ran"]() == []
+
+
+# a selection that writes a JUnit report of `count` test cases to `report.xml`, as a runner given a junit flag does
+REPORTER = """import pathlib, sys
+cases = "".join(f'<testcase classname="app.py" name="t{i}"/>' for i in range(int(sys.argv[1])))
+(pathlib.Path.cwd() / "report.xml").write_text(f'<testsuite tests="{sys.argv[1]}">{cases}</testsuite>')
+"""
+
+
+def red_with_report(worker: dict[str, Any], count: int) -> str:
+    """A red head whose loop.md's selection writes a report of `count` tests to the `Test report:` path."""
+    reporter = worker["repo"].parent / "tools" / "reporter.py"
+    reporter.write_text(REPORTER)
+    return red_with_loop(
+        worker, f"# Loop\n\nAffected tests: {sys.executable} {reporter} {count}\n\nTest report: report.xml\n"
+    )
+
+
+def test_a_rerun_that_collected_zero_tests_did_not_run(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The selection exits 0 having run no test, where the red ran some: that is no flake that passed, since the
+    rerun says nothing about the change (#2277)."""
+    red = red_with_report(worker, 0)
+    code, err = rerun(worker, red, capsys)
+    assert code == approvals.DID_NOT_RUN
+    assert "rerun did not run: zero tests collected" in err and "Flaky" not in err
+
+
+def test_a_rerun_whose_report_shows_tests_is_read_by_its_exit(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    red = red_with_report(worker, 2)
+    code, err = rerun(worker, red, capsys)
+    assert code == 0
+    assert "a flake: open or update its `Flaky:` issue" in err and "did not run" not in err
+
+
+def test_a_report_an_earlier_run_left_is_never_counted(
+    worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A report from before the rerun shows tests this rerun never ran: it is removed first (#2277)."""
+    red = red_with_loop(worker, f"# Loop\n\nAffected tests: {worker['selector']}\n\nTest report: report.xml\n")
+    (worker["repo"] / "report.xml").write_text('<testsuite><testcase classname="a" name="b"/></testsuite>')
+    code, err = rerun(worker, red, capsys)
+    assert code == approvals.DID_NOT_RUN
+    assert "zero tests collected" in err

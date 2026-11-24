@@ -609,6 +609,7 @@ import sys
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timedelta, timezone
@@ -9682,6 +9683,8 @@ def gate_base_variable(text: str | None = None) -> str:
 # loop.md's narrowed mode (SKILL.md, Adopting the loop): its `Affected tests:` command is the whole narrowed check, and
 # the line `Gate: full` opts the project out, so every gate runs the full check as it does without the selector
 AFFECTED = re.compile(r"^Affected tests:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+# where the `Affected tests:` command writes its JUnit XML report, which rerun-tests reads to count the tests it ran
+TEST_REPORT = re.compile(r"^Test report:[ \t]*`?(.+?)`?[ \t]*$", re.MULTILINE)
 FULL_GATE = re.compile(r"^Gate:[ \t]*`?full`?[ \t]*$", re.MULTILINE)
 # the end of a narrowed gate's command (narrowed_gate): `(` is a shell operator command_line refuses, and the command it
 # returns is shlex-quoted, so no full gate's command, record or key can ever equal a narrowed one
@@ -10233,11 +10236,26 @@ def missing_task(text: str) -> str | None:
     return None if known.returncode == 0 else words[2]
 
 
-def rerun(red: str, base: str | None, text: str) -> int | None:
+def tests_in(report: Path) -> int:
+    """How many test cases the JUnit XML `report` holds; 0 for one that is missing or unreadable, since a run that
+    wrote no report ran no test it can show."""
+    try:
+        return sum(1 for _ in ET.parse(report).getroot().iter("testcase"))
+    except (OSError, ET.ParseError):
+        return 0
+
+
+def rerun(red: str, base: str | None, text: str, had: bool = False) -> int | None:
     """The rerun's selection against `base` with the red head's loop.md `text`: its exit, or None when it ran no test
-    (no base, a command that can't start, a `mise run` task that isn't there), having said why (did_not_run)."""
+    (no base, a command that can't start, a `mise run` task that isn't there, or a `Test report:` that shows zero tests
+    where the red run `had` some), having said why (did_not_run). The report is removed before the run, so a report an
+    earlier run left is never counted as this one's."""
     if base is None:
         return did_not_run("no base to select against")
+    found = TEST_REPORT.search(text)
+    report = toplevel() / found.group(1).strip() if found else None
+    if report:
+        report.unlink(missing_ok=True)
     try:
         code = affected_tests(base, text=text)
     except Refused as exc:
@@ -10248,6 +10266,8 @@ def rerun(red: str, base: str | None, text: str) -> int | None:
         return did_not_run(
             f"{red}'s loop.md runs `mise run {task}`, a task mise doesn't define here"
         )
+    if report and had and not tests_in(report):
+        return did_not_run("zero tests collected")
     return code
 
 
@@ -10265,8 +10285,11 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
     The selection is the red run's own, so its command comes from the red head's loop.md, never the base's: a head
     behind its base lacks a task the base's line names (ponytail: the R1 record would name the command too, but only a
     pass writes one, so a red head never has one; read it first if a red run ever records). A rerun that ran no test
-    (rerun) exits DID_NOT_RUN, never as red again."""
+    (rerun), its `Test report:` showing zero tests where the red had some included, exits DID_NOT_RUN, never as red
+    again or as a flake that passed."""
     failed = failed_tests_of(path)
+    # the red run ran tests: some failed, or its report listed some (tools/failed_tests.py's `selected`)
+    had = bool(failed) or bool(json.loads(Path(path).read_text()).get("selected"))
     try:
         git("rev-parse", "--verify", "--quiet", f"{red}^{{commit}}")
     except subprocess.CalledProcessError:
@@ -10285,7 +10308,7 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
             " reaches run",
             file=sys.stderr,
         )
-        code = rerun(red, red, text)
+        code = rerun(red, red, text, had)
         return DID_NOT_RUN if code is None else code
     for test in candidates:
         print(f"rerun-tests: flake candidate: {test}", file=sys.stderr)
@@ -10294,7 +10317,7 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
         " runs: alone, a test that fails only after others would pass",
         file=sys.stderr,
     )
-    code = rerun(red, here or base, text)
+    code = rerun(red, here or base, text, had)
     if code is None:
         return DID_NOT_RUN
     if code == 0 and candidates:
