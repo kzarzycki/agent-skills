@@ -40,7 +40,7 @@ def search_item(number: int, created: str, merged: str, body: str = "") -> dict[
     }
 
 
-# #1: a draft first (ready 2h before merge, created a day earlier), one head, one 10-minute job.
+# #1: a draft first (last ready event 1h before merge, created a day earlier), one head (a run with no PR list), one 10-minute job.
 # #2: never a draft (created 1h before merge); its run was rerun: attempts of 10 and 6 minutes.
 # #3 and #4: merged through one queue batch whose run took 20 minutes: 10 minutes each.
 # #5: merged the week before, one 4-minute job on its head.
@@ -52,6 +52,7 @@ RECORDED: dict[str, Any] = {
             search_item(2, "2026-11-19T09:00:00Z", "2026-11-19T10:00:00Z"),
             search_item(3, "2026-11-20T08:00:00Z", "2026-11-20T10:00:00Z"),
             search_item(4, "2026-11-20T08:00:00Z", "2026-11-20T10:00:00Z"),
+            search_item(6, "2026-11-17T08:30:00Z", "2026-11-17T09:00:00Z"),
             search_item(5, "2026-11-12T08:00:00Z", "2026-11-12T09:00:00Z"),
         ]
     },
@@ -67,16 +68,17 @@ RECORDED: dict[str, Any] = {
     },
     "repos/acme/widgets/issues/1/timeline": [
         {"event": "ready_for_review", "created_at": "2026-11-18T09:00:00Z"},
-        {"event": "ready_for_review", "created_at": "2026-11-18T10:00:00Z"},
+        {"event": "ready_for_review", "created_at": "2026-11-18T11:00:00Z"},
         {"event": "committed", "sha": "aaa"},
     ],
     "repos/acme/widgets/issues/2/timeline": [{"event": "committed", "sha": "bbb"}],
     "repos/acme/widgets/issues/3/timeline": [{"event": "committed", "sha": "ccc"}],
     "repos/acme/widgets/issues/4/timeline": [{"event": "committed", "sha": "ddd"}],
+    "repos/acme/widgets/issues/6/timeline": [],
     "repos/acme/widgets/issues/5/timeline": [{"event": "committed", "sha": "eee"}],
     "repos/acme/widgets/actions/runs": {
         "workflow_runs": [
-            {"id": 11, "head_sha": "aaa", "pull_requests": [{"number": 1}]},
+            {"id": 11, "head_sha": "aaa", "pull_requests": []},
             {"id": 12, "head_sha": "bbb", "pull_requests": [{"number": 2}]},
             {"id": 13, "head_sha": "zzz", "pull_requests": [{"number": 90}]},
             {"id": 14, "head_sha": "eee", "pull_requests": [{"number": 5}]},
@@ -88,7 +90,9 @@ RECORDED: dict[str, Any] = {
     "repos/acme/widgets/actions/runs/13/jobs": {
         "jobs": [job(12), job(8), {"started_at": None, "completed_at": None}]
     },
-    "repos/acme/widgets/actions/runs/14/jobs": {"jobs": [job(4)]},
+    "repos/acme/widgets/actions/runs/14/jobs": {
+        "jobs": [job(4), {"started_at": "2026-11-12T08:00:00Z", "completed_at": None}]
+    },
 }
 
 
@@ -118,10 +122,10 @@ class FakeGh:
 def test_week_line_counts_median_minutes_and_the_week_before() -> None:
     gh = FakeGh(RECORDED)
     text = loop_metrics.line(gh, REPO, SINCE)
-    # week: #1 ready 10:00 -> merged 12:00 (2h, last ready event), #2 1h from creation, #3 and #4 2h: median 2h
-    # minutes: #1 10, #2 16 (both attempts), #3 and #4 (12+8)/2 = 10 each: (10+16+10+10)/4 = 11.5
+    # week: #1 1h from its last ready event, #2 1h from creation, #3 and #4 2h, #6 (merged on the first day) 30m: median 1h
+    # minutes: #1 10, #2 16 (both attempts), #3 and #4 (12+8)/2 = 10 each: (10+16+10+10+0)/5 = 9.2
     assert text.startswith(
-        f"{REPO} 2026-11-17..2026-11-23: merged 4, median ready->merged 2h00m, runner-min/PR 11.5"
+        f"{REPO} 2026-11-17..2026-11-23: merged 5, median ready->merged 1h00m, runner-min/PR 9.2"
     )
     assert (
         "| week before 2026-11-10..2026-11-16: merged 1, median ready->merged 1h00m, runner-min/PR 4.0"
@@ -137,11 +141,12 @@ def test_runs_are_listed_in_bulk_and_jobs_once_per_attributed_run() -> None:
     searches = [c for c in gh.calls if c.startswith("search/issues") and "merged" in unquote(c)]
     assert len(searches) == 1
     assert len([c for c in gh.calls if "/actions/runs?" in c]) == 1
+    assert all("filter=all" in c for c in gh.calls if "/jobs" in c)  # every attempt of a rerun
     jobs = [c.split("?")[0] for c in gh.calls if "/jobs" in c]
     assert sorted(jobs) == [
         f"repos/acme/widgets/actions/runs/{n}/jobs" for n in (11, 12, 13, 14)
     ]  # run 15 is nobody's
-    assert len([c for c in gh.calls if "/timeline" in c]) == 5
+    assert len([c for c in gh.calls if "/timeline" in c]) == 6
 
 
 def test_a_repo_with_no_actions_is_skipped_with_a_line_saying_so() -> None:
