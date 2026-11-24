@@ -327,3 +327,28 @@ def test_the_deployed_loop_scripts_find_gatekeeper_when_apm_installs_it_as_a_plu
                 -1:
             ]
     assert failed == {}
+
+
+@pytest.mark.parametrize("forwarder", ["loop", "engineering"])
+def test_a_forwarded_script_loads_its_own_packages_resolver(forwarder: str, tmp_path: Path) -> None:
+    """A consumer can hold loop and github from different releases, so the target's `_installed.py` may differ
+    from the forwarder's: the target must run with its own."""
+    skills = tmp_path / "skills"
+    here = skills / "engineering-loop" / "scripts"
+    there = skills / "github-tracker" / "scripts"
+    here.mkdir(parents=True)
+    there.mkdir(parents=True)
+    source = REPOSITORY / forwarder / "skills" / "engineering-loop" / "scripts"
+    (here / "board.py").write_text((source / "board.py").read_text())
+    (here / "_installed.py").write_text((source / "_installed.py").read_text())
+    (skills / "github-tracker" / "SKILL.md").write_text("---\nname: github-tracker\n---\n")
+    (there / "_installed.py").write_text("OWN = 'target'\n")
+    (there / "board.py").write_text("import _installed\nprint(_installed.OWN)\n")
+    done = subprocess.run(
+        [sys.executable, str(here / "board.py")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.stdout.strip() == "target", done.stderr
