@@ -1,6 +1,6 @@
 # Loop facts
 
-The engineering loop's values for this repo. `engineering/skills/engineering-loop/SKILL.md`
+The engineering loop's values for this repo. `loop/skills/engineering-loop/SKILL.md`
 (Approvals and proof) defines what each setting approves and what still waits for the owner.
 
 Orchestration backend: omnigent
@@ -47,7 +47,7 @@ machines: a ChatGPT access token for the verifier, which lasts up to 10 days and
 refresh token, so a session can run Codex but cannot renew or replace the login. The verifier
 of a cloud worker's PR runs in that worker's kept session, on its checkout and build
 (SKILL.md, Verifier in the worker's VM). Before starting a worker, run
-`engineering/skills/engineering-loop/scripts/cloud_verifier.py seed`: it renews the stored
+`loop/skills/engineering-loop/scripts/cloud_verifier.py seed`: it renews the stored
 seed login when under 5 days are left, or uses the host's own Codex login (read only, never
 refreshed or written) when its access token has at least a day left (`--host-min-days`),
 puts the copy into the environment and allows the hosts
