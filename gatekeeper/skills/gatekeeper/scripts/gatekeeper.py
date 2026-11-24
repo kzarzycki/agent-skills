@@ -25,7 +25,8 @@
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py queue-select [<base>]      # a merge queue's batch check (R6): one command per line to run on the batch, the select.unkeyed checks and `affected-tests --base <point>` for each PR with no record; exit 1 when that is nothing while a PR has no record
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
-    uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`; --record: its pass pushed as `local-ci --record` pushes a narrowed one
+    uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1 when .mergify.yml is out of step
+    uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -226,15 +227,17 @@ merged trees make. Each PR landed gets one comment, `Landed`, then `Base:` the n
 (the omnigent-agents skill's `omnigent_agent.py reap --merged --pr <n>`), whose outcome goes to its own log, never the land's.
 Exit 0 when the named PR merged (on a GitHub-queue base, also once it is enqueued or queued), or with no PR named when nothing landable failed; 1 for a refusal, a conflict, an
 eviction (a queue's) or a merge GitHub refused; 3 while it waits; 143 or 129 when stopped by SIGTERM or SIGHUP.
-`land --wait` runs it again while it waits on the lock or on CI, printing each new state once, for up to the policy's
-`land.wait` (a duration such as `4h30m`; default 2 hours), then exits 3, leaving the PR's event `waiting` where a queue
+`land --wait` runs it again while it waits on the lock or on CI, printing each new state once, for up to its ceiling,
+derived from the policy's `timeouts.run` (the queue's checks timeout) plus a margin of one more run, for the batch
+ahead of the PR or the one retry of a red batch: 2 hours with nothing set, 8 hours with `run: 4h` (`gatekeeper.py
+timeouts` prints it; a `land.wait` duration such as `4h30m`, deprecated, still overrides it), then exits 3, leaving the PR's event `waiting` where a queue
 or its checks still move it, else `needs-owner`; a wait for the owner ends it at once, since only the owner clears it. Between two runs it reads every 30
 seconds only what it waits on, at no API quota: a held lock with one `git ls-remote` (running again once the lock moves
 past its holder's heartbeat, or has not moved for 15 minutes), a named PR's CI with one ls-remote of the base and the
 heads and an ETag read of each head's checks, which GitHub answers 304 for free while nothing changed (#1915).
 Each named PR's branch carries the `land` event (events.md): `waiting` rewritten at each poll of `--wait`, `ok` once it
 merged (its refs cleared EVENT_GRACE seconds later, so a `wait land <branch>` finds the end), `failed` when evicted (its
-`url` the log comment), `needs-owner` at the owner's go or the 2-hour ceiling. A write that fails changes no exit code.
+`url` the log comment), `needs-owner` at the owner's go or at the ceiling while nothing moves the PR. A write that fails changes no exit code.
 The GitHub merge queue takes no landing lock (GitHub orders the entries, and two lands enqueueing one PR change
 nothing), builds no local batch, runs no local gate, publishes no pass and deletes no record branch. Once it has fetched
 the base (the base-drift refusal below), each of step 2's candidates, oldest PR first, goes in with GraphQL
@@ -258,8 +261,9 @@ nothing, and the queue's own run on that commit went green) makes it the base's 
 nothing counts yet (exit 3, `<base>'s checks on <sha> are still running`). Of the removals that count, the head's first
 gets a `Red in the merge queue` comment naming the check that failed on the queue's commit, its run and
 its failed job log's last 30 lines, and is enqueued again; its second turns the PR back to draft with the same, as
-Mergify's queue evicts (`Evicted from the merge queue`, exit 1). Any other removal (`checks_timed_out`, `manual`) counts for
-nothing, and the PR is enqueued again. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
+Mergify's queue evicts (`Evicted from the merge queue`, exit 1). A `failed_checks` removal whose required checks on the
+group's commit failed only by timing out (`TIMED_OUT`) counts for nothing, as any other removal (`checks_timed_out`,
+`manual`) does, and the PR is enqueued again: a timeout is no test's failure (#2228). The count lives in GitHub's timeline, so any land applies it and `land` keeps no
 state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends. `land <pr> --wait`
 waits on instead until the queue merges it (exit 0, after its `Landed` comment) or takes it out, whose removal the
 next round reads as above (#2101): between rounds it reads, each QUEUE_WATCH seconds (60), only the PR's state, head and
@@ -295,7 +299,9 @@ with `land` green on its head is reported queued and left alone. Mergify tests e
 base in CI, retries a red one once itself and squash-merges on green; a PR it dequeues (red again, or conflicting) gets
 its `dequeued_label`, `loop:dequeued`, and the next land that reads it with `land` green on the head evicts it: `land`
 `error` on the head, both labels off, back to draft and an `Evicted from the merge queue` comment naming Mergify's
-reason where its queue check run on the head gives one (a label left from an older head just comes off). A bare land, or
+reason where its queue check run on the head gives one (a label left from an older head just comes off). A dequeue
+whose queue check run's title or summary says it timed out is no test's failure: the label comes off and `@mergifyio
+queue` takes the PR back, evicting no one (#2228). A bare land, or
 `land <pr>` naming a merged one, comments `Landed` on each merged PR still carrying `loop:queued` (`Base:` its merge
 commit, `Tree:` that commit's tree, `Gate: Mergify merge queue` with the Actions runs on that commit), finishes its
 worker sessions and takes the label off. Exits as the GitHub merge queue path: 0 once queued, 1 for a refusal or an
@@ -332,7 +338,7 @@ whether classic branch protection requires one, so a PR is a candidate there onl
 section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, above);
 a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
 (`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
-`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its 2-hour ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
 loop.md's `carry_over_main` and `ci` work as below for one more release, each printing one `deprecated:` line on
 stderr. The keys that drove a gate at land, `batch_queue` under `loop` and `land`'s `gate_on`,
 `cloud_gate_timeout_seconds` and `host_gate`, do nothing (#1872): a policy that still sets one parses, with one
@@ -737,9 +743,15 @@ OWN = {APPROVALS, GATEKEEPER, LAND}
 # a URL in a `## Demo` comment; gh's --attach embeds a video or image as a bare user-attachments one, which plays inline
 URL = re.compile(r"https?://[^\s<>()\[\]\"'`]+")
 ATTACHMENT = "https://github.com/user-attachments/"
-# land --wait: seconds between tries, and how long it waits in all before it exits 3 unless the project's `land.wait`
-# says otherwise (land_wait); a landing lock older than the ceiling is stale, whatever a project's `land.wait` is
+# land --wait: seconds between tries; a landing lock older than CEILING is stale, whatever the policy's `timeouts` make
+# land --wait's own ceiling (ceiling_of)
 POLL, CEILING = 30, 2 * 60 * 60
+# the policy's `timeouts` where it sets none: today's values, one test and one selection run (#2228)
+TIMEOUTS = {"test": "60s", "run": "60m"}
+# the exit of a run stopped at its budget (run_heavy), coreutils `timeout`'s: a timeout, never a test's failure
+TIMED_OUT = 124
+# run_heavy's output for a run it stopped at its budget, so a command's own exit 124 is never read as one
+SPENT = object()
 # land --wait runs landing() (a GraphQL read of every named PR's PULL, 5 points each, and more) again only this many
 # seconds after the last run, unless it waits on something its probe watches (FULL): a merge queue or a check takes minutes to move, so
 # 30 s polls spend the account's quota, and its per-minute limit, on answers that did not change. POLL is the step
@@ -939,9 +951,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "stalled_after_hours": int,
     },
     "mutate": {"inconclusive_exit": int},
-    # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
-    # `shards`: how many shards a whole-suite selection splits into (shard_selections), optional, 1 or absent is one
-    "select": {"unkeyed": list, "shards": int},
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {
@@ -985,6 +994,18 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ),
     ),
     "carry_over_main": Table({"except": list}),
+    # the narrowed gate's first cut (classify): the project's build inputs, and the checks a non-product path still gets
+    "select": Table(
+        build_inputs=list,
+        checks=Rows(paths=list, command=str, unique=("command",)),
+        # the checks whose pass is never reused (#2183): each a gate step's name or command, or `gate`'s command
+        unkeyed=list,
+        # how many shards a whole-suite selection splits into (shard_selections), 1 or absent is one
+        shards=int,
+        optional=("build_inputs", "checks", "unkeyed", "shards"),
+    ),
+    # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
+    "timeouts": Table(test=str, run=str, optional=("test", "run")),
     # the break-glass land's proof windows (breakglass_settings); every key is optional
     "breakglass": Table(
         max_age=str,
@@ -1182,10 +1203,23 @@ def settings(loop: str | None) -> dict[str, Any]:
                 )
             if data[name].get("batch_size", 1) < 1:
                 raise Refused(f"{file}'s `land.batch_size` must be a whole number, 1 or more")
-            if "wait" in data[name] and name == "land" and span(str(data[name]["wait"])) is None:
-                raise Refused(
-                    f"{file}'s `land.wait` is {data[name]['wait']!r}: write it as `2h` or `4h30m`"
+            if "wait" in data[name] and name == "land":
+                if span(str(data[name]["wait"])) is None:
+                    raise Refused(
+                        f"{file}'s `land.wait` is {data[name]['wait']!r}: write it as `2h` or `4h30m`"
+                    )
+                # still honoured, so a project that set it after #2199 keeps its wait (land_wait)
+                deprecated(
+                    "land.wait",
+                    "`land --wait`'s ceiling is derived from `timeouts.run` (the queue's checks timeout plus one"
+                    " more run): set `timeouts.run` instead",
                 )
+            for key, given in data[name].items() if name == "timeouts" else ():
+                if span(given) is None:
+                    raise Refused(
+                        f"{file}'s `timeouts.{key}` is {given!r}: write it as days, hours, minutes and seconds"
+                        " in that order, such as `90s`, `60m` or `4h15m`"
+                    )
             if name == "carry_over_main":
                 deprecated(name)
             if name == "risk" and "merge_paths" in section:
@@ -4198,12 +4232,13 @@ def parse_time(text: str) -> datetime | None:
 
 
 def span(text: str) -> timedelta | None:
-    """A duration written as days, hours and minutes in that order (`7d`, `12h`, `4h30m`, `1d12h`) as a timedelta, None
-    for anything else or for zero: the one parser of the policy's durations (`breakglass.max_age`, `land.wait`)."""
-    if not (found := re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?", text.strip())):
+    """A duration written as days, hours, minutes and seconds in that order (`7d`, `12h`, `4h30m`, `1d12h`, `90s`) as a
+    timedelta, None for anything else or for zero: the one parser of the policy's durations (`breakglass.max_age`,
+    `land.wait`, `timeouts`)."""
+    if not (found := re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", text.strip())):
         return None
-    days, hours, minutes = (int(part or 0) for part in found.groups())
-    total = timedelta(days=days, hours=hours, minutes=minutes)
+    days, hours, minutes, seconds = (int(part or 0) for part in found.groups())
+    total = timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
     return total if total else None
 
 
@@ -5088,7 +5123,7 @@ PORTS = {
         "workflow_runs",  # (workflow, branch=None, head=None) -> the newest completed runs of a workflow
         "run_artifact",  # (run, name) -> the JSON in the run's artifact, or None
         "compare",  # (base, head) -> {status, ahead_by, behind_by} of head against base
-        "commit_checks",  # (ref) -> {name: {conclusion, url, id, title}} of the newest run of each check on the commit
+        "commit_checks",  # (ref) -> {name: {conclusion, url, id, title, summary}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
         "commit_tree",  # (sha) -> the commit's tree SHA
         "repo_tags",  # (repo) -> {name: commit} of every tag of `repo`
@@ -5776,6 +5811,11 @@ def setup() -> int:
     except Refused as refusal:
         problems.append(str(refusal))
     problems += setup_problems(root)
+    try:
+        if drift := mergify_drift(root, tree_policy(root), whole=False):
+            problems.append(drift)
+    except Refused:
+        pass  # the policy's own refusal is already listed above
     for line in problems:
         print(line)
     if not problems:
@@ -6040,20 +6080,120 @@ def land(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False)
 
 
 def land_wait() -> int:
-    """Seconds `land --wait` waits in all: the policy's `land.wait`, else CEILING (2 hours)."""
+    """Seconds `land --wait` waits in all: the ceiling the policy's `timeouts` derive (ceiling_of)."""
     _, loop = project()
+    return ceiling_of(loop)
+
+
+def timeouts(loop: str | None) -> dict[str, int]:
+    """The policy's `timeouts` in seconds, each key's default (TIMEOUTS, today's values) where it sets none: `test`,
+    one test's limit, which a project maps onto its runner's own per-test option in its `Affected tests:` command, and
+    `run`, one selection run's, the queue's check included."""
+    given = {**TIMEOUTS, **settings(loop).get("timeouts", {})}
+    return {key: int(span(text).total_seconds()) for key, text in given.items()}  # type: ignore[union-attr]
+
+
+def ceiling_of(loop: str | None) -> int:
+    """`land --wait`'s ceiling in seconds: the queue's checks timeout (`timeouts.run`) plus a margin of one more run,
+    for the batch ahead of the PR in the queue or the one retry of a red batch (mergify.yml's `max_checks_retries:
+    1`); 2 hours with nothing set. A project's `land.wait`, deprecated, still wins, so a project that set it after
+    #2199 keeps its wait. The landing lock's staleness is CEILING, whatever this is."""
     given = settings(loop).get("land", {}).get("wait")
-    found = span(str(given)) if given is not None else None
-    return int(found.total_seconds()) if found else CEILING
+    if given is not None and (found := span(str(given))):
+        return int(found.total_seconds())
+    return 2 * timeouts(loop)["run"]
+
+
+def job_minutes(loop: str | None) -> int:
+    """A CI job's `timeout-minutes` for the job that runs one selection: `timeouts.run` in whole minutes, rounded up,
+    for the templates that render a project's workflows."""
+    return -(-timeouts(loop)["run"] // 60)
 
 
 def said_span(seconds: int) -> str:
-    """A wait's length as the stop message says it: `2 hours`, `4 hours 30 minutes`."""
+    """A wait's length as the stop message says it, and as Mergify reads a duration: `2 hours`, `4 hours 30 minutes`,
+    `90 seconds` (seconds only where a length has them)."""
     hours, minutes = divmod(seconds // 60, 60)
-    parts = [f"{hours} hour{'' if hours == 1 else 's'}"] if hours or not minutes else []
+    rest = seconds % 60
+    parts = [f"{hours} hour{'' if hours == 1 else 's'}"] if hours or not (minutes or rest) else []
     if minutes:
         parts.append(f"{minutes} minute{'' if minutes == 1 else 's'}")
+    if rest:
+        parts.append(f"{rest} second{'' if rest == 1 else 's'}")
     return " ".join(parts)
+
+
+# `.mergify.yml`'s queue rule key the policy's `timeouts.run` sets (mergify_rendered)
+CHECKS_TIMEOUT = re.compile(r"^([ \t]*checks_timeout:[ \t]*)(.*?)[ \t]*$", re.MULTILINE)
+MERGIFY_FILE = ".mergify.yml"
+
+
+def mergify_drift(root: Path, loop: str | None, whole: bool = True) -> str | None:
+    """Why the repo's `.mergify.yml` is out of step with the policy, None where it is in step or there is none: its
+    `checks_timeout` other than `timeouts.run` gives (the one line `check setup` reads, `whole` False), else, with
+    `whole`, any other difference from mergify_rendered."""
+    path = root / MERGIFY_FILE
+    if not path.exists():
+        return None
+    held, wanted = read(path), mergify_rendered(loop)
+    found, want = CHECKS_TIMEOUT.search(held), CHECKS_TIMEOUT.search(wanted)
+    have = found[2] if found else None
+    if have != want[2]:  # type: ignore[index]
+        return (
+            f"{MERGIFY_FILE}'s `checks_timeout` is {have!r}, but the policy's `timeouts.run` makes it"
+            f" {want[2]!r}: write `gatekeeper.py timeouts --mergify > {MERGIFY_FILE}`"  # type: ignore[index]
+        )
+    if whole and held != wanted:
+        return (
+            f"{MERGIFY_FILE} differs from this skill's mergify.yml beyond `checks_timeout`: copy it unchanged, with"
+            f" `gatekeeper.py timeouts --mergify > {MERGIFY_FILE}`"
+        )
+    return None
+
+
+def tree_policy(root: Path) -> str | None:
+    """The working tree's own policy, chosen as project() chooses the base's: what this checkout's own config files
+    (`.mergify.yml`, a rendered workflow) must agree with, so a PR that changes `timeouts` and the file together is in
+    step."""
+    found = [read(root / path) if (root / path).exists() else None for path in (LOOP, POLICY)]
+    return chosen(*found)
+
+
+def timeouts_verb(render: bool, check_only: bool, as_json: bool) -> int:
+    """`timeouts`: every limit the working tree's policy derives from its `timeouts` block; `--mergify` prints the
+    repo's `.mergify.yml` as rendered from it; `--check` exits 1 with one line where `.mergify.yml` is out of step."""
+    root = toplevel()
+    loop = tree_policy(root)
+    if render:
+        sys.stdout.write(mergify_rendered(loop))
+        return 0
+    if check_only:
+        if problem := mergify_drift(root, loop):
+            print(problem)
+            return 1
+        print(f"timeouts: {MERGIFY_FILE} is in step with the policy's `timeouts`")
+        return 0
+    limits = timeouts(loop)
+    derived = {
+        "test": limits["test"],
+        "run": limits["run"],
+        "checks_timeout": said_span(limits["run"]),
+        "job_timeout_minutes": job_minutes(loop),
+        "land_wait": ceiling_of(loop),
+    }
+    if as_json:
+        print(json.dumps(derived))
+        return 0
+    print(f"timeouts.test: {said_span(limits['test'])} (one test)")
+    print(
+        f"timeouts.run: {said_span(limits['run'])} (one selection run, the queue's check included)"
+    )
+    print(f"queue checks_timeout: {derived['checks_timeout']}")
+    print(f"job timeout-minutes: {derived['job_timeout_minutes']}")
+    overridden = "wait" in settings(loop).get("land", {})
+    why = "land.wait, deprecated" if overridden else "the queue's checks timeout plus one more run"
+    print(f"land --wait: {said_span(derived['land_wait'])} ({why})")
+    return 0
 
 
 def numbers_of(pr: int | Sequence[int] | None) -> list[int]:
@@ -7492,14 +7632,14 @@ def local_queue(
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
 
 
-def tests_record_words(point: str) -> list[str] | None:
+def tests_record_words(point: str, head: str | None = None) -> list[str] | None:
     """The words `gate-record <head> -- <words>` takes for the record of a run of a PR's tests: loop.md's `Affected
     tests:` command narrowed against `point` (narrowed_gate under narrowed_to: the PR's merge base with its base
     branch, the base `affected-tests --record` selects against and keys its record by), its last word `(narrowed)`;
     None where no narrowed run exists (no `Affected tests:` line, `Gate: full`, `gate_steps`). The one builder of that
     key for `land` (head_recorded) and the merge queue's floor (the project's batch selector), so neither drifts from
-    the writer."""
-    with narrowed_to(point):
+    the writer. `head` is the PR's head, so the cut (selected) classifies the PR's change, not the checkout's."""
+    with narrowed_to(point, head):
         narrowed = narrowed_gate()
     return None if narrowed is None else shlex.split(narrowed[0])
 
@@ -7521,7 +7661,7 @@ def head_recorded(pull: dict[str, Any]) -> bool:
                 f"{where}: no merge base with origin/{pull['baseRefName']}, so no `Affected tests:` record is found"
             )
             return False
-        if (narrowed := tests_record_words(point)) is not None:
+        if (narrowed := tests_record_words(point, head)) is not None:
             words, writer = narrowed, "affected-tests --record"
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
@@ -8227,7 +8367,9 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
 
 def mergify_step(pull: dict[str, Any]) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
-    `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1); already queued at its head
+    `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1), unless its queue check
+    run says the dequeue was a timeout (mergify_timeout): that one is no test's failure, so the label comes off and
+    REQUEUE takes it back, evicting no one (exit 0); already queued at its head
     (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else
     queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
     `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). Either way, at a head land evicted before, REQUEUE once
@@ -8238,6 +8380,15 @@ def mergify_step(pull: dict[str, Any]) -> int:
     try:
         ours = queued_here(pull)
         if DEQUEUED in labels:
+            if ours and (timeout := mergify_timeout(head)):
+                # a timeout is no test's failure (#2228): queue it again later, evict no one
+                # the command first: refused, the label stays for the next land to try again
+                comment(number, REQUEUE + "\n")
+                label(number, DEQUEUED, add=False)
+                print(
+                    f"{where}: Mergify dequeued it at {head} on a timeout ({timeout}): queued again, not evicted"
+                )
+                return 0
             if ours:
                 mergify_evict(pull, labels)
                 return 1
@@ -8349,6 +8500,27 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
     evicted(
         pull, QUEUE_EVICTED, f"was dequeued by Mergify at {head}", why, tail, "Mergify's check run"
     )
+
+
+# a Mergify queue check run's text for a dequeue on its `checks_timeout`, not on a red check (mergify_timeout)
+TIMEOUT_TEXT = re.compile(r"\btim(?:ed|e)[ -]?out\b|\btimeout\b", re.IGNORECASE)
+
+
+def mergify_timeout(head: str) -> str | None:
+    """Mergify's queue check run on `head`, when it says the dequeue was a timeout (TIMEOUT_TEXT in its title or
+    summary): its name and title; None for any other dequeue, or a head GitHub can't read."""
+    try:
+        checks = commit_checks(head)
+    except subprocess.CalledProcessError:
+        return None
+    for name, run in checks.items():
+        if (
+            re.search(r"mergify|queue", name, re.IGNORECASE)
+            and run["conclusion"] not in ("SUCCESS", "NEUTRAL", "")
+            and TIMEOUT_TEXT.search(f"{run.get('title', '')}\n{run.get('summary', '')}")
+        ):
+            return f"`{name}`: {run.get('title') or run['conclusion'].lower()}"
+    return None
 
 
 def mergify_reason(head: str) -> tuple[str, list[str]]:
@@ -8507,12 +8679,16 @@ def own_reds(
 ) -> list[str] | None:
     """The groups of the `failed_checks` removals that count against the PR: each built on a commit of `base` whose
     required checks are green, since one built on a red commit failed for `base`'s fault, and one GitHub can't place
-    counts. None while a group's base commit is still running them: whose fault it was isn't known yet."""
+    counts. A group whose required checks failed only by timing out (`TIMED_OUT`) counts for nothing, as a
+    `checks_timed_out` removal does: a timeout is no test's failure (#2228). None while a group's base commit is still
+    running them: whose fault it was isn't known yet."""
     reds = []
     for removal in removals:
         if removal.get("reason") != FAILED_CHECKS:
             continue
         group = group_of(removal)
+        if timed_out_only(group, required):
+            continue
         if under := built_on(base, group):
             red, running = required_state(under, required, MAIN_FAULT)
             if running:
@@ -8522,6 +8698,17 @@ def own_reds(
                 continue
         reds.append(group)
     return reds
+
+
+def timed_out_only(group: str, required: set[str]) -> bool:
+    """Whether the required checks on the queue's commit `group` failed only by timing out: some `TIMED_OUT`, none of
+    MAIN_FAULT's other conclusions. A group GitHub can't read is no timeout."""
+    try:
+        red, _ = required_state(group, required, MAIN_FAULT)
+        timed, _ = required_state(group, required, {"TIMED_OUT"})
+    except subprocess.CalledProcessError:
+        return False
+    return bool(red) and red == timed
 
 
 def built_on(base: str, group: str) -> str | None:
@@ -9468,6 +9655,10 @@ NARROWED = " (narrowed)"
 NARROW_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "NARROW_BASE", default=None
 )
+# the head a narrowed gate is of, set by narrowed_to: a PR's head read from any checkout; None is the checkout itself
+NARROW_HEAD: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "NARROW_HEAD", default=None
+)
 
 
 def loop_md() -> str:
@@ -9490,12 +9681,14 @@ def narrowing(text: str | None = None) -> str | None:
 
 
 @contextlib.contextmanager
-def narrowed_to(base: str | None) -> Any:
-    """Within the block, gate() and gate_plan() are the narrowed gate against `base` (narrowed_gate); None: full."""
-    token = NARROW_BASE.set(base)
+def narrowed_to(base: str | None, head: str | None = None) -> Any:
+    """Within the block, gate() and gate_plan() are the narrowed gate against `base` (narrowed_gate); None: full.
+    `head` is the commit the gate is of, when it is not the checkout (a PR's head, from a checkout anywhere)."""
+    token, head_token = NARROW_BASE.set(base), NARROW_HEAD.set(head)
     try:
         yield
     finally:
+        NARROW_HEAD.reset(head_token)
         NARROW_BASE.reset(token)
 
 
@@ -9506,14 +9699,28 @@ def narrowed_gate(
     `paths`): the `Affected tests:` command (with `passed`, as gate() reads them), with the `Gate base:` variable
     (gate_base_variable) set to the base, as gate() returns a gate; else None. Its command is that variable's
     assignment first, then the rest, then NARROWED, so a record of it is keyed by the command and the base and never
-    stands for a full pass."""
+    stands for a full pass. A change gatekeeper.md's `select` finds no build input in (selected) runs `affected-tests
+    --base <base>` instead, which runs only the checks it touches, and its command names those checks (`select.checks:
+    <command>...`, or `none`), so a docs or pack-bump head's record is keyed by what ran."""
     base = NARROW_BASE.get()
     if base is None or settings(project()[1]).get("gate_steps"):
         return None
     if (written := narrowing()) is None:
         return None
-    _, words, sets = command_line(written, "Affected tests", passed)
     variable = gate_base_variable()
+    if (cut := selected(base, NARROW_HEAD.get())) is not None and not cut[0]:
+        # no build input changed (select): the run is affected-tests' own cut, keyed by the checks it runs
+        said = shlex.join(["select.checks:", *cut[1]] if cut[1] else ["select.checks:", "none"])
+        words = [
+            sys.executable,
+            str(Path(__file__).with_name("gatekeeper.py")),
+            "affected-tests",
+            "--base",
+            base,
+        ]
+        # the env is the command's own assignment, as gate_record reads it back from the key (command_line)
+        return f"{variable}={base} {said}{NARROWED}", words, {variable: base}
+    _, words, sets = command_line(written, "Affected tests", passed)
     sets = {variable: base, **{name: value for name, value in sets.items() if name != variable}}
     command = shlex.join([*(f"{name}={value}" for name, value in sets.items()), *words])
     return command + NARROWED, words, sets
@@ -9550,6 +9757,101 @@ def selection_base(given: str | None) -> str | None:
         ) from exc
 
 
+# what is never a build input, whatever a project declares (select.build_inputs): docs, prose, an agent's config and
+# vendored skills, the pack's own pin. fnmatch's `*` crosses `/`, so `docs/*` is the whole tree under docs.
+NON_PRODUCT = ("docs/*", "*.md", ".agents/*", ".claude/*", "apm.yml", "apm.lock.yaml")
+# the policy the selection reads: a change to it is a build input, since the base's rule can't judge its own edit
+SELECTION_FILES = (str(POLICY), str(LOOP))
+
+
+def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """The narrowed gate's first cut, by gatekeeper.md's `select`: the changed `files` that are build inputs, and the
+    `checks` commands the rest touch. A file is a build input when it matches `build_inputs`, is the selection's own
+    policy (SELECTION_FILES), or matches neither NON_PRODUCT nor a check's `paths`: a path whose effect on the build
+    is unclear tests. Without `select` every file is one, as before the setting."""
+    if "build_inputs" not in (
+        select or {}
+    ):  # no declaration: every file tests, as before the setting
+        return list(files), []
+    checks = select.get("checks", [])
+    inputs, commands = [], []
+    for path in files:
+        hit = [
+            check["command"]
+            for check in checks
+            if any(fnmatch.fnmatch(path, g) for g in check["paths"])
+        ]
+        if (
+            path in SELECTION_FILES
+            or any(fnmatch.fnmatch(path, glob) for glob in select["build_inputs"])
+            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in NON_PRODUCT))
+        ):
+            inputs.append(path)
+        commands += [command for command in hit if command not in commands]
+    return inputs, commands
+
+
+def changed_since(base: str, head: str | None = None) -> list[str] | None:
+    """The files `head` (else the checkout's HEAD) changes since `base` (a moved file both names), None when git
+    can't tell: a diff git can't list, or, for the checkout, uncommitted or untracked changes, which no commit holds."""
+    if head is None and checkout_state()[1]:
+        return None
+    try:
+        found = git("diff", "--name-only", "--no-renames", "-z", f"{base}...{head or 'HEAD'}")
+    except subprocess.CalledProcessError:
+        return None
+    return found.split("\0")[:-1]
+
+
+def selected(base: str, head: str | None = None) -> tuple[list[str], list[str]] | None:
+    """classify() of the change from `base` to `head` (else the checkout, changed_since) by gatekeeper.md's `select`:
+    (its build inputs, the checks the rest touch); None without `select.build_inputs`, under a policy that can't be
+    read, or when git can't list the change, since the `Affected tests:` command then tests everything it would have."""
+    select = None
+    with contextlib.suppress(Refused):
+        select = settings(project()[1]).get("select")
+    if not select or "build_inputs" not in select:
+        return None
+    files = changed_since(base, head)
+    return None if files is None else classify(files, select)
+
+
+def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
+    """affected-tests' cut by `select` (selected): None when the change since `base` holds a build input, or the cut
+    can't tell, so the `Affected tests:` command runs; else the exit of the `checks` the change touches, each run in
+    turn under the gate slot, the first that fails ending the run, 0 when none applies."""
+    if (cut := selected(base)) is None:
+        return None
+    inputs, commands = cut
+    if inputs:
+        print(
+            f"affected-tests: build input {inputs[0]}: the `Affected tests:` command runs",
+            file=sys.stderr,
+        )
+        return None
+    if not commands:
+        print(
+            "affected-tests: no build input changed and no check applies: nothing to run",
+            file=sys.stderr,
+        )
+        return 0
+    for command in commands:
+        _, words, sets = command_line(command, "select.checks")
+        print(
+            f"affected-tests: no build input changed: {shlex.join(words)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        try:
+            with heavy_slot("affected-tests") as (slot, _):
+                code = run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+        except OSError as exc:
+            raise Refused(f"`{words[0]}` can't run: {exc}") from None
+        if code:
+            return code
+    return 0
+
+
 def affected_tests(given: str | None = None, record: bool = False, text: str | None = None) -> int:
     """`affected-tests [--base <rev>]`: the worker's test run on a head, from loop.md's line `Affected tests:
     <command>` (the command selects and runs the tests a change affects against the base it reads from the variable
@@ -9558,7 +9860,9 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     the nightly runs (#1872): a loop.md without the line names no selector, and a `<rev>` git can't resolve names no
     base. Only the opt-out `Gate: full` (narrowing), the project's own choice, runs `mise run check`, with the
     variable unset. Either runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit
-    passes through: a selector that selects nothing exits 0 itself. gate_env clears the variable from `land`'s and
+    passes through: a selector that selects nothing exits 0 itself. A run still going at the policy's `timeouts.run`
+    (60 minutes by default) is stopped, with its process group, and exits TIMED_OUT (124) with one line naming the
+    budget and the selection's size (over_budget): a timeout, never a test's failure. gate_env clears the variable from `land`'s and
     `local-ci`'s environment, apart from a head proof's own `env` names: they set it themselves in narrowed mode
     (narrowed_gate).
 
@@ -9604,17 +9908,62 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
             with narrowed_to(base):
                 return local_ci(None, None, False, None)
     if written is not None and base is not None:
+        if (code := non_product_run(base, root, env)) is not None:
+            return code
         _, words, sets = command_line(written, "Affected tests")
         sets = {
             name: value for name, value in sets.items() if name != variable
         }  # the base is the run's, not the line's
         env[variable] = base
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
+    budget = run_budget()
     try:
         with heavy_slot("affected-tests") as (slot, _):
-            return run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+            code, spent = run_heavy(
+                words, env=env | sets | {SLOT_HELD: slot}, budget=budget, cwd=root
+            )
     except OSError as exc:
         raise Refused(f"`{words[0]}` can't run: {exc}") from None
+    if spent is SPENT:
+        print(over_budget(budget, root, base if written is not None else None), file=sys.stderr)
+    return code
+
+
+def run_budget() -> int:
+    """`timeouts.run` in seconds for a selection run: the default where the policy can't be read, with one line saying
+    so, since `affected-tests` ran before it read any policy and a project without the block must keep running it."""
+    try:
+        return timeouts(project()[1])["run"]
+    except Refused as refusal:
+        fallback = timeouts(None)["run"]
+        print(
+            f"affected-tests: the policy can't be read ({refusal}), so the run's budget is the default"
+            f" {said_span(fallback)}",
+            file=sys.stderr,
+        )
+        return fallback
+
+
+def over_budget(budget: int, root: Path, base: str | None) -> str:
+    """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
+    knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
+    count of files the change touches against `base`, the selector's input), and that it ran unsharded, since no
+    `select.shards` splits a selection yet (#2229)."""
+    if base is None:
+        size = "the whole suite (`Gate: full`)"
+    else:
+        try:
+            count = str(len(git("-C", str(root), "diff", "--name-only", base, "HEAD").split()))
+        except subprocess.CalledProcessError:
+            count = "an unknown number of"
+        size = (
+            f"a selection of unknown size ({count} changed file{'' if count == '1' else 's'} against"
+            f" {base[:12]})"
+        )
+    return (
+        f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running {size}, unsharded (no"
+        f" `select.shards`): a timeout, not a test failure; raise `timeouts.run` in gatekeeper.md or narrow the run"
+    )
 
 
 def shard_count() -> int:
@@ -9837,7 +10186,7 @@ def queue_recorded(head: str, point: str) -> tuple[bool, str]:
                 False,
                 "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
             )
-        if (words := tests_record_words(point)) is None:
+        if (words := tests_record_words(point, head)) is None:
             return False, "the gate has `gate_steps`, which never run the `Affected tests:` command"
         with contextlib.redirect_stdout(said):
             code = gate_record(head, words)
@@ -10001,6 +10350,8 @@ def did_not_run(why: str) -> None:
 def missing_task(text: str) -> str | None:
     """The task a `mise run <task>` selection in loop.md's `text` names that mise doesn't define here, else None: mise
     exits 1 for an unknown task, as a red test does, so after a red exit `mise tasks info` tells the two apart."""
+    # ponytail: only a `mise run` line is checked; another runner's missing task reads as red again, which R5's
+    # "a task the head lacks" covers too. Upgrade: ask that runner for its tasks (#2305).
     written = narrowing(text)
     words = command_line(written, "Affected tests")[1] if written else [*LOCAL_CI[:-1], "check"]
     if words[:2] != ["mise", "run"] or len(words) < 3:
@@ -10552,10 +10903,13 @@ def host_forbids(words: Sequence[str]) -> str | None:
     return forbidden(list(words))
 
 
-def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int, Any]:
+def run_heavy(
+    words: Sequence[str], env: Any = None, budget: float | None = None, **popen: Any
+) -> tuple[int, Any]:
     """Run one heavy step (a gate step, a `pre_land` check, a mutate.py test run, `heavy`) under the host's heavy
     wrapper (heavy_argv), with `popen` as Popen's other arguments: its exit code and what communicate() read from its
-    stdout (None unless piped). It runs in a session of its own, and on any exception or stop while it runs its whole
+    stdout (None unless piped). With `budget`, a step still running after that many seconds has its process group
+    killed and exits TIMED_OUT with SPENT for its output, a timeout and no test's failure. It runs in a session of its own, and on any exception or stop while it runs its whole
     process group is killed before the exception goes on, so neither the step nor what it started outlives a stopped
     run: a wrapper (systemd-run --scope) puts the step in a group of its own, which a stop of the caller's group would
     never reach. A wrapped step's environment carries HEAVY_WRAPPED."""
@@ -10571,7 +10925,13 @@ def run_heavy(words: Sequence[str], env: Any = None, **popen: Any) -> tuple[int,
         step = None
         try:
             step = subprocess.Popen([*prefix, *words], env=env, start_new_session=True, **popen)
-            output, _ = step.communicate()
+            try:
+                output, _ = step.communicate(timeout=budget)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(OSError):
+                    os.killpg(step.pid, signal.SIGKILL)
+                step.wait()
+                return TIMED_OUT, SPENT
         except BaseException:
             if step is not None:
                 with contextlib.suppress(OSError):
@@ -11190,6 +11550,13 @@ def queue_config(policy: str | None = None) -> str:
         root = toplevel()
         files = [root / path for path in (LOOP, POLICY)]
         policy = chosen(*(read(path) if path.exists() else None for path in files))
+    return mergify_rendered(policy)
+
+
+def mergify_rendered(policy: str | None) -> str:
+    """queue_config's render of the policy text `policy` (None: no policy, every default): the template with the
+    `land` batch keys, and its queue's `checks_timeout` set to `timeouts.run` (#2228), 1 hour as the template's with
+    nothing set, so with neither the file is the template byte for byte."""
     land = settings(policy).get("land") or {}
     text = MERGIFY_TEMPLATE.read_text()
     for key, value in (
@@ -11198,6 +11565,7 @@ def queue_config(policy: str | None = None) -> str:
             "batch_max_wait_time",
             None if "batch_wait_seconds" not in land else duration(land["batch_wait_seconds"]),
         ),
+        ("checks_timeout", said_span(timeouts(policy)["run"])),
     ):
         if value is not None:
             text, found = re.subn(
@@ -11974,7 +12342,7 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
         and not reusable(head, passed)
         and (base := merge_base_of(pull_status(pr)["baseRefName"], head)) is not None
     ):
-        with narrowed_to(base):
+        with narrowed_to(base, head):
             if narrowed_gate(passed) is not None:
                 return pr_local_ci(pr, run, want)
     if record := reusable(head, passed, why=why):
@@ -12275,6 +12643,12 @@ def main(argv: list[str]) -> int:
     recording_read = commands.add_parser("gate-record")
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
+    # every limit the policy's `timeouts` derive; --mergify renders .mergify.yml, --check refuses one out of step
+    timing = commands.add_parser("timeouts")
+    timing_how = timing.add_mutually_exclusive_group()
+    timing_how.add_argument("--mergify", action="store_true")
+    timing_how.add_argument("--check", action="store_true")
+    timing_how.add_argument("--json", action="store_true")
     wrapping = commands.add_parser("heavy")
     wrapping.add_argument("--plan", action="store_true")
     wrapping.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
@@ -12315,6 +12689,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return 0
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)
+    if args.command == "timeouts":  # the working tree's files only: no forge, no remote
+        return timeouts_verb(args.mergify, args.check, args.json)
     if args.command == "queue-select":
         return queue_select(args.base)
     if args.command == "heavy":  # a host's command, run in any directory: no repo or project needed

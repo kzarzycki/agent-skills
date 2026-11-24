@@ -171,6 +171,18 @@ def test_the_repo_file_is_the_rendered_template_and_the_head_check_catches_drift
     assert "approvals.py queue-config | cmp - .mergify.yml" in cheap
 
 
+def test_the_rendered_queue_timeout_follows_timeouts_run() -> None:
+    """#2228: `checks_timeout` is `timeouts.run`; this repo sets none, so it keeps the template's 1 hour."""
+    assert "timeouts" not in policy()
+    [rule] = config()["queue_rules"]
+    assert rule["checks_timeout"] == "1 hour"
+    policy_text = approvals.Policy(
+        "## Policy\n\n```yaml\nland:\n  queue: mergify\ntimeouts:\n  run: 4h\n```\n"
+    )
+    [rendered_rule] = yaml.safe_load(approvals.queue_config(policy_text))["queue_rules"]
+    assert rendered_rule["checks_timeout"] == "4 hours"
+
+
 def test_a_batch_merges_only_once_its_test_step_ran_its_selection() -> None:
     """R6's refusal (#2169, #2121): `queue-run`, the one merge condition beside `-conflict`, runs only on a batch
     branch after `qualify` and passes only on the output the step after the batch's test step sets once it passed."""
