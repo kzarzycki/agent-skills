@@ -758,7 +758,7 @@ proposes. Moving is a push (a commit, a force-push, the PR marked ready; a plain
 earlier than the head's first status or check run, or the sweep that first saw the head), a verifier report (`SATISFIED:`), a go (a
 green `owner` or `land` status) or a merge-queue step (`loop:queued` or `loop:dequeued` added or removed, a queue
 status or check run). A PR the merge queue holds (`loop:queued` on, and a queue check on its head still running or a
-queue status there pending) is waiting, not stalled, however long the queue takes (#2100). The line names each blocker it finds: a red required check (the base's ruleset; any red check
+queue status there pending) is waiting, not stalled, however long the queue takes (#2100). A PR carrying `loop:hold` is parked on purpose: it raises no stall, and the queue's drop of it is told to no lead and no manager, until the label comes off, when both resume as for any PR (#2316). The line names each blocker it finds: a red required check (the base's ruleset; any red check
 when unread), a conflict, a verdict on the head without a go (or a fix round asked with no push since), a card waiting
 (a loop event on the PR's branch at `needs-owner`, a verifier question newer than the push), else `none found on
 GitHub`: `o/r: PR #12 <title>: no push, verdict, go or queue step for 75m; blocker: a conflict with main: <url>`. It
