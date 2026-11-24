@@ -92,5 +92,7 @@ def test_loop_text_names_one_run_per_tree():
     assert "the worker's one affected-test run" in skill
     assert "says which record it found" in skill and "R1" in skill
     assert "the push hook's run is the run you report" in worker
-    assert "once, through `local-ci --record`" in worker
+    assert "run `approvals.py local-ci --record` once" in worker
+    # the record CI reads must be one the loop lets the worker make: no older line forbids it
+    assert "no `local-ci`" not in worker and "The worker's own session makes one on its final head" in skill
     assert "whose tree is the head's tree" in verifier and "run nothing again" in verifier

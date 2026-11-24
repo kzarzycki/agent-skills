@@ -38,9 +38,9 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    HEAD` (the base of the branch's open PR, else the default branch; a shallow clone is deepened) in the variable
    `Gate base:` names (else `GATE_BASE`), under the host gate slot; without the line, `mise run test:changed`. A
    selector that can't tell which tests a change touches runs nothing and says so: report that line as it is, and
-   never fall back to the whole suite. You run no gate of record, no full `mise run check` and no `local-ci`, with
-   `ci: false` too: no gate runs on the PR before it merges, and the nightly runs the full suite (SKILL.md, Merge
-   model). Lint runs at commit, in the hook's `lint:` tasks on the staged files.
+   never fall back to the whole suite. You run no full `mise run check`, and no gate of record but the one
+   `local-ci --record` on your final head (Report), with `ci: false` too: no other gate runs on the PR before it
+   merges, and the nightly runs the full suite (SKILL.md, Merge model). Lint runs at commit, in the hook's `lint:` tasks on the staged files.
    Write the e2e tests that prove the change works, in the PR, and name them in the report: the verifier proves
    the change with those tests and runs no suite of its own, so a behaviour no e2e test of yours reaches is one
    nothing runs before the merge. Where the project has no e2e tier, the acceptance checks of step 1 are those tests.
@@ -88,9 +88,11 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    That SHA is the whole provenance: a checksum manifest or digest exchange adds nothing a
    commit does not already pin. A fix that changes code a proof exercises reruns that proof
    before the report, which lists each proof log with the SHA it names.
-   Run the acceptance command on the head (SKILL.md, Acceptance checks) once, through `local-ci --record` (or
-   `--head-proof` for the PR's acceptance classes), into a log stamped
-   that way and hand it over as the spec's proof: its record, keyed by tree and command, is what the verifier and CI read, so neither runs it again on this tree. Just before the report, run `git status
+   On the final head, run `approvals.py local-ci --record` once (`--record --head-proof` where loop.md configures a
+   head proof, which covers the PR's acceptance classes): it runs the gate and pushes its pass as a record keyed by
+   tree and command, which a ready PR's CI and the verifier read, so neither runs it again on this tree (SKILL.md, A
+   check runs only if it can fail because of the change, R1). Run the acceptance command on the head (SKILL.md,
+   Acceptance checks) once, into a log stamped that way, and hand it over as the spec's proof. Just before the report, run `git status
    --porcelain` and commit or remove what it lists, and the report carries the line `git status
    --porcelain: empty`, since the verifier may review in that tree and an uncommitted check
    proves nothing on the head.
