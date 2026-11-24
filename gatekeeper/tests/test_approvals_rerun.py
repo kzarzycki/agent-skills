@@ -247,6 +247,16 @@ def test_reruns_lists_only_the_rerun_records_on_origin(
     ref = approvals.push_record(rerun)
     tip = git_in(repo["work"], "ls-remote", "origin", ref).split()[0]
     assert approvals.reruns(held) == [(ref, tip)]
+    # a branch named for this tree whose commit holds another, its message copied from the real record
+    other = git_in(repo["work"], "rev-parse", "HEAD~1^{tree}").strip()
+    message = git_in(repo["work"], "cat-file", "commit", tip).partition("\n\n")[2]
+    forged = git_in(
+        repo["work"], "commit-tree", other, "-p", head, "-m", message.rstrip("\n")
+    ).strip()
+    git_in(
+        repo["work"], "push", "-q", "origin", f"{forged}:refs/heads/loop-gate/{held}-222222222222"
+    )
+    assert approvals.reruns(held) == [(ref, tip)]
     assert approvals.reruns("0" * 40) == []
 
 
@@ -268,6 +278,13 @@ def test_pusher_reads_the_newest_push_and_whether_an_app_made_it(
     assert asked == [
         f"repos/{{owner}}/{{repo}}/activity?ref=refs%2Fheads%2Floop-gate%2F{TREE}-111111111111&per_page=1"
     ]
+    # a person's account, as a cloud worker's push shows, is no app
+    monkeypatch.setattr(
+        approvals.github,
+        "rest",
+        lambda _path: [{"after": RERUN_COMMIT, "actor": {"login": "worker", "type": "User"}}],
+    )
+    assert approvals.github.pusher(RERUN_REF)["app"] is False
     monkeypatch.setattr(approvals.github, "rest", lambda _path: [])
     assert approvals.github.pusher(RERUN_REF) is None
 
