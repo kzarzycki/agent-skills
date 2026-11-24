@@ -3,7 +3,8 @@
 # requires-python = ">=3.9"
 # dependencies = []
 # ///
-"""Nightly (engineering-loop): a red nightly opens one issue listing the merges that could have caused it.
+"""Nightly (engineering-loop): a red nightly opens one issue listing the merges that could have caused it, and
+`moved` says whether a run on the default branch has anything to run.
 
     uv run scripts/nightly.py red --last-green <sha> --red <sha> --run <url> [--repo <owner/name>] [--dry-run]
 
@@ -39,12 +40,15 @@ ancestor of the red one.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -341,6 +345,154 @@ def red(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- moved: does a run on the default branch have anything to run (R7, #2179, #2261) ---------------------------------
+# The docstring's `moved` section: `python3 scripts/nightly.py moved push|schedule`, stdlib only, which a consumer's job
+# runs with the job's token (`GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_API_URL`, `GITHUB_SHA`, `GITHUB_WORKFLOW_REF`;
+# `actions: read`), never local state or an authenticated gh. It writes `skip=true|false` to `GITHUB_OUTPUT` and, with
+# the run that did the work (`Skipped: ... <link>`), to the step summary and the log:
+#   push      skip when a successful run of the same workflow on the merge queue's batch branch tested a commit whose
+#             tree is the tree of `GITHUB_SHA`. The queue is the checkout's `docs/agents/gatekeeper.md` `land.queue`,
+#             read with the gatekeeper's own reader: `mergify` batches are draft PRs on `mergify/merge-queue/*` (a
+#             `pull_request` run), `github` batches are `gh-readonly-queue/*` refs (a `merge_group` run). Unset or
+#             unreadable, both are read: GitHub's queue is chosen by the base's rules, not by the policy, which an
+#             Actions token can't read, and a batch run of either queue that tested this tree tested it.
+#   schedule  skip when the newest successful scheduled run on the default branch ran `GITHUB_SHA` itself.
+# Any forge or API failure reads as "nothing found": the run goes ahead.
+BATCHES = {  # land.queue -> (the batch branches' prefix, the event of the run that tests them)
+    "mergify": ("mergify/merge-queue/", "pull_request"),
+    "github": ("gh-readonly-queue/", "merge_group"),
+}
+RUN_PAGES = 3
+FORGE_ERRORS = (OSError, KeyError, ValueError)  # network and HTTP errors, a missing token, bad JSON
+
+Api = Callable[[str], object]
+
+
+def forge(path: str) -> object:
+    request = urllib.request.Request(
+        os.environ.get("GITHUB_API_URL", "https://api.github.com") + path,
+        headers={
+            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def land_queue() -> tuple[str | None, str]:
+    """`land.queue` of the checkout's policy through the gatekeeper's reader, and the one line saying what it means:
+    None when it is unset or the reader can't run (no PyYAML, no policy file), which reads both queues' batches."""
+    try:
+        path = installed("gatekeeper") / "gatekeeper.py"
+        spec = importlib.util.spec_from_file_location("gatekeeper_policy", path)
+        module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        queue = (module.settings(module.project()[1]).get("land") or {}).get("queue")
+    except (Exception, SystemExit) as error:  # noqa: BLE001 - a policy the reader refuses, or no PyYAML: read both
+        reason = str(error).splitlines()[0] if str(error) else type(error).__name__
+        return None, f"land.queue unreadable ({reason}): batch branches of both queues read"
+    if queue in BATCHES:
+        return queue, f"land.queue is {queue}: batch branches {BATCHES[queue][0]}*"
+    return None, f"land.queue is {queue or 'unset'}: batch branches of both queues read"
+
+
+def batch_kinds(queue: str | None) -> list[tuple[str, str]]:
+    return [BATCHES[queue]] if queue in BATCHES else list(BATCHES.values())
+
+
+def workflow_runs(api: Api, repo: str, workflow: str, query: str) -> list[dict]:
+    found: list[dict] = []
+    for page in range(1, RUN_PAGES + 1):
+        items = api(  # type: ignore[index]
+            f"/repos/{repo}/actions/workflows/{workflow}/runs?{query}&per_page={PAGE}&page={page}"
+        )["workflow_runs"]
+        found += items
+        if len(items) < PAGE:
+            break
+    return found
+
+
+def tree_of(api: Api, repo: str, sha: str) -> str:
+    return api(f"/repos/{repo}/git/commits/{sha}")["tree"]["sha"]  # type: ignore[index]
+
+
+def tested_by_batch(api: Api, repo: str, workflow: str, sha: str, queue: str | None) -> dict | None:
+    """The successful batch run that tested the tree of `sha`, else None."""
+    tree = tree_of(api, repo, sha)
+    for prefix, event in batch_kinds(queue):
+        for item in workflow_runs(api, repo, workflow, f"event={event}&status=success"):
+            if not str(item.get("head_branch", "")).startswith(prefix):
+                continue
+            try:
+                if tree_of(api, repo, item["head_sha"]) == tree:
+                    return item
+            except (
+                FORGE_ERRORS
+            ) as error:  # a batch commit the forge no longer holds tested nothing we can read
+                print(
+                    f"nightly: batch commit {item['head_sha']} unreadable ({error})",
+                    file=sys.stderr,
+                )
+    return None
+
+
+def last_green_is(api: Api, repo: str, workflow: str, branch: str, sha: str) -> dict | None:
+    """The newest successful scheduled run on `branch`, when it ran `sha`, else None."""
+    found = api(  # type: ignore[index]
+        f"/repos/{repo}/actions/workflows/{workflow}/runs?event=schedule&branch={branch}&status=success&per_page=1"
+    )["workflow_runs"]
+    return found[0] if found and found[0]["head_sha"] == sha else None
+
+
+def moved_report(mode: str, found: dict | None, note: str = "") -> None:
+    skip = found is not None
+    if mode == "push":
+        line = (
+            "Skipped: this tree was tested by the merge queue's batch run "
+            if skip
+            else "Running: no batch run tested this tree."
+        )
+    else:
+        line = (
+            "Skipped: the default branch's head is the commit of the last green scheduled run "
+            if skip
+            else "Running: the default branch moved since the last green."
+        )
+    if skip:
+        line += found["html_url"]  # type: ignore[index]
+    if note:
+        line += f" ({note})"
+    print(line)
+    for name, text in (
+        ("GITHUB_OUTPUT", f"skip={'true' if skip else 'false'}"),
+        ("GITHUB_STEP_SUMMARY", line),
+    ):
+        if os.environ.get(name):
+            with open(os.environ[name], "a") as handle:
+                handle.write(text + "\n")
+
+
+def moved(args: argparse.Namespace, api: Api = forge) -> int:
+    repo, sha = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"]
+    workflow = (
+        os.environ.get("GITHUB_WORKFLOW_REF", "").split("@")[0].rsplit("/", 1)[-1]
+        or "engineering-ci.yml"
+    )
+    queue, note = land_queue() if args.mode == "push" else (None, "")
+    try:
+        found = (
+            tested_by_batch(api, repo, workflow, sha, queue)
+            if args.mode == "push"
+            else last_green_is(api, repo, workflow, "main", sha)
+        )
+    except FORGE_ERRORS as error:
+        print(f"nightly: forge read failed ({error}); running as usual", file=sys.stderr)
+        found = None
+    moved_report(args.mode, found, note)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Nightly: open or extend the issue of a red nightly."
@@ -358,9 +510,14 @@ def main(argv: list[str] | None = None) -> int:
         "--repo", help="owner/name; default GITHUB_REPOSITORY, else the origin remote"
     )
     verb.add_argument("--dry-run", action="store_true", help="print the body, post nothing")
+    skipping = verbs.add_parser(
+        "moved",
+        help="skip=true|false to GITHUB_OUTPUT: has a push or scheduled run anything to run",
+    )
+    skipping.add_argument("mode", choices=("push", "schedule"))
     args = parser.parse_args(argv)
     try:
-        return red(args)
+        return moved(args) if args.verb == "moved" else red(args)
     except Usage as exc:
         print(f"nightly: {exc}", file=sys.stderr)
         return 2
