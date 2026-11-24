@@ -10130,6 +10130,7 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
     og.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
     monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")
     omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
+    assert "OMNIGENT_PERMISSION_MODE=bypassPermissions is not applied" in capsys.readouterr().err
     omnigent_agent.start(
         og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
     )
@@ -10139,7 +10140,7 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
     )  # the variable alone never sets a cloud mode
     omnigent_agent.start(og, "claude-cloud", "t3", "do X", tmp_path / "r.md", None, 0)
     assert "OMNIGENT_PERMISSION_MODE=plan is not applied" in capsys.readouterr().err
-    assert og.modes["s2"] == "bypassPermissions"
+    assert og.modes["s2"] is None
     calls = _agent_server(monkeypatch, {"/v1/projects": {"data": []}, "/v1/sessions": {"id": "s1"}})
     harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS, "custom": "acp:other"}
     monkeypatch.setattr(
@@ -10158,18 +10159,18 @@ def test_a_claude_cloud_start_sends_the_permission_mode_in_the_create_body_and_w
     for agent, mode in (("claude-cloud", None), ("claude-cloud", "plan"), ("custom", "auto")):
         body = sent(agent, mode)
         assert "permission_mode" not in body and "terminal_launch_args" not in body
-    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")  # the env gives it too
-    assert sent("claude-cloud", None)["permission_mode"] == "bypassPermissions"
+    monkeypatch.setenv("OMNIGENT_PERMISSION_MODE", "bypassPermissions")  # the env never gives it
+    assert "permission_mode" not in sent("claude-cloud", None)
 
 
-def test_a_claude_cloud_start_defaults_to_bypass_permissions_unless_told_otherwise(
+def test_a_claude_cloud_start_sends_no_permission_mode_unless_told(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("OMNIGENT_PERMISSION_MODE", raising=False)
     og = FakeOmnigent()
     og.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
     omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
-    assert og.modes["s0"] == "bypassPermissions"
+    assert og.modes["s0"] is None
     omnigent_agent.start(
         og, "claude-cloud", "t2", "do X", tmp_path / "r.md", None, 0, permission_mode="auto"
     )
@@ -13536,8 +13537,8 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
     # Another harness's child never inherits: Codex takes no mode, claude-cloud and agy keep
     # their own opt-in.
     assert child("codex", bypass) == (None, "")
-    mode, err = child("claude-cloud", bypass)  # its own default, bypass, not the starter's
-    assert mode == "bypassPermissions" and "inherited" not in err and "not applied" not in err
+    mode, err = child("claude-cloud", bypass)  # sends none, not the starter's
+    assert mode is None and "inherited" not in err and "not applied" not in err
     with pytest.raises(omnigent_agent.Fail, match="a --role child blocks unattended"):
         Starter.launch = bypass
         omnigent_agent.start(og, "agy", "t-agy", "x", tmp_path / "r.md", "worker.md", 0)
