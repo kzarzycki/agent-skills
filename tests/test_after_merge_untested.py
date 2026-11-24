@@ -150,3 +150,88 @@ def test_push_asks_only_for_successful_runs_and_reads_the_next_page():
 
     assert tested_tree.tested_by_batch(api, "o/r", "ci.yml", MAIN)["id"] == 7
     assert all("status=success" in p for p in asked if "/runs?" in p)
+
+
+TAG_WORKFLOW = REPOSITORY / ".github" / "workflows" / "engineering-tag-check.yml"
+
+
+def test_tag_skips_when_a_green_nightly_ran_the_tagged_commit():
+    """#2264: the tag check's `test` and `test-slow` are the nightly's, so a green nightly on the tagged commit
+    already passed them; an older nightly counts too, since the commit, not main's head, is what was tagged."""
+    asked: list[str] = []
+
+    def api(path: str):
+        asked.append(path)
+        return runs(run("main", MAIN, 5, "schedule"))
+
+    found = tested_tree.nightly_ran(api, "o/r", "engineering-ci.yml", MAIN)
+    assert found and found["html_url"] == "https://example.test/runs/5"
+    query = f"?event=schedule&status=success&head_sha={MAIN}&per_page=1"
+    assert asked == ["/repos/o/r/actions/workflows/engineering-ci.yml/runs" + query]
+
+
+def test_tag_runs_when_no_green_nightly_ran_the_tagged_commit():
+    none = Forge({"/repos/o/r/actions/workflows/engineering-ci.yml/runs": runs()})
+    assert tested_tree.nightly_ran(none, "o/r", "engineering-ci.yml", MAIN) is None
+    # a forge that ignored the head_sha filter returns another commit's run, which proves nothing
+    other = Forge(
+        {
+            "/repos/o/r/actions/workflows/engineering-ci.yml/runs": runs(
+                run("main", OTHER, 5, "schedule")
+            )
+        }
+    )
+    assert tested_tree.nightly_ran(other, "o/r", "engineering-ci.yml", MAIN) is None
+
+
+def test_tag_mode_reads_the_nightly_and_a_forge_failure_runs_the_suite(tmp_path, monkeypatch):
+    """In the tag check GITHUB_WORKFLOW_REF names the tag workflow, so `tag` must ask for the nightly's runs by
+    name; a forge it can't read writes skip=false."""
+    out = tmp_path / "out"
+    for name, value in {
+        "GITHUB_OUTPUT": str(out),
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_SHA": MAIN,
+        "GITHUB_WORKFLOW_REF": "o/r/.github/workflows/engineering-tag-check.yml@refs/tags/engineering-v1",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    asked: list[str] = []
+
+    def api(path: str):
+        asked.append(path)
+        return runs(run("main", MAIN, 5, "schedule"))
+
+    monkeypatch.setattr(tested_tree, "github", api)
+    assert tested_tree.main(["tag"]) == 0
+    assert out.read_text().strip() == "skip=true"
+    assert all("/workflows/engineering-ci.yml/" in path for path in asked)
+
+    def down(path: str):
+        raise OSError("forge down")
+
+    monkeypatch.setattr(tested_tree, "github", down)
+    out.write_text("")
+    assert tested_tree.main(["tag"]) == 0
+    assert out.read_text().strip() == "skip=false"
+
+
+def test_tag_workflow_skips_only_the_nightlys_suites():
+    """The release check, the vendor check and the package gate run on every tag, since the nightly runs none of
+    them; `test` and `test-slow` skip on `skip=true`; the forge read gets `actions: read` in `qualify` alone."""
+    doc = yaml.safe_load(TAG_WORKFLOW.read_text())
+    qualify = doc["jobs"]["qualify"]
+    assert qualify["permissions"] == {"contents": "read", "actions": "read"}
+    assert doc["permissions"] == {"contents": "read"}, "consumer-sync keeps its permissions"
+    assert "if" not in qualify
+    order = [s.get("id") or s.get("run", "").strip() for s in qualify["steps"] if "run" in s]
+    assert order.index("tested") < order.index("mise install")
+    lookup = next(s for s in qualify["steps"] if s.get("id") == "tested")
+    assert lookup["run"] == "python3 tools/tested_tree.py tag"
+    assert lookup["env"] == {"GITHUB_TOKEN": "${{ github.token }}"}
+    guarded = {
+        s["run"].strip()
+        for s in qualify["steps"]
+        if s.get("if") == "steps.tested.outputs.skip != 'true'"
+    }
+    assert guarded == {"mise run test", "mise run test-slow"}

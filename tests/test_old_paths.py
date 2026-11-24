@@ -65,3 +65,15 @@ def test_an_old_doc_path_reads_the_moved_file(doc: str, moved: str) -> None:
 def test_the_old_loop_folder_ships_no_second_skill() -> None:
     """A SKILL.md there would make the engineering plugin ship an `engineering-loop` skill beside the loop package's."""
     assert not (SKILLS / "engineering-loop" / "SKILL.md").exists()
+
+
+def test_the_project_docs_name_the_loop_at_its_current_path() -> None:
+    """docs/agents/ points at `loop/skills/engineering-loop/` (#2257): the old path is a copy kept only for starts
+    that still name it, and #2232 removes it."""
+    stale = [
+        f"{doc.relative_to(REPOSITORY)}:{number}"
+        for doc in sorted((REPOSITORY / "docs" / "agents").glob("*.md"))
+        for number, line in enumerate(doc.read_text().splitlines(), 1)
+        if "engineering/skills/engineering-loop/" in line
+    ]
+    assert not stale, f"old engineering-loop path in {stale}; name loop/skills/engineering-loop/"
