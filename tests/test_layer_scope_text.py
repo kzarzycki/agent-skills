@@ -24,6 +24,7 @@ def test_instructions_pass_runs_the_layers_checks_not_the_product_suite() -> Non
 
 
 def test_ci_line_is_r1s_and_the_rule_section_holds_r2() -> None:
+    """A regression pin for R1's CI line and R2's rule text; it passes on main too."""
     text = flat("SKILL.md")
     assert f"{RULE}, R1" in text
     assert "runs no product suite; it runs the checks of the layer it touches" in text
