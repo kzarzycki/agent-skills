@@ -1098,6 +1098,16 @@ CLOUD_CHECK_IN = (
     " woke already wrote it, since the host never saw that turn (a report already posted as a PR"
     " comment: reply with its link). If it is still going, end your turn again naming its task id."
 )
+# The line the claude-cloud bridge opens each turn's output with; when the turn's first output is its
+# reply, the two share one message (#959), so the reply's marker is not its first line.
+BRIDGE_LINE = re.compile(r"\s*cloud session: https://claude\.ai/code/session_\S+\s*")
+
+
+def unprefixed(text: str) -> str:
+    """``text`` stripped, without the bridge's opening ``cloud session: <url>`` line."""
+    return text[m.end() :].strip() if (m := BRIDGE_LINE.match(text)) else text.strip()
+
+
 # A lead's cloud report opens with the ending line LEAD_PREAMBLE names.
 CLOUD_LEAD_ENDING = re.compile(r"[\s*_#>-]*(DONE|USER NEEDED|STILL WORKING|PARKED):")
 
@@ -1226,7 +1236,7 @@ def cloud_reply(items: list[dict], verdict: bool = False) -> tuple[str, str] | N
     last = last_message(items)
     if not last or last.get("role") != "assistant":
         return None
-    text = text_of(last).strip()
+    text = unprefixed(text_of(last))
     first, _, rest = text.partition("\n")
     if CLOUD_LEAD_ENDING.match(first):
         return None if verdict and not VERDICT.search(text) else ("report", text + "\n")
@@ -2534,7 +2544,7 @@ def on_own_run(items: list[dict]) -> bool:
     own ``pending_runs``: no report yet, though ``cloud_reply`` reads a lead's ending line as one,
     since the run's result is still to come (#959)."""
     said = last_said(items)
-    first = said.strip().partition("\n")[0]
+    first = unprefixed(said).partition("\n")[0]
     return bool(
         (m := CLOUD_LEAD_ENDING.match(first))
         and m[1] == "STILL WORKING"

@@ -175,3 +175,17 @@ def test_a_lead_s_still_working_on_another_session_is_still_its_report(tmp_path:
     report = tmp_path / "r.md"
     assert omnigent_agent.wait(og, started(og, report), report) == str(report)
     assert report.read_text() == ending + "\n" and og.got[1:] == []
+
+
+def test_a_report_sharing_the_bridge_s_opening_message_is_taken(tmp_path: Path) -> None:
+    """The bridge opens a turn with ``cloud session: <url>``; a reply that is the turn's first output shares its message."""
+    bridge = "cloud session: https://claude.ai/code/session_013ycVZR1fUWbbh7wt1VWhs8\n\n"
+    og = Scripted(
+        [
+            launch("b72l6dhdy") + says(bridge + "STILL WORKING: waiting on b72l6dhdy"),
+            says(bridge + "REPORT\nEXIT: 0"),
+        ]
+    )
+    report = tmp_path / "r.md"
+    assert omnigent_agent.wait(og, started(og, report), report) == str(report)
+    assert report.read_text() == "EXIT: 0\n" and len(og.got) == 2
