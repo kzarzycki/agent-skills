@@ -8669,7 +8669,11 @@ def queue_step(
         print(f"{where} conflicts with {base}: merge `origin/{base}` in")
         conflict_note(pull, base)
         return 1, False
-    if removals and timed_out_removal(removals[-1], required) and timeouts_at_head(removals, required) >= 2:
+    if (
+        removals
+        and timed_out_removal(removals[-1], required)
+        and timeouts_at_head(removals, required) >= 2
+    ):
         # the second timeout of this head: the same suite would time out again, each round a full run (#2308)
         print(timeout_stop_line(where, head, timeouts(loop)["run"]))
         return WAITING, False
