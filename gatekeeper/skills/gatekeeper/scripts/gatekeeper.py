@@ -922,7 +922,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "stalled_after_hours": int,
     },
     "mutate": {"inconclusive_exit": int},
-    # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
     "spec": {"auto": SPEC_KINDS},
     "practice": dict.fromkeys(STAGES, str),
     "risk": {
@@ -968,7 +967,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "select": Table(
         build_inputs=list,
         checks=Rows(paths=list, command=str, unique=("command",)),
-        unkeyed=list,  # the gate_steps that always run, keyed on no paths (#2183)
+        # the checks whose pass is never reused (#2183): each a gate step's name or command, or `gate`'s command
+        unkeyed=list,
         optional=("build_inputs", "checks", "unkeyed"),
     ),
     # the break-glass land's proof windows (breakglass_settings); every key is optional
@@ -9320,6 +9320,10 @@ NARROWED = " (narrowed)"
 NARROW_BASE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "NARROW_BASE", default=None
 )
+# the head a narrowed gate is of, set by narrowed_to: a PR's head read from any checkout; None is the checkout itself
+NARROW_HEAD: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "NARROW_HEAD", default=None
+)
 
 
 def loop_md() -> str:
@@ -9342,12 +9346,14 @@ def narrowing(text: str | None = None) -> str | None:
 
 
 @contextlib.contextmanager
-def narrowed_to(base: str | None) -> Any:
-    """Within the block, gate() and gate_plan() are the narrowed gate against `base` (narrowed_gate); None: full."""
-    token = NARROW_BASE.set(base)
+def narrowed_to(base: str | None, head: str | None = None) -> Any:
+    """Within the block, gate() and gate_plan() are the narrowed gate against `base` (narrowed_gate); None: full.
+    `head` is the commit the gate is of, when it is not the checkout (a PR's head, from a checkout anywhere)."""
+    token, head_token = NARROW_BASE.set(base), NARROW_HEAD.set(head)
     try:
         yield
     finally:
+        NARROW_HEAD.reset(head_token)
         NARROW_BASE.reset(token)
 
 
@@ -9367,7 +9373,7 @@ def narrowed_gate(
     if (written := narrowing()) is None:
         return None
     variable = gate_base_variable()
-    if (cut := selected(base)) is not None and not cut[0]:
+    if (cut := selected(base, NARROW_HEAD.get())) is not None and not cut[0]:
         # no build input changed (select): the run is affected-tests' own cut, keyed by the checks it runs
         said = shlex.join(["select.checks:", *cut[1]] if cut[1] else ["select.checks:", "none"])
         words = [
@@ -9449,23 +9455,28 @@ def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[
     return inputs, commands
 
 
-def changed_since(base: str) -> list[str] | None:
-    """The files HEAD changes since `base` (a moved file both names), None when git can't tell."""
+def changed_since(base: str, head: str | None = None) -> list[str] | None:
+    """The files `head` (else the checkout's HEAD) changes since `base` (a moved file both names), None when git
+    can't tell: a diff git can't list, or, for the checkout, uncommitted or untracked changes, which no commit holds."""
+    if head is None and checkout_state()[1]:
+        return None
     try:
-        found = git("diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD")
+        found = git("diff", "--name-only", "--no-renames", "-z", f"{base}...{head or 'HEAD'}")
     except subprocess.CalledProcessError:
         return None
     return found.split("\0")[:-1]
 
 
-def selected(base: str) -> tuple[list[str], list[str]] | None:
-    """classify() of the change since `base` by gatekeeper.md's `select`: (its build inputs, the checks the rest
-    touch); None without `select`, under a policy that can't be read, or when git can't list the change, since the
-    `Affected tests:` command then tests everything it would have."""
+def selected(base: str, head: str | None = None) -> tuple[list[str], list[str]] | None:
+    """classify() of the change from `base` to `head` (else the checkout, changed_since) by gatekeeper.md's `select`:
+    (its build inputs, the checks the rest touch); None without `select.build_inputs`, under a policy that can't be
+    read, or when git can't list the change, since the `Affected tests:` command then tests everything it would have."""
     select = None
     with contextlib.suppress(Refused):
         select = settings(project()[1]).get("select")
-    files = changed_since(base) if select else None
+    if not select or "build_inputs" not in select:
+        return None
+    files = changed_since(base, head)
     return None if files is None else classify(files, select)
 
 
@@ -11387,7 +11398,7 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
         and not reusable(head, passed)
         and (base := merge_base_of(pull_status(pr)["baseRefName"], head)) is not None
     ):
-        with narrowed_to(base):
+        with narrowed_to(base, head):
             if narrowed_gate(passed) is not None:
                 return pr_local_ci(pr, run, want)
     if record := reusable(head, passed, why=why):

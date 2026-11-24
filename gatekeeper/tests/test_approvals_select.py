@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -167,6 +168,44 @@ def test_classify_names_inputs_and_dedupes_checks() -> None:
     assert approvals.classify(["docs/x.md"], {}) == (["docs/x.md"], [])
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/guide.md",
+        "docs/diagram.png",  # docs/* alone
+        "README.md",
+        "pkg/README.md",  # *.md alone
+        ".agents/skills/x/a.py",  # .agents/* alone
+        ".claude/settings.json",  # .claude/* alone
+        "apm.yml",
+        "apm.lock.yaml",
+    ],
+)
+def test_each_non_product_entry_is_no_build_input_without_checks(path: str) -> None:
+    """A project that declares no `checks`: each NON_PRODUCT entry still makes its path non-product (a pack bump)."""
+    assert approvals.classify([path], {"build_inputs": ["src/*"]}) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["mise.toml", "uv.lock", "tools/affected_tests.py", "src/README.md", "apm.yml.bak"],
+)
+def test_a_path_in_neither_list_or_a_build_input_tests(path: str) -> None:
+    assert approvals.classify([path], {"build_inputs": ["src/*"]}) == ([path], [])
+
+
+def test_two_checks_sharing_a_command_are_refused() -> None:
+    """One command per `checks` row: a second row with the same command is refused, so the policy says it once."""
+    policy = approvals.Policy(
+        gatekeeper_md(
+            "select:\n  build_inputs: [src/*]\n  checks:\n    - paths: [apm.yml]\n      command: sync\n"
+            "    - paths: [.claude/*]\n      command: sync\n"
+        )
+    )
+    with pytest.raises(approvals.Refused, match="names the command 'sync' twice"):
+        approvals.settings(policy)
+
+
 def test_select_without_build_inputs_cuts_nothing_and_keeps_unkeyed() -> None:
     """`select.unkeyed` (#2183) shares the section: without `build_inputs` every file is a build input, as before."""
     policy = approvals.Policy(gatekeeper_md("select:\n  unkeyed: [lint]\n"))
@@ -218,6 +257,173 @@ def test_the_narrowed_gate_of_a_build_input_runs_the_selector(worker: dict[str, 
         assert "select.checks" not in approvals.narrowed_gate()[0]
     assert approvals.main(["local-ci", "--record", "--base", base]) == 0
     assert worker["ran"]() == ["selector"]
+
+
+def test_a_moved_build_input_still_tests(worker: dict[str, Any]) -> None:
+    """`git mv src/app.py docs/app.md`: the old name is a build input, though the new one is prose (--no-renames)."""
+    worker["start"](SELECT)
+    git_in(Path.cwd(), "mv", "src/app.py", "docs/app.md")
+    git_in(Path.cwd(), "commit", "-qm", "move")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_a_diff_git_cannot_list_runs_the_selector(worker: dict[str, Any]) -> None:
+    """A base with no merge base with HEAD: `git diff <base>...HEAD` fails, so the cut can't tell."""
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    orphan = subprocess.run(
+        ["git", "commit-tree", "HEAD^{tree}", "-m", "orphan"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert approvals.changed_since(orphan) is None
+    assert approvals.main(["affected-tests", "--base", orphan]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+# uncommitted work: the cut can't tell what the run is on, so the `Affected tests:` command runs
+
+
+def test_an_uncommitted_build_input_on_a_docs_head_runs_the_selector(
+    worker: dict[str, Any],
+) -> None:
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_an_uncommitted_build_input_before_the_first_commit_runs_the_selector(
+    worker: dict[str, Any],
+) -> None:
+    worker["start"](SELECT)
+    (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_an_untracked_build_input_runs_the_selector(worker: dict[str, Any]) -> None:
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    (Path.cwd() / "src" / "new.py").write_text("value = 3\n")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_without_select_uncommitted_work_runs_the_selector(worker: dict[str, Any]) -> None:
+    worker["start"](None)
+    (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_a_dirty_narrowed_record_runs_the_selector_and_records_nothing(
+    worker: dict[str, Any], capsys: Any
+) -> None:
+    """local-ci on a checkout with changes "runs the check and records nothing" (local_ci's docstring)."""
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
+    assert approvals.main(["local-ci", "--record", "--base", base_of_work()]) == 0
+    assert worker["ran"]() == ["selector"]
+    out = capsys.readouterr().out
+    assert "nothing is recorded" in out and "select.checks" not in out
+
+
+# `select` without `build_inputs` cuts nothing, on any diff
+
+
+def test_select_with_only_unkeyed_runs_the_selector_on_an_empty_diff(
+    worker: dict[str, Any],
+) -> None:
+    """HEAD is the base here, so the diff is empty."""
+    worker["start"]("select:\n  unkeyed: [lint]\n")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_select_with_only_unkeyed_and_uncommitted_work_runs_the_selector(
+    worker: dict[str, Any],
+) -> None:
+    worker["start"]("select:\n  unkeyed: [lint]\n")
+    (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_without_select_an_empty_diff_runs_the_selector(worker: dict[str, Any]) -> None:
+    worker["start"](None)
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+# `local-ci <pr>` from a checkout not on the PR's head: the cut is of the PR's head, not the checkout's
+
+NO_CI = "loop:\n  ci: false\n"
+
+
+def as_pr(monkeypatch: pytest.MonkeyPatch, head: str) -> list[str]:
+    """`local-ci 7` against a stand-in GitHub: the PR's head and base, and the comments it posts."""
+    monkeypatch.setattr(approvals, "leads_its_session", lambda: True)
+    monkeypatch.setattr(approvals, "settled_head", lambda pr, want: head)
+    monkeypatch.setattr(approvals, "pull_status", lambda pr: {"baseRefName": "main"})
+    monkeypatch.setattr(approvals, "base_branch", lambda pr: "main")
+    posted: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda pr, body: posted.append(body))
+    return posted
+
+
+def head_of() -> str:
+    return git_in(Path.cwd(), "rev-parse", "HEAD").strip()
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [None, SELECT, "select:\n  unkeyed: [lint]\n"],
+    ids=["without-select", "select", "unkeyed-only"],
+)
+def test_a_build_input_prs_recorded_pass_posts_from_main(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch, policy: str | None
+) -> None:
+    worker["start"]((policy or "") + NO_CI)
+    worker["commit"]("src/app.py")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert worker["ran"]() == ["selector"]
+    posted = as_pr(monkeypatch, head_of())
+    git_in(Path.cwd(), "checkout", "-q", "main")
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert "(narrowed)" in posted[0] and "select.checks" not in posted[0]
+    assert worker["ran"]() == ["selector"]
+
+
+def test_a_docs_prs_recorded_pass_posts_from_a_checkout_on_a_code_branch(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker["start"](SELECT + NO_CI)
+    worker["commit"]("docs/guide.md")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert worker["ran"]() == []
+    posted = as_pr(monkeypatch, head_of())
+    git_in(Path.cwd(), "checkout", "-q", "-b", "other", "main")
+    worker["commit"]("src/app.py")
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert "select.checks: none" in posted[0]
+    assert worker["ran"]() == []
+
+
+def test_on_the_prs_head_a_docs_prs_recorded_pass_posts(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker["start"](SELECT + NO_CI)
+    worker["commit"]("docs/guide.md")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    posted = as_pr(monkeypatch, head_of())
+    assert approvals.main(["local-ci", "7"]) == 0
+    assert "select.checks: none" in posted[0]
+    assert worker["ran"]() == []
 
 
 # --- #2217: the narrowest set affected-tests can name, with no `Affected tests:` line or no base ---
