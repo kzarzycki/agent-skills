@@ -10,6 +10,10 @@ from typing import Any
 import pytest
 from approvals_harness import approvals, gatekeeper_md, git_in
 
+# the real read: conftest.py's autouse `_land_heads_recorded` stubs approvals.head_recorded to True in every module but
+# test_approvals_land_record, so the name is taken here, at import, before the fixture replaces it
+HEAD_RECORDED = approvals.head_recorded
+
 # the project's `Affected tests:` command: it logs that it ran, so a test sees whether the cut let it through
 SELECTOR = """import pathlib, sys
 (pathlib.Path(__file__).parent / "ran.log").open("a").write("selector\\n")
@@ -451,3 +455,49 @@ def test_a_move_inside_docs_runs_nothing(worker: dict[str, Any]) -> None:
     assert approvals.changed_since(base) == ["docs/guide.md", "docs/manual.md"]
     assert approvals.main(["affected-tests", "--base", base]) == 0
     assert worker["ran"]() == []
+
+
+def test_a_docs_heads_record_is_found_by_gate_record(worker: dict[str, Any]) -> None:
+    """The cut's record carries its key's `GATE_BASE` as its env, so `gate-record` (which reads the env back from the
+    key) finds it, and a second record on the tree reuses it."""
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    base = base_of_work()
+    assert approvals.main(["affected-tests", "--record"]) == 0
+    words = approvals.tests_record_words(base, head_of())
+    assert words == [f"GATE_BASE={base}", "select.checks:", "none", "(narrowed)"]
+    assert approvals.main(["gate-record", head_of(), "--", *words]) == 0
+    assert approvals.main(["affected-tests", "--record"]) == 0
+    assert worker["ran"]() == []
+
+
+def lands_from(where: str) -> None:
+    """Move the checkout to where a lead lands from: the PR's own head, a clean or dirty main, or a code branch."""
+    if where == "own-head":
+        return
+    git_in(Path.cwd(), "checkout", "-q", "main")
+    if where == "dirty-main":
+        (Path.cwd() / "notes.txt").write_text("note\n")
+    elif where == "code-branch":
+        git_in(Path.cwd(), "checkout", "-q", "-b", "other")
+        (Path.cwd() / "src" / "other.py").write_text("value = 4\n")
+        git_in(Path.cwd(), "add", "-A")
+        git_in(Path.cwd(), "commit", "-qm", "other")
+
+
+@pytest.mark.parametrize("where", ["own-head", "clean-main", "dirty-main", "code-branch"])
+@pytest.mark.parametrize(
+    "paths",
+    [["docs/guide.md"], ["apm.yml", "apm.lock.yaml"], ["src/app.py"]],
+    ids=["docs", "pack-bump", "build-input"],
+)
+def test_land_finds_the_prs_record_from_any_checkout(
+    worker: dict[str, Any], paths: list[str], where: str
+) -> None:
+    """`land`'s head_recorded keys the record by the PR's head, not the checkout it runs in."""
+    worker["start"](SELECT)
+    worker["commit"](*paths)
+    assert approvals.main(["affected-tests", "--record"]) == 0
+    head = head_of()
+    lands_from(where)
+    assert HEAD_RECORDED({"number": 7, "headRefOid": head, "baseRefName": "main"})

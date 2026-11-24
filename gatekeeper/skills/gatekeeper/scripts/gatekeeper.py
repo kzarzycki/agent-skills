@@ -7495,14 +7495,14 @@ def local_queue(
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
 
 
-def tests_record_words(point: str) -> list[str] | None:
+def tests_record_words(point: str, head: str | None = None) -> list[str] | None:
     """The words `gate-record <head> -- <words>` takes for the record of a run of a PR's tests: loop.md's `Affected
     tests:` command narrowed against `point` (narrowed_gate under narrowed_to: the PR's merge base with its base
     branch, the base `affected-tests --record` selects against and keys its record by), its last word `(narrowed)`;
     None where no narrowed run exists (no `Affected tests:` line, `Gate: full`, `gate_steps`). The one builder of that
     key for `land` (head_recorded) and the merge queue's floor (the project's batch selector), so neither drifts from
-    the writer."""
-    with narrowed_to(point):
+    the writer. `head` is the PR's head, so the cut (selected) classifies the PR's change, not the checkout's."""
+    with narrowed_to(point, head):
         narrowed = narrowed_gate()
     return None if narrowed is None else shlex.split(narrowed[0])
 
@@ -7524,7 +7524,7 @@ def head_recorded(pull: dict[str, Any]) -> bool:
                 f"{where}: no merge base with origin/{pull['baseRefName']}, so no `Affected tests:` record is found"
             )
             return False
-        if (narrowed := tests_record_words(point)) is not None:
+        if (narrowed := tests_record_words(point, head)) is not None:
             words, writer = narrowed, "affected-tests --record"
     said = io.StringIO()
     with contextlib.redirect_stdout(said):
@@ -9533,7 +9533,8 @@ def narrowed_gate(
             "--base",
             base,
         ]
-        return f"{variable}={base} {said}{NARROWED}", words, {}
+        # the env is the command's own assignment, as gate_record reads it back from the key (command_line)
+        return f"{variable}={base} {said}{NARROWED}", words, {variable: base}
     _, words, sets = command_line(written, "Affected tests", passed)
     sets = {variable: base, **{name: value for name, value in sets.items() if name != variable}}
     command = shlex.join([*(f"{name}={value}" for name, value in sets.items()), *words])

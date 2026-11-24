@@ -108,7 +108,7 @@ def recorded(head: str, point: str) -> tuple[bool, str]:
                 False,
                 "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
             )
-        if (words := g.tests_record_words(point)) is None:
+        if (words := g.tests_record_words(point, head)) is None:
             return False, "the gate has `gate_steps`, which never run the `Affected tests:` command"
         with contextlib.redirect_stdout(said):
             code = g.gate_record(head, words)
