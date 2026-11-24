@@ -272,7 +272,6 @@ import fcntl
 import hashlib
 import http.client
 import importlib.util
-import itertools
 import json
 import os
 import plistlib
