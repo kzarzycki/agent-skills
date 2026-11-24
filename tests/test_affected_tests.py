@@ -517,6 +517,8 @@ def test_a_file_a_test_reads_by_path_runs_that_test(tmp_path, monkeypatch, capsy
         "pkg/tests/test_by_path.py": 'Path("pkg/skills/engineering-loop/verifier.md")\n',
         "pkg/tests/test_name_only.py": 'Path("other") / "verifier.md"\n',
         "pkg/tests/test_dir_only.py": 'ROOT / "engineering-loop" / "lead.md"\n',
+        "pkg/tests/test_unquoted.py": "# a comment naming pkg/skills/engineering-loop/verifier.md as it reads it\n",
+        "pkg/tests/test_not_segments.py": 'NOTE = "my-engineering-loop-x verifier.md.orig"\n',
     }
     for name, text in tests.items():
         (tmp_path / name).write_text(text)
@@ -526,8 +528,9 @@ def test_a_file_a_test_reads_by_path_runs_that_test(tmp_path, monkeypatch, capsy
     assert a.targets(["pkg/skills/engineering-loop/verifier.md"]) == [
         "pkg/tests/test_by_parts.py",
         "pkg/tests/test_by_path.py",
+        "pkg/tests/test_unquoted.py",
     ]
-    assert "verifier.md: 2 test files read it by path" in capsys.readouterr().err
+    assert "verifier.md: 3 test files read it by path" in capsys.readouterr().err
 
 
 def test_a_verifier_md_change_selects_the_loop_test_that_reads_it() -> None:
@@ -608,3 +611,17 @@ def test_a_mapped_script_whose_test_the_map_skipped_selects_that_test_never_the_
     assert a.targets(["omnigent/skills/s/scripts/unique_script.py"]) == [
         "omnigent/tests/test_ran.py::test_x"
     ]
+
+
+def test_a_non_product_file_a_test_names_by_its_file_name_runs_that_test(
+    tmp_path, monkeypatch
+) -> None:
+    """A non-product path a test names (by file name, not its path) is no longer zero: that test runs."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_settings.py").write_text(
+        "loads settings.json from the agent's folder\n"
+    )
+    (tmp_path / "tests/test_other.py").write_text("def test_x(): pass\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(a, "CHEAP", [])
+    assert a.targets([".claude/settings.json"]) == ["tests/test_settings.py"]
