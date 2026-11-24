@@ -123,13 +123,6 @@ run = """uv run python tools/gate_slot.py pytest -q -m 'slow and not live_agent'
 description = "ruff check and format check over the repo's Python"
 run = """uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
 
-[tasks.check-land]
-description = "The landing gate: vendor check and lint, nothing else, about a minute."
-# ponytail: a landing runs no tests, so a break reaches main until the Mergify batch's tests (test-batch) or the nightly
-# full suite catch it; fix it forward. Interim until the approvals tests run in seconds; then check-fast is the gate again.
-run = """mise run vendor-engineering-check
-mise run lint"""
-
 [tasks.check-fast]
 description = "The PR head's check (`qualify`): vendor check, lint and the Mergify template drift check, no tests. The tests run once per tree, on the batch (test-batch)."
 run = """mise run vendor-engineering-check
