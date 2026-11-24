@@ -124,7 +124,7 @@ def test_a_pr_head_runs_only_cheap_checks_and_the_batch_runs_the_tests() -> None
     assert [step["if"] for step in testing] == [
         "startsWith(github.head_ref, 'mergify/merge-queue/')",
         "github.event_name == 'workflow_dispatch' && inputs.tests != ''",
-        "github.event_name == 'schedule'",
+        "github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'",
     ]
 
 
