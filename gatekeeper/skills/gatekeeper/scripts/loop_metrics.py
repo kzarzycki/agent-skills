@@ -36,9 +36,9 @@ import datetime as dt
 import json
 import re
 import statistics
-from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 BATCH_PREFIX = "mergify/merge-queue/"
@@ -95,7 +95,12 @@ def batches(gh: Gh, repo: str, first: dt.date) -> dict[int, list[int]]:
     """Queue-batch draft PR number -> the PR numbers its body names."""
     query = f"repo:{repo} is:pr head:{BATCH_PREFIX} updated:>={first}"
     found = pages(gh, "search/issues?q=" + query.replace(" ", "+"), "items")
-    return {item["number"]: sorted({int(n) for n in BATCH_PRS.findall(item.get("body") or "")} - {item["number"]}) for item in found}
+    return {
+        item["number"]: sorted(
+            {int(n) for n in BATCH_PRS.findall(item.get("body") or "")} - {item["number"]}
+        )
+        for item in found
+    }
 
 
 def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
@@ -108,9 +113,7 @@ def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
             ready = when if ready is None or when > ready else ready
         elif kind == "committed" and event.get("sha"):
             shas.add(event["sha"])
-        elif kind == "head_ref_force_pushed" and event.get("commit_id"):
-            shas.add(event["commit_id"])
-        elif kind == "merged" and event.get("commit_id"):
+        elif kind in ("head_ref_force_pushed", "merged") and event.get("commit_id"):
             shas.add(event["commit_id"])
     return {"ready": ready, "shas": shas}
 
@@ -119,7 +122,9 @@ def job_minutes(gh: Gh, repo: str, run_id: int) -> float:
     total = 0.0
     for job in pages(gh, f"repos/{repo}/actions/runs/{run_id}/jobs?filter=all", "jobs"):
         if job.get("started_at") and job.get("completed_at"):
-            total += (parse_time(job["completed_at"]) - parse_time(job["started_at"])).total_seconds() / 60
+            total += (
+                parse_time(job["completed_at"]) - parse_time(job["started_at"])
+            ).total_seconds() / 60
     return total
 
 
@@ -161,12 +166,19 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
     rows = []
     for number, pr in prs.items():
         ready = timelines[number]["ready"] or pr["created"]
-        rows.append({"number": number, "merged": pr["merged"], "seconds": (pr["merged"] - ready).total_seconds(), "minutes": minutes[number]})
+        rows.append(
+            {
+                "number": number,
+                "merged": pr["merged"],
+                "seconds": (pr["merged"] - ready).total_seconds(),
+                "minutes": minutes[number],
+            }
+        )
     return {"rows": rows, "batched": batched}
 
 
 def duration(seconds: float) -> str:
-    whole = int(round(seconds))
+    whole = round(seconds)
     hours, rest = divmod(whole, 3600)
     mins = rest // 60
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
@@ -196,9 +208,17 @@ def line(gh: Gh, repo: str, since: dt.date) -> str:
 
 
 def main(argv: list[str] | None = None, gh: Gh = real_gh) -> int:
-    parser = argparse.ArgumentParser(prog="loop-metrics", description="Weekly ready->merged time and runner-minutes per merged PR.")
+    parser = argparse.ArgumentParser(
+        prog="loop-metrics",
+        description="Weekly ready->merged time and runner-minutes per merged PR.",
+    )
     parser.add_argument("repos", nargs="+", metavar="owner/repo")
-    parser.add_argument("--since", required=True, type=dt.date.fromisoformat, help="first day of the week, YYYY-MM-DD")
+    parser.add_argument(
+        "--since",
+        required=True,
+        type=dt.date.fromisoformat,
+        help="first day of the week, YYYY-MM-DD",
+    )
     args = parser.parse_args(argv)
     code = 0
     for repo in args.repos:
