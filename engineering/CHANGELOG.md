@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.8 - 2026-11-24
+
+- engineering-loop: lead.md's `claude` verifier route no longer asks for a `--model` other than the author's (#2297).
+
 ## 0.35.7 - 2026-11-24
 
 - loop: lead.md says a lead holds a PR it must not land with `loop:hold` and a PR comment naming who holds it and why, and removes the label before landing; `loop:dequeued` is no hold (#2162).
