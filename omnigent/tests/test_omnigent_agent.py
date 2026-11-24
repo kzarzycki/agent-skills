@@ -2825,6 +2825,37 @@ def test_send_revives_a_reaped_runner_then_sends(
     assert omnigent_agent.text_of(og.sessions[sid][-1]) == "use main"
 
 
+def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    registry = tmp_path / "registry"
+    og = FakeOmnigent(reply="done")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    listed, unlisted, forced = (og.create("claude", t) for t in ("a", "b", "c"))
+    registry.write_text(f"{listed}={tmp_path / 'old.md'}\tfollow\n")
+    for sid in (listed, unlisted, forced):
+        og.archive(sid)
+    (tmp_path / "a.md").write_text("use main")
+    flag = ["--registry", str(registry), "--confirm-seconds", "0"]
+    unarchive = og.unarchive
+
+    def resumed(sid: str) -> None:  # the resumed lead answers with its report
+        unarchive(sid)
+        (tmp_path / "r.md").write_text("ok")
+
+    og.unarchive = resumed  # type: ignore[method-assign]
+    send = lambda sid, *more: omnigent_agent.main(["send", sid, "a.md", "r.md", *more, *flag])
+    assert send(unlisted) == omnigent_agent.GONE
+    assert unlisted in og.archived
+    assert f"session {unlisted} is archived" in capsys.readouterr().err
+    assert send(listed) == 0
+    assert listed not in og.archived
+    assert any("use main" in omnigent_agent.text_of(i) for i in og.sessions[listed])
+    assert send(forced, "--unarchive") == 0
+    assert forced not in og.archived
+
+
 def test_send_exits_gone_naming_the_reply_when_the_revive_fails(tmp_path: Path) -> None:
     og = FakeOmnigent()
     sid = og.create("claude", "t")
