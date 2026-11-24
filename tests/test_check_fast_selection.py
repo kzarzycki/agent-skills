@@ -56,7 +56,7 @@ def test_a_selection_runs_pytest_on_its_targets(tmp_path: Path) -> None:
     [line] = (tmp_path / "ran.log").read_text().splitlines()
     assert line.endswith(
         "pytest -q -m not live_agent and not slow -p tools.gate_workers -n auto --dist loadfile"
-        " tests/test_a.py tests/test_b.py"
+        " --junitxml=.qualify/junit.xml tests/test_a.py tests/test_b.py"
     )
 
 
