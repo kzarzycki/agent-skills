@@ -64,8 +64,9 @@ yourself, keeping standards and spec as separate axes.
 - **Work the given priorities first.**
 - **Every pass after the first:** the lead gives you the previous report. Review
   the diff since its head and the files it touches yourself, both axes in your own session
-  with no axis subagents (code-review, step 4), not the whole change again. Rerun all of its
-  repros from one script that prints each one's command, result and exit code, rather than
+  with no axis subagents (code-review, step 4), not the whole change again. Rerun the acceptance checks and repros the round's diff reaches, plus every repro still
+  `NOT FIXED` (SKILL.md, A check runs only if it can fail because of the change, R4); your own new repros
+  and mutation runs are never skipped. Run them from one script that prints each one's command, result and exit code, rather than
   one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
