@@ -320,7 +320,8 @@ def red_with_report(worker: dict[str, Any], count: int) -> str:
     reporter = worker["repo"].parent / "tools" / "reporter.py"
     reporter.write_text(REPORTER)
     return red_with_loop(
-        worker, f"# Loop\n\nAffected tests: {sys.executable} {reporter} {count}\n\nTest report: report.xml\n"
+        worker,
+        f"# Loop\n\nAffected tests: {sys.executable} {reporter} {count}\n\nTest report: report.xml\n",
     )
 
 
@@ -348,8 +349,12 @@ def test_a_report_an_earlier_run_left_is_never_counted(
     worker: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A report from before the rerun shows tests this rerun never ran: it is removed first (#2277)."""
-    red = red_with_loop(worker, f"# Loop\n\nAffected tests: {worker['selector']}\n\nTest report: report.xml\n")
-    (worker["repo"] / "report.xml").write_text('<testsuite><testcase classname="a" name="b"/></testsuite>')
+    red = red_with_loop(
+        worker, f"# Loop\n\nAffected tests: {worker['selector']}\n\nTest report: report.xml\n"
+    )
+    (worker["repo"] / "report.xml").write_text(
+        '<testsuite><testcase classname="a" name="b"/></testsuite>'
+    )
     code, err = rerun(worker, red, capsys)
     assert code == approvals.DID_NOT_RUN
     assert "zero tests collected" in err
