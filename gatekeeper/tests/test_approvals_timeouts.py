@@ -482,3 +482,43 @@ def test_a_mergify_head_timing_out_twice_stays_out_of_the_queue_and_names_the_bu
     assert code == approvals.WAITING, lines
     assert any("timed out twice" in each for each in lines)
     assert len(requeues(mergify)) == 1
+
+
+def test_a_refused_requeue_after_a_first_timeout_is_no_second_timeout(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    posted = approvals.comment
+
+    def refuse_requeue(number: int, body: str) -> Any:
+        if body.startswith(approvals.REQUEUE):
+            raise subprocess.CalledProcessError(1, ["gh"], "", "HTTP 502")
+        return posted(number, body)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(approvals, "comment", refuse_requeue)
+        assert mergify["land"]("7")[0] == 1
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    assert not any("timed out twice" in each for each in lines)
+    assert len(requeues(mergify)) == 1
+
+
+def test_a_raised_budget_gives_the_head_a_fresh_first_timeout(mergify: dict[str, Any]) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    dequeued_with(mergify, head, queue_check("failure", summary="The checks have timed out"))
+    assert mergify["land"]("7")[0] == 0
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    assert mergify["land"]("7")[0] == approvals.WAITING
+    stopped = approvals.run_budget
+    approvals.run_budget = lambda: 2 * stopped()
+    try:
+        mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+        code, lines = mergify["land"]("7")
+    finally:
+        approvals.run_budget = stopped
+    assert code == 0, lines
+    assert not any("timed out twice" in each for each in lines)
