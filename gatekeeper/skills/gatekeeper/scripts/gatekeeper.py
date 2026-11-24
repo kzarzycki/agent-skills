@@ -25,7 +25,7 @@
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; nothing when it can't tell; `check` only under `Gate: full`; --record: its pass pushed as `local-ci --record` pushes a narrowed one
-    uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake
+    uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -9443,9 +9443,10 @@ def pr_base_of_head() -> str | None:
     return None
 
 
-def gate_base_variable() -> str:
-    """The variable loop.md's line `Gate base:` names, else `GATE_BASE`; refused when it is no variable name."""
-    text = policy_file(toplevel(), LOOP, POLICY_BASE.get()) or ""
+def gate_base_variable(text: str | None = None) -> str:
+    """The variable loop.md's line `Gate base:` names (of `text`, else the policy's loop.md), else `GATE_BASE`; refused
+    when it is no variable name."""
+    text = (policy_file(toplevel(), LOOP, POLICY_BASE.get()) or "") if text is None else text
     named = re.search(r"^Gate base:[ \t]*`?([^\s`]+)", text, re.MULTILINE)
     variable = named.group(1) if named else "GATE_BASE"
     if not re.fullmatch(r"[A-Za-z_]\w*", variable):
@@ -9546,7 +9547,7 @@ def selection_base(given: str | None) -> str | None:
         ) from exc
 
 
-def affected_tests(given: str | None = None, record: bool = False) -> int:
+def affected_tests(given: str | None = None, record: bool = False, text: str | None = None) -> int:
     """`affected-tests [--base <rev>]`: the worker's test run on a head, from loop.md's line `Affected tests:
     <command>` (the command selects and runs the tests a change affects against the base it reads from the variable
     the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Where it
@@ -9565,13 +9566,17 @@ def affected_tests(given: str | None = None, record: bool = False) -> int:
     is reused, not run again (R1). A run that can't tell (no line, no base) or fails records nothing, and so does the
     opt-out's full check and a gate with `gate_steps` (whose steps narrow by their `paths`, so the narrowed gate never
     runs): each says so. Off by default, as `local-ci` records only with `--record`: a record is a pushed branch, and only the
-    worker's final head needs one, not each head the push hook runs."""
+    worker's final head needs one, not each head the push hook runs.
+
+    `text`, when given, is the loop.md the command and its `Gate base:` come from instead of the policy's: a rerun's
+    (rerun_tests), the red head's own."""
     root = toplevel()
-    written = narrowing()
-    variable = gate_base_variable()
+    text = loop_md() if text is None else text
+    written = narrowing(text)
+    variable = gate_base_variable(text)
     env = {name: value for name, value in os.environ.items() if name != variable}
     words, sets = [*LOCAL_CI[:-1], "check"], {}
-    if written is None and not FULL_GATE.search(loop_md()):
+    if written is None and not FULL_GATE.search(text):
         print(
             "affected-tests: nothing: loop.md names no `Affected tests:` selector, so it can't tell what the change"
             " affects; the nightly runs the full suite",
@@ -9671,6 +9676,56 @@ def rerun_plan(failed: list[str], changed: set[str]) -> tuple[bool, list[str]]:
     return (bool(failed) and not stuck), (stuck or list(failed))
 
 
+# rerun-tests' exit when the rerun ran no test (EX_TEMPFAIL, "try again"): a rerun that never started says nothing about
+# the change, so it is neither a red caused by the change (the run's own exit) nor a refusal (1)
+DID_NOT_RUN = 75
+# the codes a POSIX shell gives a command it could not start: not executable (126), not found (127)
+NOT_STARTED = (126, 127)
+
+
+def did_not_run(why: str) -> None:
+    """The one line of a rerun that ran no test, whose exit is DID_NOT_RUN."""
+    print(
+        f"rerun-tests: rerun did not run: {why}; it says nothing about the change, so the red stays unread: fix that"
+        " and rerun",
+        file=sys.stderr,
+    )
+
+
+def missing_task(text: str) -> str | None:
+    """The task a `mise run <task>` selection in loop.md's `text` names that mise doesn't define here, else None: mise
+    exits 1 for an unknown task, as a red test does, so after a red exit `mise tasks info` tells the two apart."""
+    written = narrowing(text)
+    words = command_line(written, "Affected tests")[1] if written else [*LOCAL_CI[:-1], "check"]
+    if words[:2] != ["mise", "run"] or len(words) < 3:
+        return None
+    try:
+        known = subprocess.run(
+            ["mise", "tasks", "info", words[2]], capture_output=True, cwd=toplevel(), check=False
+        )
+    except OSError:
+        return words[2]
+    return None if known.returncode == 0 else words[2]
+
+
+def rerun(red: str, base: str | None, text: str) -> int | None:
+    """The rerun's selection against `base` with the red head's loop.md `text`: its exit, or None when it ran no test
+    (no base, a command that can't start, a `mise run` task that isn't there), having said why (did_not_run)."""
+    if base is None:
+        return did_not_run("no base to select against")
+    try:
+        code = affected_tests(base, text=text)
+    except Refused as exc:
+        return did_not_run(str(exc))
+    if code in NOT_STARTED:
+        return did_not_run(f"the selection command could not start (exit {code})")
+    if code and (task := missing_task(text)):
+        return did_not_run(
+            f"{red}'s loop.md runs `mise run {task}`, a task mise doesn't define here"
+        )
+    return code
+
+
 def rerun_tests(path: str, red: str, given: str | None) -> int:
     """`rerun-tests <failed.json> --red <head> [--base <rev>]`: the one rerun of a red run, from the red run's own
     output (failed_tests_of), its head `red` and its base (`--base`, else the merge base now), recomputing the
@@ -9681,13 +9736,21 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
     - otherwise (nothing changed, or a change that misses a failed test): the selection against HEAD's own base now,
       the red run's whole selection (after a rebase, its PR files on the newer base, not the files the base moved). A failed test that passes there is a flake (a `Flaky:` issue, the run counted green),
       and one that is red again stays red: the change caused it. Never the failed tests alone, and never the whole
-      suite. One line says which and why; the exit is the run's."""
+      suite. One line says which and why; the exit is the run's.
+    The selection is the red run's own, so its command comes from the red head's loop.md, never the base's: a head
+    behind its base lacks a task the base's line names (ponytail: the R1 record would name the command too, but only a
+    pass writes one, so a red head never has one; read it first if a red run ever records). A rerun that ran no test
+    (rerun) exits DID_NOT_RUN, never as red again."""
     failed = failed_tests_of(path)
     try:
         git("rev-parse", "--verify", "--quiet", f"{red}^{{commit}}")
     except subprocess.CalledProcessError:
         raise Refused(f"rerun-tests: no commit {red} here: fetch the red run's head") from None
     base = selection_base(given)
+    text = (shown_at(toplevel(), red, LOOP) or b"").decode()
+    if narrowing(text) is None and not FULL_GATE.search(text):
+        did_not_run(f"{red}'s loop.md names no `Affected tests:` selector")
+        return DID_NOT_RUN
     fixed, candidates = rerun_plan(failed, fix_since(red, base))
     # HEAD's own base now, past any rebase: the whole selection is the PR's files, not the ones the base moved
     here = selection_base(None) if given is not None else base
@@ -9697,7 +9760,8 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
             " reaches run",
             file=sys.stderr,
         )
-        return affected_tests(red)
+        code = rerun(red, red, text)
+        return DID_NOT_RUN if code is None else code
     for test in candidates:
         print(f"rerun-tests: flake candidate: {test}", file=sys.stderr)
     print(
@@ -9705,7 +9769,9 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
         " runs: alone, a test that fails only after others would pass",
         file=sys.stderr,
     )
-    code = affected_tests(here or base)
+    code = rerun(red, here or base, text)
+    if code is None:
+        return DID_NOT_RUN
     if code == 0 and candidates:
         print(
             "rerun-tests: green: a flake candidate that passed is a flake: open or update its `Flaky:` issue and"
