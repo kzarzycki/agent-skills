@@ -19,7 +19,7 @@ it (the `gatekeeper` skill's policy.md, Opting out); no step runs for their chan
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** On each head, the worker runs only the tests the PR affects: loop.md's `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run test:changed` (worker.md, Gates and push), behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot). No gate of record, CI gate or full suite runs on the PR: without a merge queue the verifier's e2e proof is the last run before the merge; with one, the queue's batch check runs after it, on the merged tree, and only the cross-change tests (R6, A check runs only if it can fail because of the change). The nightly runs the full suite (Merge model). | a broken change |
+| **Gates.** On each head, the worker runs only the tests the PR affects: loop.md's `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run test:changed` (worker.md, Gates and push), behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot). No gate of record, CI gate or full suite runs on the PR: without a merge queue the verifier's e2e proof is the last run before the merge; with one, the queue's batch check runs after it, on the merged tree, and only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change). The nightly runs the full suite (Merge model). | a broken change |
 | **Proof.** The spec's Before merge list on the PR branch before review, then its After merge list (checks that need the merged default branch or a deployed environment) after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -85,7 +85,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   `merge_queue` rule it is the local merge queue: `land` merges each PR on its satisfied
   verdict within one call, with no gate step. With one it is the GitHub merge queue: `land`
   enqueues each landable PR, and the queue's `merge_group` check, the one test run on the
-  merged tree, runs only the cross-change tests (R6, A check runs only if it can fail because of the change) and merges it, so nothing heavy runs
+  merged tree, runs only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change) and merges it, so nothing heavy runs
   on a laptop and no test runs twice. It suits a project that has code built around the queue.
   CI then needs `merge_group` triggers and `loop:approvals` success on the queue's commit. A private repo on
   GitHub's free plan has no rulesets, branch protection or auto-merge, so the ruleset can't be
@@ -157,7 +157,7 @@ Each derived rule follows from the one above.
 - **R3. Affected tests only, selected by what a test executes.** The selector picks tests whose executed files or functions changed, from a per-test map the nightly builds; name matching is the fallback where there is no map. It diffs against the right base (the merge commit's first parent on a PR run). Where: worker, queue, nightly-built map.
 - **R4. A fix round runs only what the round's diff reaches.** A test or proof that passed on the previous head and whose inputs the round didn't change is known. The selection for a fix round diffs against the last head its run passed on, not the PR's base. Where: worker fix rounds, the lead's stale-proof check before a pass, the verifier's later passes (acceptance checks and repros the delta reaches, plus every repro still `NOT FIXED`).
 - **R5. A red run reruns only what failed, and only once the cause is fixed or shown unrelated.** Fixed: the failed tests plus what the fix reaches (R4). Shown unrelated (a test the change can't reach, a known flake with its `Flaky:` issue, an infrastructure fault): the failed tests alone, once. Never the whole set again on the same head, and never before the cause is known. Where: CI job reruns, the merge queue's red entry, `land`, the verifier, the flaky retry.
-- **R6. The merge queue runs only the cross-change check.** A test that only the PR's diff reaches passed on the PR's head with the same inputs; a test only the base's new commits reach is the base's, not this PR's. The queue runs the tests that the PR's diff and the rest of the merge (the base's commits since the PR's tested base, the other PRs in the group) both reach. Without a per-test map it falls back to the batch's affected tests. Where: GitHub's and Mergify's queue batch check. The local queue runs no test today and stays so.
+- **R6. The merge queue runs only the cross-change check.** A test that only the PR's diff reaches passed on the PR's head with the same inputs; a test only the base's new commits reach is the base's, not this PR's. The queue runs the `select.unkeyed` checks and the tests that the PR's diff and the rest of the merge (the base's commits since the PR's tested base, the other PRs in the entry) both reach. The floor: a PR in the entry with no record for its tree (R1) adds its own affected tests, so an empty set passes only when every PR has a record; a queue run that would run nothing on a PR with no record is refused, and the queue merges only on a check its test step sets once it ran its selection, so a path that skips that step merges nothing and says why. Without a per-test map it falls back to the entry's affected tests, saying so and why. Batch size, wait time or one PR per entry are the project's, in gatekeeper.md's `land` block (`batch_size`, `batch_wait_seconds`), from which the pack renders the queue's config (`approvals.py queue-config`). Where: GitHub's and Mergify's queue batch check. The local queue runs no test today and stays so.
 - **R7. After the merge, only a tree nobody tested runs.** The push run on main skips a commit whose tree the queue already tested; the nightly runs only when main moved since its last green, and then runs the full suite, which stays the guard against what the selector misses. Where: step 9's read of main's push run, the nightly.
 
 **Merge model.** Each role runs its tests under the rule above (A check runs only if it can fail because of the change):
@@ -169,7 +169,7 @@ Each derived rule follows from the one above.
 - Without a merge queue, `land` merges the PR on the verifier's satisfied record, with no gate step: no gate of
   record, no CI check on the head, no full-suite run and no rerun at land.
 - With a merge queue (GitHub's, or Mergify's under `land.queue: mergify`), the PR head still gets no CI check. The
-  queue's batch check is the one run on the merged tree, and it runs only the cross-change tests (R6, A check runs only if it can fail because of the change;
+  queue's batch check is the one run on the merged tree, and it runs only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change;
   the fallback, `affected-tests --base <the base tip the batch merges onto>`). Nothing else reruns at land.
 - The nightly runs the full suite (Nightly). Main may stay broken until it does, since a break shows within a day
   and costs less than a full run on every PR. A red nightly becomes an issue, a bisect and a fix or revert PR
@@ -579,7 +579,7 @@ organisation-owned repo can have. `land` judges each candidate as above, then po
 status on its head (`Queued for Mergify at <sha>`) and adds `loop:queued`, and exits: no lock, no
 gate, nothing merged, and every call REST. The repo's `.mergify.yml` takes a PR in only with that
 label and `land` green on its head, and no CI check on the head; it tests each batch as a draft PR
-on top of the base, with a batch check that runs only the cross-change tests (R6, A check runs only if it can fail because of the change), retries a red
+on top of the base, with a batch check that runs only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change), retries a red
 one once and squash-merges on green. A push leaves the new head without `land`, so it no longer qualifies; a PR Mergify
 dequeues gets `loop:dequeued`, and the next `land` turns it back to draft with `land` `error` on its
 head and an `Evicted from the merge queue` comment. A bare `land` writes the `Landed` comment
@@ -588,7 +588,7 @@ queue above, with no test step, stays the path for a project with no queue.
 
 The GitHub merge queue takes no lock and runs no local gate: `land` enqueues each candidate,
 oldest first, pinned to the head its proofs judged, and GitHub orders, groups and merges them,
-its `merge_group` check running only the cross-change tests (R6, A check runs only if it can fail because of the change). An entry the queue removes for a red check gets a comment with that check's log tail and
+its `merge_group` check running only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change). An entry the queue removes for a red check gets a comment with that check's log tail and
 goes in once more; a second red on the same head turns it back to draft. A red main counts
 nothing and evicts nobody, nor does a red group built on a main commit where a required check
 failed, a conflict gets the local queue's conflict comment while GitHub still reports one (and
