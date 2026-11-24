@@ -6591,6 +6591,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     if named is None:
         return worst, False
     watched.update(base=base, pulls=list(named))
+    own_prs(named)
     # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
     fetch = subprocess.run(
         ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
@@ -9012,6 +9013,41 @@ def agent_script() -> Path:
     return (
         found or Path(__file__).resolve().parents[2] / "omnigent-agents" / "scripts"
     ) / "omnigent_agent.py"
+
+
+own_started: set[str] = (
+    set()
+)  # the `owner/name#N` refs own_prs has started, so a land --wait starts each once
+
+
+def own_prs(pulls: Sequence[dict[str, Any]]) -> None:
+    """Start, detached, one run of the omnigent-agents skill's `omnigent_agent.py own-pr <owner/name#N>...` for the
+    PRs this land names, so the merge queue's dequeue of any reaches this session when it is a followed lead that did
+    not start it. One run, one write of the label: runs per PR would each read it and the last would win. Best effort
+    and never waited on: a host without the skill or without Omnigent, or a start that fails, is silent, since the land
+    is not about the session's labels. Each ref is started once per process, however often the land polls."""
+    script = agent_script()
+    if not script.is_file():
+        return
+    refs = [
+        ref
+        for pull in pulls
+        if (repo := (pull.get("baseRepository") or {}).get("nameWithOwner")) and pull.get("number")
+        if (ref := f"{repo}#{pull['number']}") not in own_started
+    ]
+    if not refs:
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, str(script), "own-pr", *refs],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return
+    own_started.update(refs)
 
 
 def archive_workers(number: int) -> None:
