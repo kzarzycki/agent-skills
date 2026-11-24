@@ -1,5 +1,6 @@
 """`mise run test-batch`, the tests `qualify` runs on a Mergify batch (#1609, #1821, #1872): a selector that fails
-fails the step, and one that prints nothing runs no pytest, since pytest given no targets would run the whole suite."""
+fails the step, and one that prints nothing runs no pytest, since pytest given no targets would run the whole suite;
+the unkeyed checks it writes to its `--unkeyed-out` file run first (R6)."""
 
 import os
 import subprocess
@@ -10,8 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_step(tmp_path: Path, selector: str) -> subprocess.CompletedProcess[str]:
-    """test-batch's script, run by sh with `uv` stubbed: `uv run python tools/affected_tests.py` runs `selector` (a
-    shell snippet), any other `uv run` logs its arguments."""
+    """test-batch's script, run by sh with `uv` stubbed: `uv run python -m tools.cross_change_tests` runs `selector` (a
+    shell snippet, `$6` the `--unkeyed-out` file), any other `uv run` logs its arguments."""
     lines = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["test-batch"][
         "run"
     ].splitlines()
@@ -19,7 +20,7 @@ def run_step(tmp_path: Path, selector: str) -> subprocess.CompletedProcess[str]:
     stub.mkdir()
     (stub / "uv").write_text(
         "#!/bin/sh\n"
-        'case "$*" in *affected_tests.py*) ' + selector + " ;; esac\n"
+        'case "$*" in *cross_change_tests*) ' + selector + " ;; esac\n"
         f'echo "ran: $*" >> {tmp_path / "ran.log"}\n'
     )
     (stub / "uv").chmod(0o755)
@@ -36,15 +37,16 @@ def run_step(tmp_path: Path, selector: str) -> subprocess.CompletedProcess[str]:
 
 def test_a_failed_selection_fails_without_running_pytest(tmp_path: Path) -> None:
     done = run_step(tmp_path, "exit 2")
-    assert done.returncode != 0 and "tools/affected_tests.py failed" in done.stderr
+    assert done.returncode != 0 and "tools/cross_change_tests.py failed or refused" in done.stderr
     assert not (tmp_path / "ran.log").exists()
 
 
-def test_an_empty_selection_runs_no_pytest_says_so_and_passes(tmp_path: Path) -> None:
-    """#2217: a selector prints nothing only for a change of non-product paths."""
+def test_an_empty_selection_runs_nothing_says_so_and_passes(tmp_path: Path) -> None:
+    """The selector prints nothing for a batch whose PRs all have a record and share no test, or that changes only
+    non-product paths (#2217): pytest given no targets would run the whole suite."""
     done = run_step(tmp_path, "exit 0")
     assert done.returncode == 0, done.stderr
-    assert "0 selected: non-product, so no pytest runs" in done.stderr
+    assert "selected nothing, so no tests run" in done.stderr
     assert not (tmp_path / "ran.log").exists()
 
 
@@ -56,3 +58,16 @@ def test_a_selection_runs_pytest_on_its_targets(tmp_path: Path) -> None:
         "pytest -q -m not live_agent and not slow -p tools.gate_workers -n auto --dist loadfile"
         " tests/test_a.py tests/test_b.py"
     )
+
+
+def test_the_unkeyed_checks_run_before_the_tests(tmp_path: Path) -> None:
+    done = run_step(tmp_path, 'echo "echo unkeyed >> ran.log" > "$6"; echo tests/test_a.py; exit 0')
+    assert done.returncode == 0, done.stderr
+    first, tests = (tmp_path / "ran.log").read_text().splitlines()
+    assert first == "unkeyed" and tests.endswith("tests/test_a.py")
+
+
+def test_a_failed_unkeyed_check_fails_without_running_pytest(tmp_path: Path) -> None:
+    done = run_step(tmp_path, 'echo false > "$6"; echo tests/test_a.py; exit 0')
+    assert done.returncode != 0 and "the unkeyed check failed: false" in done.stderr
+    assert not (tmp_path / "ran.log").exists()

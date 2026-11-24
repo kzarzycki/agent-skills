@@ -11,10 +11,19 @@ permissions:
 jobs:
   qualify:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # nightly.py moved reads the nightly's runs from the forge
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # #2264: a suite never runs again on a commit it passed on (R1, #2140), so `test` and `test-slow`, the two the
+      # nightly's `mise run check` runs, skip when a green nightly ran the tagged commit. The step summary names it.
+      - id: tested
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 loop/skills/engineering-loop/scripts/nightly.py moved tag
       - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
           version: 2026.9.2
@@ -23,8 +32,10 @@ jobs:
       - run: uv sync --frozen
       - run: uv run python -m tools.capability_pack.cli release-check engineering "$GITHUB_REF_NAME" --skip-smoke
       - run: mise run vendor-engineering-check
-      - run: mise run test
-      - run: mise run test-slow
+      - if: steps.tested.outputs.skip != 'true'
+        run: mise run test
+      - if: steps.tested.outputs.skip != 'true'
+        run: mise run test-slow
       - run: mise run test-engineering-package
   consumer-sync:
     needs: qualify

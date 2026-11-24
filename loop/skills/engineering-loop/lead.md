@@ -238,7 +238,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    from that host's `agy models` (`gemini-4-hydrogen-medium`; verifier.md's `Verifier:` line names it as
    `agy/<model>/<effort>`), and the PR body's review line says "verifier ran on Gemini (experimental
    fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
-   author context, `--model` other than the author's (`--author-model`), the report labelled `Verifier: claude,
+   author context, the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
    of quota)". A satisfied fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
    its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. agy on another host takes the brief
@@ -316,10 +316,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      with `--wait`) once no local objection is left: the
      newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line),
      covers the head, and every review thread is resolved (SKILL.md, Review trail on the PR). No gate step comes
-     between the verdict and the merge: no gate of record, no CI check on the head, no `check-fast`, no full suite
-     and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
-     verdict; with one, the queue's batch check is the one test run on the merged tree, and it runs only the tests
-     the batch's PRs affect. Start it as a background
+     between the verdict and the merge: no new gate of record, no `check-fast` run again (the head's CI reads the
+     worker's record for its tree), no full suite and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
+     verdict; with one, the queue's batch check is the one test run on the merged tree, and it runs only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change). Start it as a background
      command whose exit wakes you, one per PR, the way the backend runs one (Waiting), and work
      on other items meanwhile. It lands every landable PR into main through main's merge
      queue, the local one or GitHub's, not only yours (SKILL.md, Approvals and proof;
@@ -330,6 +329,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      PR is enqueued (or already queued); `land <pr> --wait` waits on until the queue merges it (exit 0) or takes
      it out, reading only the PR's queue state about once a minute, so don't poll the PR yourself. A removal's
      next round runs in the same wait: a red is enqueued once more, a second red or a dequeue evicts (exit 1).
+     That once-more run repeats the whole check, which R5 rules out (SKILL.md, A check runs only if it can fail
+     because of the change; its rerun is `approvals.py rerun-tests`) until [kzarzycki/agent-skills#1400](https://github.com/kzarzycki/agent-skills/issues/1400) and [kzarzycki/agent-skills#1794](https://github.com/kzarzycki/agent-skills/issues/1794) land.
+     So don't wait on it: read the red's log at once, and when the PR caused it, fix it now rather than after the
+     second run.
      Without `--wait`, the merge or a removal reaches you as an event from the project's watcher, and a removal's
      next step is `land <pr>` again, which reads the PR once. Exit 1 names what stopped your PR, and the fix is yours:
      - a missing proof, with nothing on the PR changed: add the proof;
