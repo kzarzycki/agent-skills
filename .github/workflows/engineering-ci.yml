@@ -112,7 +112,19 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PYTEST_ADDOPTS: --junitxml=.qualify/junit.xml
-        run: uv run gatekeeper/skills/gatekeeper/scripts/approvals.py rerun-tests .qualify/red/failed-tests.json --red "$GITHUB_SHA" --base "$BASE_SHA"
+        run: |
+          uv run gatekeeper/skills/gatekeeper/scripts/approvals.py rerun-tests .qualify/red/failed-tests.json --red "$GITHUB_SHA" --base "$BASE_SHA"
+          # A rerun recomputes its selection (the test map may have moved), so a pass counts only when it ran every test
+          # the red attempt failed, as breakglass.md's Re-run proof asks: never fewer tests than the red run's selection.
+          python3 tools/failed_tests.py .qualify/junit.xml .qualify/rerun.json
+          python3 - <<'PY'
+          import json
+          red = json.load(open(".qualify/red/failed-tests.json"))["failed"]
+          ran = set(json.load(open(".qualify/rerun.json"))["selected"])
+          missing = [test for test in red if test not in ran]
+          if missing:
+              raise SystemExit("the rerun did not run every test the red attempt failed: " + ", ".join(missing))
+          PY
       # what the queue-run job below reads: set only when the batch's test step ran its selection and passed
       - id: selection
         if: steps.batch.outcome == 'success' || steps.rerun.outcome == 'success'

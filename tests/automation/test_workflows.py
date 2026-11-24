@@ -199,3 +199,15 @@ def test_qualify_rerun_attempt_calls_rerun_tests_never_the_failed_tests_alone() 
     assert rerun["if"] == "steps.read.outputs.red == 'read'"
     selection = next(st for st in steps if st.get("id") == "selection")
     assert "steps.rerun.outcome == 'success'" in selection["if"]
+    # V1: the artifact handling holds under each undoing
+    assert "startsWith(github.head_ref, 'mergify/merge-queue/')" in red["if"]
+    read = next(st for st in steps if st.get("id") == "read")
+    assert '["failed"]' in read["run"] and "sys.exit(0 if" in read["run"]
+    upload = next(
+        st for st in steps if st.get("with", {}).get("path") == ".qualify/failed-tests.json"
+    )
+    assert upload["with"]["overwrite"] == "true"
+    # V3: a rerun passes only when it ran every test the red attempt failed
+    assert "failed_tests.py .qualify/junit.xml .qualify/rerun.json" in rerun["run"]
+    assert 'red = json.load(open(".qualify/red/failed-tests.json"))["failed"]' in rerun["run"]
+    assert "if test not in ran" in rerun["run"] and "raise SystemExit" in rerun["run"]
