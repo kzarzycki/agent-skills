@@ -259,7 +259,9 @@ nothing else runs the full suite at all (Merge model), so the
 nightly runs the project's full suite, which holds every spec's acceptance checks, plus
 `uv run <gatekeeper>/scripts/acceptance.py --all` where the project uses the
 `acceptance/<issue>/` folders; the workflow itself (its schedule, where it runs) is the
-project's. When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
+project's. It runs only when the default branch moved since its last green (the newest scheduled
+run that passed, read from the forge): on an unmoved branch it can fail because of no change, so it
+skips and links that run (A check runs only if it can fail because of the change). When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
 --last-green <sha> --red <sha> --run <url>`, with the newest default-branch commit a nightly
 passed on, the one it failed on and the run's link, from a checkout holding the history
 between them. It lists the PRs merged on the default branch since the last green (first-parent
