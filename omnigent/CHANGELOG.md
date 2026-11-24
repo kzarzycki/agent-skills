@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.13 - 2026-11-24
+
+- `omnigent_agent.py start` and `run` write the registry line when the session is created, before its brief is sent, so a slow cold start can no longer pass the 60 s adoption grace and be followed by a second supervisor; and a non-numeric `created_at` skips that one session in the console's adoption sweep instead of ending the sweep (#2319).
+- `omnigent_agent.py`: `rest_pages` stops on a page that repeats the one before and at 50 pages, so an endpoint that ignores `page=` (`git/matching-refs`, once a repo holds 100 loop refs) no longer loops forever and spends the REST quota (#2343).
+
 ## 0.1.12 - 2026-11-24
 
 - `omnigent_agent.py supervise`: a followed coordinator (a manager with its own leads registry) whose turn ends on a `DONE` with no result on its line no longer wakes the notified session; the leads waiting on it are still told, and it stays followed (#2309).
