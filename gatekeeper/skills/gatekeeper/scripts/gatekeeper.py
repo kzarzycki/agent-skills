@@ -262,7 +262,13 @@ gets a `Red in the merge queue` comment naming the check that failed on the queu
 its failed job log's last 30 lines, and is enqueued again; its second turns the PR back to draft with the same, as
 Mergify's queue evicts (`Evicted from the merge queue`, exit 1). A `failed_checks` removal whose required checks on the
 group's commit failed only by timing out (`TIMED_OUT`) counts for nothing, as any other removal (`checks_timed_out`,
-`manual`) does, and the PR is enqueued again: a timeout is no test's failure (#2228). The count lives in GitHub's timeline, so any land applies it and `land` keeps no
+`manual`) does, and the PR is enqueued again: a timeout is no test's failure (#2228), until the head's second one (a removal of either kind): that PR stays out of
+the queue, `land` printing one line that names `timeouts.run` and its length and exiting 3 as a wait on a person (raise
+the budget or shard the suite), and a Mergify dequeue its check run calls a timeout does the same on its second at one
+head, from the `Timed out in the merge queue` records land comments (#2308). Either queue's stop lifts with a new
+head, a ready-again (as its reds' count does) or a changed `timeouts.run`, which the `Timed out twice in the merge
+queue` record each leaves at the head names (`Run:`). Mergify records its first timeout too, so a budget raised between
+the two makes the next a fresh first; the GitHub queue records only its stop, so both timeouts count. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
 state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends. `land <pr> --wait`
 waits on instead until the queue merges it (exit 0, after its `Landed` comment) or takes it out, whose removal the
 next round reads as above (#2101): between rounds it reads, each QUEUE_WATCH seconds (60), only the PR's state, head and
@@ -8166,8 +8172,8 @@ def mergify_queue(
     failed = set()
     numbers = {pull["number"] for pull in named}
     for pull in candidates:
-        code = mergify_step(pull)
-        if code:
+        code = mergify_step(pull, loop)
+        if code == 1:
             failed.add(pull["number"])
         if waiting and not code and pull["number"] in numbers:
             # land --wait waits on until Mergify merges it or dequeues it (#2101), reading only its state and labels
@@ -8196,11 +8202,12 @@ def queued_here(pull: dict[str, Any]) -> bool:
 
 def evicted_at(pull: dict[str, Any], head: str) -> str | None:
     """When land last evicted the PR from Mergify's queue at `head`: its newest QUEUE_EVICTED comment naming that head,
-    which is written even where the `land` `error` status is refused."""
+    which is written even where the `land` `error` status is refused. A `Timed out twice` stop (#2308) leaves the head
+    out of the queue as an eviction does, so a hand-over after it asks Mergify to queue the head again."""
     times = [
         note.get("createdAt") or ""
         for note in notes(pull)
-        if machine(note["body"]).strip().splitlines()[:1] == [QUEUE_EVICTED]
+        if machine(note["body"]).strip().splitlines()[:1] in ([QUEUE_EVICTED], [TIMED_OUT_TWICE])
         and fields(note["body"]).get("head", "").lower() == head.lower()
     ]
     return max(times) if times else None
@@ -8365,11 +8372,15 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
     return tracker, loop, rules - OWN, queue
 
 
-def mergify_step(pull: dict[str, Any]) -> int:
+def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1), unless its queue check
     run says the dequeue was a timeout (mergify_timeout): that one is no test's failure, so the label comes off and
-    REQUEUE takes it back, evicting no one (exit 0); already queued at its head
+    REQUEUE takes it back, evicting no one (exit 0), and a `Timed out in the merge queue` record names the head and
+    `timeouts.run`; at the head's second timeout under that `timeouts.run` land instead stops (exit 3, a wait on a
+    person): `land` `error` on the head, both labels off, a `Timed out twice in the merge queue` record (`Head:`,
+    `Run:`) and one line naming `timeouts.run`, held out by the next lands until a new head, a ready-again (which
+    starts the count anew) or a changed `timeouts.run` (#2308); already queued at its head
     (QUEUED and a `land` success there since land's last eviction at it, queued_here), left alone (exit 0); else
     queued: the `land` success on its head, which binds the hand-over to that one head, so a push leaves
     `.mergify.yml`'s conditions unmet, and QUEUED (exit 0). Either way, at a head land evicted before, REQUEUE once
@@ -8378,13 +8389,54 @@ def mergify_step(pull: dict[str, Any]) -> int:
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     labels = {each["name"] for each in pull["labels"]["nodes"]}
     try:
+        budget = timeouts(loop)["run"]
+        if timed_out_twice(pull, budget):
+            # two timeouts at this head under this budget: held out of the queue until the budget moves (#2308)
+            for name in (QUEUED, DEQUEUED):
+                if name in labels:
+                    label(number, name, add=False)
+            print(timeout_stop_line(where, head, budget))
+            return WAITING
         ours = queued_here(pull)
         if DEQUEUED in labels:
-            if ours and (timeout := mergify_timeout(head)):
+            found = mergify_timeout(head) if ours else None
+            first = timeout_notes(pull, head, TIMED_OUT_ONCE, budget)
+            if found and found[1] and found[1] < timeout_recorded_at(pull, head):
+                # the check run's timeout text is older than the head's newest timeout record, under whatever budget
+                # and before whatever ready: this dequeue is another's
+                found = None
+            if found:
+                timeout = found[0]
+                if first:
+                    # the second timeout at this head: stop requeueing, one line, a wait on a person (#2308)
+                    unwritten(head, LAND, "Timed out twice in the Mergify merge queue", "error")
+                    comment(
+                        number,
+                        fold(
+                            TIMED_OUT_TWICE,
+                            timeout_stop_line(where, head, budget),
+                            f"Head: {head}\nRun: {said_span(budget)}",
+                        ),
+                    )
+                    for name in (QUEUED, DEQUEUED):
+                        if name in labels:
+                            label(number, name, add=False)
+                    print(timeout_stop_line(where, head, budget))
+                    return WAITING
                 # a timeout is no test's failure (#2228): queue it again later, evict no one
                 # the command first: refused, the label stays for the next land to try again
                 comment(number, REQUEUE + "\n")
+                # the label off, then the record: a refused step leaves no record, so the next land reads the same
+                # first timeout, not a second
                 label(number, DEQUEUED, add=False)
+                comment(
+                    number,
+                    fold(
+                        TIMED_OUT_ONCE,
+                        f"{timeout}: queued again.",
+                        f"Head: {head}\nRun: {said_span(budget)}",
+                    ),
+                )
                 print(
                     f"{where}: Mergify dequeued it at {head} on a timeout ({timeout}): queued again, not evicted"
                 )
@@ -8439,7 +8491,7 @@ def handed_by_record(pull: dict[str, Any]) -> None:
             continue
         if first == [HANDED]:
             standing = True
-        elif first == [QUEUE_EVICTED]:
+        elif first in ([QUEUE_EVICTED], [TIMED_OUT_TWICE]):
             standing = False
     if standing:
         print(
@@ -8506,9 +8558,10 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
 TIMEOUT_TEXT = re.compile(r"\btim(?:ed|e)[ -]?out\b|\btimeout\b", re.IGNORECASE)
 
 
-def mergify_timeout(head: str) -> str | None:
+def mergify_timeout(head: str) -> tuple[str, str] | None:
     """Mergify's queue check run on `head`, when it says the dequeue was a timeout (TIMEOUT_TEXT in its title or
-    summary): its name and title; None for any other dequeue, or a head GitHub can't read."""
+    summary): its name and title, and when it completed ("" where GitHub gives no time); None for any other dequeue,
+    or a head GitHub can't read."""
     try:
         checks = commit_checks(head)
     except subprocess.CalledProcessError:
@@ -8519,8 +8572,81 @@ def mergify_timeout(head: str) -> str | None:
             and run["conclusion"] not in ("SUCCESS", "NEUTRAL", "")
             and TIMEOUT_TEXT.search(f"{run.get('title', '')}\n{run.get('summary', '')}")
         ):
-            return f"`{name}`: {run.get('title') or run['conclusion'].lower()}"
+            title = run.get("title") or run["conclusion"].lower()
+            return f"`{name}`: {title}", run.get("completed_at") or ""
     return None
+
+
+# the records a timeout in Mergify's queue leaves at a head (#2308): the first, with the requeue it makes, and the
+# second, which stops requeueing and names the `timeouts.run` it timed out under
+TIMED_OUT_ONCE = "Timed out in the merge queue"
+TIMED_OUT_TWICE = "Timed out twice in the merge queue"
+
+
+def timeout_stop_line(where: str, head: str, budget: int) -> str:
+    """The one line of a PR that timed out twice at one head: `timeouts.run`, the run's length, and what a person does."""
+    return (
+        f"{where} timed out twice in the merge queue at {head}, each run over `timeouts.run` ({said_span(budget)}): it"
+        " stays out of the queue until the budget is raised (`timeouts.run`) or the suite sharded"
+    )
+
+
+def timeout_notes(pull: dict[str, Any], head: str, title: str, budget: int) -> list[dict[str, Any]]:
+    """The PR's comments headed `title` that name `head` and the `timeouts.run` of `budget`, posted since it was last
+    marked ready, so a ready-again starts the count anew, as the GitHub queue's removals do (queue_removals)."""
+    ready = max(
+        (
+            event.get("createdAt") or ""
+            for event in (pull.get("timelineItems") or {}).get("nodes") or []
+            if event.get("__typename") == "ReadyForReviewEvent"
+        ),
+        default="",
+    )
+    return [
+        note
+        for note in notes(pull)
+        if machine(note["body"]).strip().splitlines()[:1] == [title]
+        and fields(note["body"]).get("head", "").lower() == head.lower()
+        and fields(note["body"]).get("run") == said_span(budget)
+        and (note.get("createdAt") or "") > ready
+    ]
+
+
+def timeout_stop_lifted_at(pull: dict[str, Any], head: str, budget: int) -> str:
+    """When a `Timed out twice` record of `head` was left under another `timeouts.run` than `budget`, the newest such
+    record's time, else "": the removals before it were timed out under a budget a person has since changed, so
+    queue_step counts only those after it (#2308)."""
+    return max(
+        (
+            note.get("createdAt") or ""
+            for note in notes(pull)
+            if machine(note["body"]).strip().splitlines()[:1] == [TIMED_OUT_TWICE]
+            and fields(note["body"]).get("head", "").lower() == head.lower()
+            and fields(note["body"]).get("run") != said_span(budget)
+        ),
+        default="",
+    )
+
+
+def timeout_recorded_at(pull: dict[str, Any], head: str) -> str:
+    """When land last recorded a timeout at `head` (a `Timed out` or `Timed out twice` comment, whatever its budget and
+    ready), else "": a timed-out queue check that completed before it is a dequeue's older one."""
+    return max(
+        (
+            note.get("createdAt") or ""
+            for title in (TIMED_OUT_ONCE, TIMED_OUT_TWICE)
+            for note in notes(pull)
+            if machine(note["body"]).strip().splitlines()[:1] == [title]
+            and fields(note["body"]).get("head", "").lower() == head.lower()
+        ),
+        default="",
+    )
+
+
+def timed_out_twice(pull: dict[str, Any], budget: int) -> bool:
+    """Whether land stopped the PR's head after its second timeout under this `timeouts.run`: raising the budget lifts
+    the stop, since the run it timed out under is gone."""
+    return bool(timeout_notes(pull, pull["headRefOid"], TIMED_OUT_TWICE, budget))
 
 
 def mergify_reason(head: str) -> tuple[str, list[str]]:
@@ -8578,7 +8704,11 @@ def queue_step(
             " dequeued, to enqueue it again"
         )
         return enqueue(pull, method)
-    removals = queue_removals(pull)
+    budget = timeouts(loop)["run"]
+    lifted = timeout_stop_lifted_at(pull, head, budget)
+    removals = [
+        removal for removal in queue_removals(pull) if (removal.get("createdAt") or "") > lifted
+    ]
     reason = removals[-1].get("reason") if removals else None
     # GitHub takes a PR out of the queue a moment before it reports the merge: it is merged, nothing to do (exit 0)
     if reason == QUEUE_MERGED:
@@ -8594,6 +8724,27 @@ def queue_step(
         print(f"{where} conflicts with {base}: merge `origin/{base}` in")
         conflict_note(pull, base)
         return 1, False
+    if (
+        removals
+        and timed_out_removal(removals[-1], required)
+        and timeouts_at_head(removals, required) >= 2
+    ):
+        # the second timeout of this head: the same suite would time out again, each round a full run (#2308)
+        print(timeout_stop_line(where, head, budget))
+        if not timeout_notes(pull, head, TIMED_OUT_TWICE, budget):
+            # the record a changed `timeouts.run` is read against (timeout_stop_lifted_at), once per head and budget
+            try:
+                comment(
+                    pull["number"],
+                    fold(
+                        TIMED_OUT_TWICE,
+                        timeout_stop_line(where, head, budget),
+                        f"Head: {head}\nRun: {said_span(budget)}",
+                    ),
+                )
+            except subprocess.CalledProcessError as exc:
+                print(f"{where}: its `{TIMED_OUT_TWICE}` record was refused: {stderr_of(exc)}")
+        return WAITING, False
     if reason == FAILED_CHECKS:
         main_red(base, required)
         reds = own_reds(where, base, removals, required)
@@ -8698,6 +8849,20 @@ def own_reds(
                 continue
         reds.append(group)
     return reds
+
+
+def timed_out_removal(removal: dict[str, Any], required: set[str]) -> bool:
+    """Whether a merge-queue removal was a timeout: `checks_timed_out`, or `failed_checks` whose required checks only
+    timed out (timed_out_only)."""
+    reason = removal.get("reason")
+    return reason == "checks_timed_out" or (
+        reason == FAILED_CHECKS and timed_out_only(group_of(removal), required)
+    )
+
+
+def timeouts_at_head(removals: list[dict[str, Any]], required: set[str]) -> int:
+    """How many of the head's removals (queue_removals) were timeouts: the queue's own record, no state of land's."""
+    return sum(timed_out_removal(removal, required) for removal in removals)
 
 
 def timed_out_only(group: str, required: set[str]) -> bool:
