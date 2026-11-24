@@ -75,6 +75,11 @@ PR, an issue another open PR closes too (a closing keyword, or `Implements` unde
 and its branch, since each build runs its own verifier, gate and queue. When every build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
 the PR its issues' assignees, reporting a refusal and carrying on. A flow that releases the claim (the loop's `release`) removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
+Under Omnigent (`OMNIGENT_RUNNER_PRIMARY_SESSION_ID` and `RUNNER_SERVER_URL` set) the record's details add `Session:
+<server>/c/<lead's session id>`, which names the lead from inside its workers and verifiers too, and the issue's `Session`
+issue field is set to the same link. The field is optional: the account's owner creates it (a text field); without it,
+or where GitHub refuses GraphQL, the run says so in one line after one lookup, the record still carries the link, and the
+claim and the exit code are unchanged. A refused write is a line too.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` also fails a PR that itself carries `needs-owner` (`#<n> waits for the owner (needs-owner)`), so `land`
@@ -2340,24 +2345,77 @@ def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
     ]
 
 
+# the issue field naming the session that holds an issue, which the account's owner creates (claim sets it)
+SESSION_FIELD = "Session"
+# why this run sets no `Session` field, once a lookup found it missing or unreadable: later claims skip it unasked
+unfielded: str | None = None
+
+
+def session_link() -> str | None:
+    """The lead's Omnigent session link, `<server>/c/<session id>`; None outside Omnigent. The lead's id names the
+    lead inside its workers and verifiers too, since they run as its children."""
+    lead = os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "").strip()
+    server = os.environ.get("RUNNER_SERVER_URL", "").strip().rstrip("/")
+    return f"{server}/c/{lead}" if lead and server else None
+
+
+def issue_field(number: int, name: str) -> tuple[str | None, str]:
+    found: tuple[str | None, str] = github.issue_field(number, name)
+    return found
+
+
+def set_issue_field(issue: str, field: str, text: str) -> None:
+    github.set_issue_field(issue, field, text)
+
+
+def session_field(number: int, link: str) -> str | None:
+    """Set issue `number`'s `Session` field to `link`: None once set, else the line saying why not. Best effort, like a
+    board move, since the claim's record carries the link too. A field the account lacks, or GraphQL refused, is said
+    once a run and asked no more (unfielded), so an account without the field pays one lookup."""
+    global unfielded
+    if unfielded is not None or port("tracker") is not github.tracker:
+        return None
+    if github._rest_only:
+        unfielded = "GitHub refuses GraphQL here"
+    else:
+        try:
+            field, node = issue_field(number, SESSION_FIELD)
+        except (subprocess.CalledProcessError, KeyError, TypeError, ValueError) as exc:
+            unfielded = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+        else:
+            if field is None:
+                unfielded = f"the account has no `{SESSION_FIELD}` issue field"
+            else:
+                try:
+                    set_issue_field(node, field, link)
+                    return None
+                except subprocess.CalledProcessError as exc:
+                    why = (exc.stderr or "").strip() or str(exc)
+                    return f"#{number}: could not set the `{SESSION_FIELD}` field ({why}); its `Assigned:` record names the session"
+    return f"no issue's `{SESSION_FIELD}` field set ({unfielded}); the `Assigned:` record names the session"
+
+
 def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
     """Building starts: assign each issue no one holds to its spec's approver, with a record that the loop did
     (assigned_by_loop reads it), and give the PR its issues' assignees. The record comes first, so a refused comment leaves no
     assignment assigned_by_loop would read as a person's. A line when GitHub refuses, never a failure, since an assignee says
-    who the issue belongs to and gates nothing past `check build`."""
+    who the issue belongs to and gates nothing past `check build`. Under Omnigent the record names the lead's session
+    (`Session:`) and so does the issue's `Session` field (session_field)."""
     found, held = [], set()
+    link = session_link()
     for issue in issues:
         number, owners = issue["number"], assignees(issue)
         if not owners and (login := approver(issue)):
+            details = f"By: loop\nPR: #{pull['number']}" + (f"\nSession: {link}" if link else "")
             try:
-                comment(
-                    number, fold(f"{ASSIGNED}{login}", details=f"By: loop\nPR: #{pull['number']}")
-                )
+                comment(number, fold(f"{ASSIGNED}{login}", details=details))
             except subprocess.CalledProcessError as exc:
                 found.append(
                     f"#{number}: did not assign @{login}: could not record the claim ({(exc.stderr or '').strip() or exc})"
                 )
                 continue
+            if link and (said := session_field(number, link)):
+                found.append(said)
             try:
                 assign(number, login, add=True)
             except subprocess.CalledProcessError as exc:

@@ -1247,6 +1247,38 @@ def comment(number: int, body: str) -> str:
     ).strip()
 
 
+# the repository's text issue fields, which its owner's account defines; ponytail: the first 100
+TEXT_FIELDS = "issueFields(first: 100) { nodes { ... on IssueFieldText { id name } } }"
+
+
+def issue_field(number: int, name: str) -> tuple[str | None, str]:
+    """(the id of the repository's text issue field `name`, None when the account defines none by that name; issue
+    `number`'s node id), in one GraphQL read. Issue fields are GitHub's own, outside the tracker port, like the board."""
+    found = _graphql(_repository(f"{TEXT_FIELDS} issue(number: $n) {{ id }}"), n=number)
+    fields = ((found.get("issueFields") or {}).get("nodes")) or []
+    ids = [field["id"] for field in fields if field and field.get("name") == name]
+    return (ids[0] if ids else None), found["issue"]["id"]
+
+
+def set_issue_field(issue: str, field: str, text: str) -> None:
+    """Set the text issue field `field` (its id) on the issue whose node id is `issue`; GitHub sends no notification
+    and leaves the issue's body alone."""
+    gh(
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($issue: ID!, $field: ID!, $text: String!) { setIssueFieldValue(input: {issueId: $issue,"
+        " issueFields: [{fieldId: $field, textValue: $text}]}) { clientMutationId } }",
+        "-f",
+        f"issue={issue}",
+        "-f",
+        f"field={field}",
+        "-f",
+        f"text={text}",
+        "--silent",
+    )
+
+
 def minimize(comment_id: str) -> None:
     """Collapse a comment on GitHub as outdated; it stays readable, and the gate still reads it."""
     gh(

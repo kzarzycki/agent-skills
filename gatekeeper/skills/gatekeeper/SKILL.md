@@ -32,6 +32,13 @@ script's docstring is the manual: every proof each verb checks and every record 
 A PR carrying `needs-owner` or `loop:hold` is refused at merge, by `land` and `check merge` alike, with a line naming the
 label: `loop:hold` is a lead's hold, or another coordinator's claim, and its PR comment says who and why.
 
+The session that holds an issue: under Omnigent, `check build`'s claim adds `Session: <server>/c/<lead's session id>`
+to the issue's `Assigned:` record and sets the issue's `Session` issue field to the same link, so an issue, and a PR
+through the issue it closes, leads to its lead and the lead's children. The field is optional: the account's owner
+creates it once, as a text field, in the account's issue settings, since the loop's token can't. An account without
+it uses the gatekeeper unchanged: every command works, the record still carries the link, and the missing field costs
+one lookup and one informational line a run, never an error or a non-zero exit. Outside Omnigent neither is written.
+
 ## Files
 
 - `scripts/gatekeeper.py`: the CLI, the policy reader and the gate.
