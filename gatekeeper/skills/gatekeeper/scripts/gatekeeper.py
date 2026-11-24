@@ -657,6 +657,9 @@ LOGIC = "Logic change"
 # the record a fresh session it started pushed
 RERUN_VAR = "LOOP_RERUN"
 RERUN_LINE = "Rerun"
+# the account whose push of a rerun record counts as the CI run's (rerun_gap), unless `loop.rerun_pusher` names another:
+# GitHub Actions' workflow token
+RERUN_PUSHER = "github-actions[bot]"
 # how an OWNER_GO status the gate once turned from the `approved:merge` label ends: no go, since the label can be a
 # delegate's
 LABELLED = f"from their `{MERGE_LABEL}` label"
@@ -948,6 +951,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "delegate_spec": bool,
         "pack_staleness": Choice(("warn", "refuse")),
         "stalled_after_hours": int,
+        "rerun_pusher": str,
     },
     "mutate": {"inconclusive_exit": int},
     # the checks whose pass is never reused (unkeyed): each a gate step's name or command, or `gate`'s command
@@ -1416,6 +1420,21 @@ def ineligible(
         or critical(pull, loop)
     ):
         return f"it rates high or critical ({why})"
+    return None
+
+
+def unowed(
+    pull: dict[str, Any], loop: str | None, revert: int | None, waived: set[str]
+) -> str | None:
+    """Why the PR owes no verifier pass, and so no independent rerun either (rerun_gap, rerun_state), or None: it is
+    an exact revert (`revert`, reverts), a `bot` section names it (exempt), or it is an incubating PR whose `waived`
+    (incubation) holds `verifier`. One rule, so `check merge` and `check rerun` never disagree on it."""
+    if revert is not None:
+        return f"it is an exact revert of #{revert}"
+    if "verifier" in waived:
+        return "it is incubating and waives the verifier"
+    if exempt(pull, loop):
+        return "a `bot` section of the policy names it"
     return None
 
 
@@ -1945,8 +1964,9 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
     """Why the PR still lacks the independent rerun its level asks (gatekeeper.md's `levels.<level>.rerun`, levels),
     or None. Stated in inputs and results: the head's tree needs a record of its selection run where the worker has no
     control, a rerun record (reruns) that either
-    - the forge says an app pushed (pusher: the newest push to its branch set it to that commit, by an account of
-      type `Bot`), as a CI run on the head pushes it, since no worker's own account is an app; or
+    - the forge says the CI's app pushed it (pusher: the newest push to its branch set it to that commit, by the app
+      account `loop.rerun_pusher` names, default RERUN_PUSHER), as a CI run on the head pushes it, since no worker's
+      own account is that app; or
     - a verifier pass on the head names by its commit on a `Rerun:` line, as the verifier names the record a fresh
       session it started pushed, in a repo with no CI.
     A record branch someone pushed by hand alone is neither, so the worker's own record never satisfies it, nor does a
@@ -1960,11 +1980,13 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
     if (held := tree_of(head)) is None:
         return f"{asked} the tree of {head} can't be read here, so no record of it can be"
     found = reruns(held)
+    ci_pusher = settings(loop).get("rerun_pusher", RERUN_PUSHER)
     on_head = head_passes(pull, loop)
     named = (
         set()
-        # a pass whose proofs the head only carries (head_passes) reviewed another tree than the record must hold
-        if isinstance(on_head, str) or on_head[0] != head
+        # a pass the head carries (head_passes) names a record of the tree it reviewed: a same-tree head's record is
+        # that one (R1), and reruns() lists no record of another tree, so a carried name never fits another tree
+        if isinstance(on_head, str)
         else {lines.get(RERUN_LINE, "").split(" ")[0].lower() for _, lines in on_head[1]} - {""}
     )
     for ref, commit in found:
@@ -1975,11 +1997,16 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
             push = pusher(ref)
         except (subprocess.CalledProcessError, OSError, ValueError):
             continue
-        if push and push.get("after", "").lower() == commit and push.get("app"):
+        if (
+            push
+            and push.get("after", "").lower() == commit
+            and push.get("app")
+            and push.get("login") == ci_pusher
+        ):
             return None
     said = (
-        f"origin holds {len(found)} rerun record(s) on tree {held}, but none an app pushed or a verifier pass on the"
-        " head names"
+        f"origin holds {len(found)} rerun record(s) on tree {held}, but none {ci_pusher} pushed or a verifier pass on"
+        " the head names"
         if found
         else f"origin holds no rerun record on tree {held}"
     )
@@ -1993,12 +2020,17 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
 def rerun_state(pull: dict[str, Any]) -> int:
     """`check rerun <pr>`, a CI job's first step: one line, `PR #<n>: rerun: <state> (rated <level>)`, the state
     `needed` where the rating's level asks a rerun (levels' `rerun`) and rerun_gap finds none yet, `done` where it
-    finds one, `no` where the level asks none. Exit 0 whatever the state; it writes nothing."""
+    finds one, `not needed (<why>)` where the level asks none or the PR owes no verifier pass (unowed, the rule
+    `check merge` applies). Exit 0 whatever the state; it writes nothing."""
     loop = project()[1]
+    revert, _ = reverts(pull)
     issues = rated_issues(pull)
     level = rating(pull, issues, loop).level
-    if not levels(loop)[level].get("rerun"):
-        state = "no"
+    waived = incubation(pull, [] if revert else adopted(issues, loop), loop)[0]
+    if why := unowed(pull, loop, revert, waived):
+        state = f"not needed ({why})"
+    elif not levels(loop)[level].get("rerun"):
+        state = f"not needed (`levels.{level}.rerun` is off)"
     else:
         state = "done" if rerun_gap(pull, issues, loop) is None else "needed"
     print(f"PR #{pull['number']}: rerun: {state} (rated {level})")
@@ -2920,7 +2952,7 @@ def proofs(
         found += no_evidence(pull)
     if loop is not None:
         found += linked(pull, issues, loop)
-    if revert is None and "verifier" not in waived and not exempt(pull, loop):
+    if not unowed(pull, loop, revert, waived):
         verdicts = passes(pull)
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
@@ -9181,7 +9213,8 @@ def parse_report(
     report: Path,
 ) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
     """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings, its closing
-    `VERDICT:`, `SATISFIED:`, `Risk:` and any `Logic change:` and `Scope:` lines, and the qualifier its `Verifier:` line has after the pass number ('' for
+    `VERDICT:`, `SATISFIED:`, `Risk:` and any `Logic change:`, `Scope:` and `Rerun:` lines (the last two read after
+    the `Head:` line), and the qualifier its `Verifier:` line has after the pass number ('' for
     none). Refused, naming the fix, when `verdict` couldn't post it whole."""
     text = read(report)
     lines = [line.strip() for line in text.splitlines()]
@@ -9266,16 +9299,58 @@ def parse_report(
         i for i, line in enumerate(lines) if re.fullmatch(r"Head:[ \t]*[0-9a-fA-F]{40}", line)
     )
     scope = [line for line in lines[last_head:] if re.match(r"Scope:[ \t]*\S", line)]
-    closing = [verdicts[-1], satisfied[-1], judgments[-1], *logic[-1:], *scope[-1:]]
+    # the rerun a fresh session the verifier started pushed, which the gate reads from the posted review (passes)
+    reruns_named = [line for line in lines[last_head:] if line.startswith(f"{RERUN_LINE}:")]
+    if reruns_named and not re.fullmatch(
+        rf"{RERUN_LINE}:[ \t]*[0-9a-fA-F]{{40}}\b.*", reruns_named[-1]
+    ):
+        raise Refused(
+            f"{report}: `{reruns_named[-1]}`: write `{RERUN_LINE}: <commit>`, the full commit of the record branch the"
+            " rerun pushed"
+        )
+    closing = [
+        verdicts[-1],
+        satisfied[-1],
+        judgments[-1],
+        *logic[-1:],
+        *scope[-1:],
+        *reruns_named[-1:],
+    ]
     heading = f"Verifier ({family}), pass {number}"
     return heading, heads[-1].lower(), found, closing, qualifier
 
 
 def report_check(report: Path) -> int:
-    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying."""
-    parse_report(report)
+    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying;
+    a warning on stderr where it would leave a high-risk head without the rerun it needs (unnamed_rerun)."""
+    closing = parse_report(report)[3]
+    if warning := unnamed_rerun(report, closing):
+        print(warning, file=sys.stderr)
     print(f"{report} reads as a verdict")
     return 0
+
+
+def unnamed_rerun(report: Path, closing: list[str]) -> str | None:
+    """A warning, or None: the report rates the change high (any `Risk:` word but `low`), the policy asks a rerun at
+    `high` and has no CI to make it (`loop.ci: false`, where the verifier starts the rerun), and the report names no
+    `Rerun:` record, so `check merge` would refuse the head. A warning, not a refusal: a label or path may already
+    rate the change high whatever the verifier says, and the gate itself refuses the merge. Outside a checkout, or
+    with a policy that can't be read, None."""
+    if re.match(r"Risk:[ \t]*low\b", closing[2], re.IGNORECASE) or any(
+        line.startswith(f"{RERUN_LINE}:") for line in closing
+    ):
+        return None
+    try:
+        loop = project()[1]
+    except (Refused, OSError, subprocess.CalledProcessError):
+        return None
+    if not no_ci(loop) or not levels(loop)["high"].get("rerun"):
+        return None
+    return (
+        f"warning: {report} rates the change high and names no `{RERUN_LINE}: <commit>`, and this repo has no CI to"
+        " rerun its selection: `check merge` will refuse the head until a verifier pass on it names the record a fresh"
+        " session's `local-ci --record --rerun` pushed"
+    )
 
 
 def report_facts(report: Path) -> dict[str, Any]:
@@ -9291,6 +9366,11 @@ def report_facts(report: Path) -> dict[str, Any]:
     assert risk  # the same
     logic = [line.partition(":")[2].strip() for line in closing[3:] if line.startswith(f"{LOGIC}:")]
     scope = [line.partition(":")[2].strip() for line in closing[3:] if line.startswith("Scope:")]
+    rerun = [
+        line.partition(":")[2].split()[0].lower()
+        for line in closing[3:]
+        if line.startswith(f"{RERUN_LINE}:")
+    ]
     text = read(report)
     return {
         "criteria": criteria(text),
@@ -9307,6 +9387,7 @@ def report_facts(report: Path) -> dict[str, Any]:
         "risk": {"level": risk[1].lower(), "reason": risk[2].strip()},
         "logic_change": logic[0] if logic else None,
         "scope": scope[0] if scope else None,
+        "rerun": rerun[0] if rerun else None,
         "findings": [
             dict(zip(("id", "severity", "path", "line", "title", "body"), finding, strict=True))
             for finding in found
@@ -9326,6 +9407,8 @@ def verdict(pr: int, report: Path) -> int:
     line of the diff when its line is outside it, in the review's body when its file is."""
     heading, head, found, closing, qualifier = parse_report(report)
     denied(report.read_text())  # before any read of GitHub, not only at the post
+    if warning := unnamed_rerun(report, closing):
+        print(warning, file=sys.stderr)
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:

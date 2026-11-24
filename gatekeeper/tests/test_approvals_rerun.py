@@ -5,6 +5,7 @@ account pushed by hand, is no such proof; a low-risk head still merges on the wo
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from approvals_harness import (  # noqa: F401
     loop_md,
     pull,
 )
+from test_approvals import github, reviewing  # noqa: F401
 from test_approvals_narrowed_gate import repo  # noqa: F401
 
 Gate = tuple[dict[str, Any], list[tuple[int, str]]]
@@ -89,8 +91,8 @@ def test_a_rerun_record_a_person_pushed_by_hand_is_refused(
     code, out = check_merge(capsys)
     assert code == 1
     assert out[0].startswith(
-        f"{ASKED} origin holds 1 rerun record(s) on tree {TREE}, but none an app pushed or a verifier pass on the"
-        " head names."
+        f"{ASKED} origin holds 1 rerun record(s) on tree {TREE}, but none github-actions[bot] pushed or a verifier"
+        " pass on the head names."
     )
 
 
@@ -100,11 +102,28 @@ def test_a_rerun_record_an_app_pushed_lets_a_high_risk_head_merge(
     state, _ = gating
     policy(GATES)
     forge["records"] = [(RERUN_REF, RERUN_COMMIT)]
-    forge["pushes"][RERUN_REF] = {"after": RERUN_COMMIT, "login": "github-actions", "app": True}
+    forge["pushes"][RERUN_REF] = {
+        "after": RERUN_COMMIT,
+        "login": "github-actions[bot]",
+        "app": True,
+    }
     state["pull"] = judged_pr(judging("low — fine"), labels=("risk:high",))
     assert check_merge(capsys) == (0, [])
+    # another app's push is not the CI's, unless the policy names that app
+    forge["pushes"][RERUN_REF] = {"after": RERUN_COMMIT, "login": "mergify[bot]", "app": True}
+    code, out = check_merge(capsys)
+    assert code == 1
+    assert "none github-actions[bot] pushed" in out[0]
+    policy(GATES + "loop:\n  rerun_pusher: mergify[bot]\n")
+    assert check_merge(capsys) == (0, [])
+    policy(GATES)
+    forge["pushes"][RERUN_REF] = {
+        "after": RERUN_COMMIT,
+        "login": "github-actions[bot]",
+        "app": True,
+    }
     # an app's push that set the branch to another commit than its tip is someone else's tip
-    forge["pushes"][RERUN_REF] = {"after": "d" * 40, "login": "github-actions", "app": True}
+    forge["pushes"][RERUN_REF] = {"after": "d" * 40, "login": "github-actions[bot]", "app": True}
     assert check_merge(capsys)[0] == 1
 
 
@@ -121,11 +140,35 @@ def test_a_rerun_record_the_verifier_names_lets_a_high_risk_head_merge(
     # a name that is no rerun record's commit names nothing
     state["pull"] = judged_pr(naming("d" * 40), labels=("risk:high",))
     assert check_merge(capsys)[0] == 1
-    # nor does a pass on another head
+    # trailing words after the commit are the verifier's note, not part of the name
     state["pull"] = judged_pr(
-        {**naming(RERUN_COMMIT), "commit": {"oid": "f" * 40}}, labels=("risk:high",)
+        naming(f"{RERUN_COMMIT} (the fresh session's)"), labels=("risk:high",)
     )
-    assert any(ASKED in line for line in check_merge(capsys)[1])
+    assert check_merge(capsys) == (0, [])
+
+
+def test_a_head_of_the_same_tree_keeps_the_rerun_its_carried_verdict_named(
+    gating: Gate,
+    forge: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reword of commit messages keeps the reviewed tree: the verdict carries, and so does the rerun it names,
+    since the record is keyed by that tree (R1). A pass on a head of another tree carries neither."""
+    state, _ = gating
+    policy(GATES)
+    forge["records"] = [(RERUN_REF, RERUN_COMMIT)]
+    forge["pushes"][RERUN_REF] = {"after": RERUN_COMMIT, "login": "worker", "app": False}
+    reworded = {**naming(RERUN_COMMIT), "commit": {"oid": "f" * 40}}
+    state["pull"] = judged_pr(reworded, labels=("risk:high",))
+    code, out = check_merge(capsys)
+    assert code == 0
+    assert not any(ASKED in line for line in out)
+    monkeypatch.setattr(
+        approvals, "tree_of", lambda commit: "9" * 40 if commit == "f" * 40 else TREE
+    )
+    state["pull"] = judged_pr(reworded, labels=("risk:high",))
+    assert check_merge(capsys)[0] == 1
 
 
 def test_a_low_risk_head_merges_on_the_workers_record(
@@ -261,6 +304,20 @@ def test_reruns_lists_only_the_rerun_records_on_origin(
     git_in(
         repo["work"], "push", "-q", "origin", f"{forged}:refs/heads/loop-gate/{held}-222222222222"
     )
+    # one with the head's tree but two parents, and one whose first line names another commit than its parent
+    base = git_in(repo["work"], "rev-parse", "HEAD~1").strip()
+    two = git_in(
+        repo["work"], "commit-tree", held, "-p", head, "-p", base, "-m", message.rstrip("\n")
+    ).strip()
+    git_in(repo["work"], "push", "-q", "origin", f"{two}:refs/heads/loop-gate/{held}-333333333333")
+    elsewhere = message.replace(f" on {head[:12]}: ", f" on {base[:12]}: ", 1)
+    assert elsewhere != message
+    named = git_in(
+        repo["work"], "commit-tree", held, "-p", head, "-m", elsewhere.rstrip("\n")
+    ).strip()
+    git_in(
+        repo["work"], "push", "-q", "origin", f"{named}:refs/heads/loop-gate/{held}-444444444444"
+    )
     assert approvals.reruns(held) == [(ref, tip)]
     assert approvals.reruns("0" * 40) == []
 
@@ -347,12 +404,19 @@ def test_check_rerun_says_needed_done_or_no(
     assert approvals.main(["check", "rerun", "7"]) == 0
     assert capsys.readouterr().out == "PR #7: rerun: needed (rated high)\n"
     forge["records"] = [(RERUN_REF, RERUN_COMMIT)]
-    forge["pushes"][RERUN_REF] = {"after": RERUN_COMMIT, "login": "github-actions", "app": True}
+    forge["pushes"][RERUN_REF] = {
+        "after": RERUN_COMMIT,
+        "login": "github-actions[bot]",
+        "app": True,
+    }
     assert approvals.main(["check", "rerun", "7"]) == 0
     assert capsys.readouterr().out == "PR #7: rerun: done (rated high)\n"
     state["pull"] = judged_pr(judging("low — fine"))
     assert approvals.main(["check", "rerun", "7"]) == 0
-    assert capsys.readouterr().out == "PR #7: rerun: no (rated low)\n"
+    assert (
+        capsys.readouterr().out
+        == "PR #7: rerun: not needed (`levels.low.rerun` is off) (rated low)\n"
+    )
 
 
 def test_check_rerun_needs_a_pr(gating: Gate, capsys: pytest.CaptureFixture[str]) -> None:
@@ -398,3 +462,216 @@ def test_no_push_goes_with_rerun(gating: Gate, capsys: pytest.CaptureFixture[str
     policy(GATES)
     assert approvals.main(["local-ci", "--record", "--no-push"]) == 1
     assert "--no-push goes with --rerun" in capsys.readouterr().out
+
+
+# --- fix round 1: the verifier's Rerun line reaches the gate through `verdict` (C1) ---
+
+REPORT = f"""# Review
+
+Verifier: claude, same-family, pass 1
+
+## Criteria
+
+- A high-risk head merges on the rerun the verifier started: Before merge line 2, its check.
+
+## Correctness
+
+No findings.
+
+Head: {HEAD}
+VERDICT: 0 blocker, 0 major, 0 minor
+SATISFIED: yes
+Risk: RISK
+"""
+
+
+def report_file(tmp_path: Path, risk: str = "low — fine", rerun: str | None = None) -> Path:
+    report = tmp_path / "report.md"
+    report.write_text(
+        REPORT.replace("RISK", risk) + (f"{approvals.RERUN_LINE}: {rerun}\n" if rerun else "")
+    )
+    return report
+
+
+def test_the_posted_review_keeps_the_reports_rerun_line(
+    reviewing: list[tuple[Any, ...]],
+    gating: Gate,
+    forge: dict[str, Any],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No CI: the verifier writes `Rerun: <commit>` after its `Head:` line, the lead posts the report with
+    `verdict`, and `check merge` reads the review as posted: that head merges."""
+    state, _ = gating
+    policy(GATES)
+    state["pull"] = judged_pr()
+    assert approvals.main(["verdict", "7", str(report_file(tmp_path, rerun=RERUN_COMMIT))]) == 0
+    posted = next(call[2] for call in reviewing if call[0] == "review")
+    assert f"Rerun: {RERUN_COMMIT}" in posted["body"]
+    capsys.readouterr()
+    forge["records"] = [(RERUN_REF, RERUN_COMMIT)]
+    forge["pushes"][RERUN_REF] = {"after": RERUN_COMMIT, "login": "worker", "app": False}
+    state["pull"] = judged_pr(
+        {**judging("low — fine"), "body": posted["body"]}, labels=("risk:high",)
+    )
+    assert check_merge(capsys) == (0, [])
+
+
+def test_report_json_names_the_rerun_and_a_malformed_line_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert approvals.main(["report", "--json", str(report_file(tmp_path, rerun=RERUN_COMMIT))]) == 0
+    assert json.loads(capsys.readouterr().out)["rerun"] == RERUN_COMMIT
+    assert approvals.main(["report", str(report_file(tmp_path, rerun="the CI one"))]) == 1
+    assert "write `Rerun: <commit>`, the full commit" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("settings", "risk", "rerun", "warned"),
+    [
+        ("loop:\n  ci: false\n", "high — a gate change", None, True),
+        ("loop:\n  ci: false\n", "high — a gate change", RERUN_COMMIT, False),
+        ("loop:\n  ci: false\n", "low — fine", None, False),
+        ("", "high — a gate change", None, False),
+        ("loop:\n  ci: false\nlevels:\n  high:\n    rerun: false\n", "high — x", None, False),
+    ],
+    ids=["no-ci-high-unnamed", "named", "low", "with-ci", "rerun-off"],
+)
+def test_report_warns_on_a_high_risk_report_naming_no_rerun_where_there_is_no_ci(
+    gating: Gate,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    settings: str,
+    risk: str,
+    rerun: str | None,
+    warned: bool,
+) -> None:
+    policy(settings)
+    assert approvals.main(["report", str(report_file(tmp_path, risk, rerun))]) == 0
+    err = capsys.readouterr().err
+    assert ("names no `Rerun: <commit>`" in err) is warned
+
+
+# --- fix round 1: check rerun applies check merge's exemptions (C4) ---
+
+
+@pytest.mark.parametrize("case", ["revert", "bot", "incubating"])
+def test_a_pr_that_owes_no_verifier_pass_needs_no_rerun_in_check_rerun_and_check_merge(
+    gating: Gate,
+    forge: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    state, _ = gating
+    policy(GATES)
+    pr = judged_pr(judging("low — fine"), labels=("risk:high",))
+    said = {
+        "revert": "it is an exact revert of #3",
+        "bot": "a `bot` section of the policy names it",
+        "incubating": "it is incubating and waives the verifier",
+    }[case]
+    if case == "revert":
+        monkeypatch.setattr(approvals, "reverts", lambda _pull: (3, []))
+    elif case == "bot":
+        monkeypatch.setattr(approvals, "exempting", lambda _pull, _loop: {"paths": ["app.py"]})
+    else:
+        monkeypatch.setattr(approvals, "incubation", lambda _p, _i, _l: ({"verifier"}, []))
+    state["pull"] = pr
+    assert approvals.main(["check", "rerun", "7"]) == 0
+    assert capsys.readouterr().out == f"PR #7: rerun: not needed ({said}) (rated high)\n"
+    approvals.main(["check", "merge", "7"])
+    assert not any(ASKED in line for line in capsys.readouterr().out.splitlines())
+
+
+def test_check_rerun_reads_the_bases_policy(
+    gating: Gate, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A PR's own edit of gatekeeper.md never decides whether CI reruns it."""
+    state, _ = gating
+    state["pull"] = {**judged_pr(judging("low — fine")), "baseRefName": "feature"}
+    read: list[str | None] = []
+    real = approvals.project
+
+    def project(**kw: Any) -> Any:
+        read.append(approvals.POLICY_BASE.get())
+        if read[-1] == "feature":
+            raise approvals.Refused("read")
+        return real(**kw)
+
+    monkeypatch.setattr(approvals, "project", project)
+    assert approvals.main(["check", "rerun", "7"]) == 1
+    assert read[-1] == "feature"
+
+
+# --- fix round 1: the survivors of the verifier's mutation run (T1) ---
+
+
+def test_a_pusher_the_forge_cannot_read_leaves_the_refusal_standing(
+    gating: Gate,
+    forge: dict[str, Any],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, _ = gating
+    policy(GATES)
+    forge["records"] = [(RERUN_REF, RERUN_COMMIT)]
+
+    def unreadable(_ref: str) -> Any:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502")
+
+    monkeypatch.setattr(approvals, "pusher", unreadable)
+    state["pull"] = judged_pr(judging("low — fine"), labels=("risk:high",))
+    code, out = check_merge(capsys)
+    assert code == 1
+    assert out[0].startswith(f"{ASKED} origin holds 1 rerun record(s)")
+
+
+def test_a_head_no_verdict_covers_asks_its_review_not_its_rerun(
+    gating: Gate, forge: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The rerun is read only on a verdict that would land: an unreviewed head is told to get its review first."""
+    state, _ = gating
+    policy(GATES)
+    state["pull"] = judged_pr(labels=("risk:high",))
+    code, out = check_merge(capsys)
+    assert code == 1
+    assert not any(ASKED in line for line in out)
+
+
+def test_a_far_brief_names_the_rerun_script_on_the_verifiers_host(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull(body="Closes #12.\n"))
+    monkeypatch.setattr(approvals, "merge_base", lambda base, head: "b" * 40)
+    monkeypatch.setattr(approvals, "project", lambda: (None, loop_md("loop:\n  ci: false\n")))
+    root = Path(approvals.__file__).resolve().parents[4]
+    monkeypatch.setattr(approvals, "toplevel", lambda: root)
+    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
+    [line] = [l for l in capsys.readouterr().out.splitlines() if l.startswith("- Rerun:")]
+    script = "/there/repo/tmp/loop/pr7-v1-tree/gatekeeper/skills/gatekeeper/scripts/approvals.py"
+    assert f"`uv run {script} local-ci --record --rerun`" in line
+
+
+SKILLS = Path(__file__).resolve().parents[2]
+
+
+def flat(path: str) -> str:
+    return " ".join((SKILLS / path).read_text().split())
+
+
+def test_the_skills_state_the_option_its_defaults_and_the_report_line() -> None:
+    loop_skill = flat("loop/skills/engineering-loop/SKILL.md")
+    assert (
+        "gatekeeper.md `levels.<level>.rerun` is on (by default `high` and `critical`)"
+        in loop_skill
+    )
+    assert "(the gatekeeper skill's policy.md, Independent rerun)" in loop_skill
+    policy_md = (SKILLS / "gatekeeper/skills/gatekeeper/policy.md").read_text()
+    assert "    rerun: false   # the worker's record is the proof\n" in policy_md
+    assert policy_md.count("    rerun: true") == 2
+    assert "`low` {policy, gates, rerun false}" in policy_md
+    assert "## Independent rerun" in policy_md
+    gate_skill = flat("gatekeeper/skills/gatekeeper/SKILL.md")
+    assert "after the `Head:` line, a line `Rerun: <commit>`" in gate_skill

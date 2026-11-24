@@ -184,3 +184,19 @@ def test_anything_but_one_record_branch_of_the_heads_tree_is_refused(
     assert "refused: " in run.stdout and said in run.stdout, run.stdout + run.stderr
     assert branches(origin) == ""
     assert git(origin["bare"], "for-each-ref", "--format=%(refname)", "refs/heads/main") == ""
+
+
+def test_a_rating_raised_after_the_push_triggers_the_rerun_and_it_runs_on_the_heads_tree() -> None:
+    """A `risk:high` label or a verifier's `Risk: high` comes after the push: the label and review events run it
+    again. The run checks out the PR's head, not the merge commit, since the record is keyed by the head's tree; the
+    push job fetches that head by its sha."""
+    found = workflow()
+    # PyYAML reads the key `on` as True
+    events = found[True]
+    assert "labeled" in events["pull_request"]["types"]
+    assert events["pull_request_review"] == {"types": ["submitted"]}
+    checkout = found["jobs"]["rerun"]["steps"][0]
+    assert checkout["uses"].startswith("actions/checkout@")
+    assert checkout["with"]["ref"] == "${{ github.event.pull_request.head.sha }}"
+    script = step(found["jobs"]["push"], "Push the record branch")["run"]
+    assert 'git fetch -q --no-tags --depth=1 origin "$HEAD_SHA"' in script

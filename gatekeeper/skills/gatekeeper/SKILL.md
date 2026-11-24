@@ -95,10 +95,11 @@ shape (anything else in it is prose the review carries):
 - at the end, `Head: <sha>`, the full commit reviewed, then `VERDICT: <n> blocker, <n>
   major, <n> minor`, `SATISFIED: yes|no` and `Risk: low — <reason>` or `Risk: high —
   <reason>`;
-- where it started the independent rerun a high-risk head needs, a line `Rerun: <commit>`, the commit of the record
-  branch that rerun pushed ([policy.md](policy.md), Independent rerun).
+- where it started the independent rerun a high-risk head needs, after the `Head:` line, a line `Rerun: <commit>`, the
+  full commit of the record branch that rerun pushed ([policy.md](policy.md), Independent rerun), which the review
+  carries.
 
-It refuses a report without the `Head:`, `Verifier:` or `Risk:` line, a `### ` heading with a
+It refuses a report without the `Head:`, `Verifier:` or `Risk:` line, a `Rerun:` line naming no full commit, a `### ` heading with a
 `(<severity>)` it can't read, and finding headings that don't add up to the `VERDICT:`
 counts. A question for the owner goes in `<report>.question` beside it, which `report --json`
 prints.

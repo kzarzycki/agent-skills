@@ -159,6 +159,7 @@ carry_over_main:
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
 | | `pre_land` | a check `land` runs for each PR before batching it, parsed as `gate` is, from the base's tree with `LAND_HEAD` and `LAND_BASE` set, such as one refusing a branch forked before a restructuring; non-zero leaves that PR out of the batch with one comment per head holding its output, and it stays ready; `check merge` runs it too, as a wait, so it never calls clear a PR `land` would leave out (`approvals.py`'s docstring says how) | no check |
 | | `head_proof` | `status`, a commit status `land` requires on each head, and `env`, the variables `local-ci --record --head-proof` takes from the caller for that run, both required (Approvals and proof) | no head proof is asked |
+| | `rerun_pusher` | the account whose push of a rerun record counts as the CI's rerun (Independent rerun, below), such as `my-ci-app[bot]` | `github-actions[bot]` |
 | | `stalled_after_hours` | a whole number of hours: `check stalled` lists an open PR whose newest verifier pass on its head is satisfied (or at the cap) but that still lacks the go its rating asks or the `head_proof` record, once both its head's push and its newest verdict on that head are more than this long ago, with neither coming in, naming what it misses (`missing: go`, `missing: record`) | `4` |
 | `mutate` | `inconclusive_exit` | a whole number from 1 to 255: the exit a test command returns for "setup failed, no verdict", which `mutate.py` reports as an inconclusive patch (never killed) and exits 3 for; the project's test command exits with it when its device or build setup fails (verifier.md, Mutation-check the new tests) | `75` |
 | `select` | `unkeyed` | a list of checks, each a `gate_steps` step's `name` or `command`, or `gate`'s command: checks that read what no record key covers (a live service, a credential that rotates, the host itself), so the same tree can give another result. `local-ci`, `local-ci --record` and `land` run a listed check every time and never reuse its pass, and `queue-select` prints it for every queue batch; `local-ci <pr>` without a run names it as the step to run | every step's pass is reused on its key |
@@ -216,14 +217,18 @@ needs its selection run again where the worker has no control. The rule in input
   `Affected tests:` selection against `--base`, else the merge base (the full gate without that line), reusing no
   pass, and names `LOOP_RERUN` in its command and `Env:` line, so its record is keyed apart from the worker's and a
   branch of that name already on origin makes it fail rather than reuse it.
-- **Result:** the merge passes when one such record either was pushed by an app (the forge's newest push to its
-  branch set it to that commit, from an account of type `Bot`, as a CI run's token pushes), or is named by its commit
-  on a `Rerun: <commit>` line of a verifier pass on the head (a fresh session the verifier started, in a repo with no
-  CI, pushed it; `loop.py brief` tells the verifier so there). Otherwise `check merge` and `land` refuse, naming what
-  is missing. A level with `rerun: false` keeps the worker's record as the proof.
+- **Result:** the merge passes when one such record either was pushed by the CI's app (the forge's newest push to
+  its branch set it to that commit, from the app account `loop.rerun_pusher` names, by default
+  `github-actions[bot]`, the workflow token), or is named by its commit on a `Rerun: <commit>` line of a verifier
+  pass on the head, or on a head of the same tree that carries its verdict (a fresh session the verifier started,
+  in a repo with no CI, pushed it; `loop.py brief` tells the verifier so there, and `report` warns on a high-risk
+  report there that names none). Otherwise `check merge` and `land` refuse, naming what is missing. A level with
+  `rerun: false` keeps the worker's record as the proof, and so does a PR that owes no verifier pass: an exact
+  revert, a bot's PR and an incubating PR that waives the verifier.
 
 In a repo with CI the rerun is two jobs, so the PR's code never runs with a token that can write. The first, with a
-read-only token, runs `check rerun <pr>` (`rerun: needed`, `done` or `no`, the one step on a head that needs none),
+read-only token, runs `check rerun <pr>` (`rerun: needed`, `done` or `not needed (<why>)`, by the rule `check merge` applies, the
+one step on a head that needs none),
 then, where needed, `local-ci --record --rerun --no-push`, which makes the record commit, keeps it as a local branch
 and names it, and hands it on as a git bundle. The second, holding the write token, needs the first's success,
 checks out and runs nothing of the PR, checks that the bundle holds one branch, `loop-gate/<the head's tree>-<key>`,
@@ -235,7 +240,9 @@ What it does not stop: in a repo with CI, the PR's own code decides the first jo
 on, so a PR whose code fakes a green run still gets its record pushed; what the split stops is that code pushing
 anything else, or a record of another tree, with the write token. A workflow file a same-repo PR edits runs in place
 of the base's, so such a PR can change both jobs; the verifier reads that diff, and a project whose CI pushes records
-keeps its workflows under `risk.paths`. With no CI, a verifier pass is a review by the shared
+keeps its workflows under `risk.paths`. Only one account's push counts, `loop.rerun_pusher`'s: a repo whose
+workers push with that same token (an agent run inside the CI, whose token is the workflow's) gets no independence
+from this route, since a worker's hand-pushed record is then that account's push too; name another app there, or
+leave such a repo on the verifier's `Rerun:` line. With no CI, a verifier pass is a review by the shared
 account, so the gatekeeper trusts the verifier's `Rerun:` line as it trusts its `SATISFIED:` line. Signed attestations
-are #2143's Not now. An exact revert, a bot's PR and an incubating PR that waives the verifier need no rerun, as they
-need no verifier pass.
+are #2143's Not now.
