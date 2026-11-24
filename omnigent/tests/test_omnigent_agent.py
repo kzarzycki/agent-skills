@@ -3682,8 +3682,6 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    # the checkout's own policy delegates (#1551): the plain wording is what a policy without it gets
-    monkeypatch.setattr(omnigent_agent, "lead_delegation", lambda *_: "")
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )
