@@ -173,10 +173,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `needs-owner`), since a verifier pass on a narrowed spec only finds what the report
    already said. Then write the PR body's `Spec deviations:` line: `none`, or each deviation
    with a link to the owner's decision (an issue comment URL or `#n`). Before each pass, rerun on the head every
-   proof the spec's acceptance needs whose log names another commit, since the verifier
-   counts it as missing and the pass is spent on it:
-   `for f in <proof logs>; do head -1 "$f" | grep -qx "$(git rev-parse HEAD)" || echo "stale: $f"; done`
-   prints the ones to rerun. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
+   proof the spec's acceptance needs whose inputs the round changed, since the verifier
+   counts it as missing and the pass is spent on it; a proof is stale by its inputs, not
+   because its log names another commit (SKILL.md, A check runs only if it can fail because of the change, R4).
+   `git diff --name-only <the head the proof ran on> HEAD` lists what the round changed, to compare with the proof's inputs. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
    brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where heavy steps run.
    A verifier on a host starts on that pushed
@@ -415,7 +415,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA where the project has one
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
-   with `ci: false` there is none; the nightly is the run that tests main in full: SKILL.md, Nightly). When it ends red, revert before anything else
+   with `ci: false` there is none; the nightly is the run that tests main in full: SKILL.md, Nightly).
+   A merge whose tree the queue tested has a push run that tests nothing and names the queue's run in its summary:
+   read that run's result instead, and wait on no push run
+   (SKILL.md, A check runs only if it can fail because of the change). When it ends red, revert before anything else
    (SKILL.md, Revert first): `git revert --no-edit <merge sha>` on a new branch off a
    freshly fetched `origin/main`, then a PR whose body says `Reverts #<pr>` and
    `Part of #<spec>`, so `approvals.py` finds the spec, through this loop; reopen every issue
