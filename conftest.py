@@ -329,6 +329,15 @@ def _status_follows_the_pull(
 
 
 @pytest.fixture(autouse=True)
+def _land_heads_recorded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The local queue's land refuses a head with no pass record on origin (head_recorded, R6): its other tests have no
+    origin holding one, so every head reads recorded there. test_approvals_land_record.py runs the real read."""
+    module = request.module
+    if module.__name__ != "test_approvals_land_record" and hasattr(module, "approvals"):
+        monkeypatch.setattr(module.approvals, "head_recorded", lambda _pull, _waits: True)
+
+
+@pytest.fixture(autouse=True)
 def _brief_head_merges(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """approvals.py's brief checks the PR's head merges into its base with git, and lists the open PRs that change the
     same files: its other tests have no such repo, so the check reads clean there and no open PR is listed, which keeps

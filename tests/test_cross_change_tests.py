@@ -4,6 +4,7 @@ merge a PR of which has no record."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -13,7 +14,13 @@ from tools import affected_tests as a
 from tools import cross_change_tests as c
 
 # the tests each file reaches: only `x2.py` and `y2.py` reach one test both
-REACH = {"x.py": {"t_x"}, "y.py": {"t_y"}, "x2.py": {"t_x", "t_both"}, "y2.py": {"t_y", "t_both"}}
+REACH = {
+    "x.py": {"t_x"},
+    "y.py": {"t_y"},
+    "z.py": {"t_z"},
+    "x2.py": {"t_x", "t_both"},
+    "y2.py": {"t_y", "t_both"},
+}
 
 
 def git(*args: str) -> str:
@@ -35,8 +42,9 @@ def commit(name: str) -> None:
 def draft(*prs: tuple[int, str]) -> tuple[str, dict[int, str]]:
     """main with one file, then Mergify's draft on it: one `Merge of PR <n>` commit per PR (its file), as the batch
     drafts of this repo are built. Returns the base tip and each PR's head."""
-    git("init", "-q", "-b", "main")
-    commit("seed.py")
+    if not Path(".git").exists():  # else the repo `project` made, on its seed
+        git("init", "-q", "-b", "main")
+        commit("seed.py")
     tip = git("rev-parse", "HEAD")
     heads = {}
     for number, name in prs:
@@ -60,7 +68,10 @@ def mapped(tmp_path, monkeypatch):
 
 
 def records(*held: str):
-    return lambda head: (head in held, "recorded: …" if head in held else "no record of the gate")
+    return lambda head, point: (
+        head in held,
+        "recorded: …" if head in held else "no record of the gate",
+    )
 
 
 def test_every_pr_recorded_and_no_test_reached_twice_selects_only_the_unkeyed_checks(
@@ -166,17 +177,87 @@ def test_the_command_writes_the_unkeyed_checks_and_prints_the_targets(
     assert capsys.readouterr().out == "t_y\n"
 
 
+def push_record(head: str, command: str, env: dict[str, str]) -> None:
+    """A pass record of `command` on `head`'s tree pushed to origin the way `local-ci --record` publishes one: the
+    branch `loop-gate/<tree>-<key>`, its commit holding the tree, the head as parent, the described line and Env."""
+    g = c.gatekeeper()
+    tree = git("rev-parse", f"{head}^{{tree}}")
+    message = f"{g.described(tree, head, command)}\n\nEnv: {json.dumps(env, sort_keys=True)}"
+    record = git("commit-tree", tree, "-p", head, "-m", message)
+    git("push", "-q", "origin", f"{record}:{g.RECORD_BRANCH.format(g.record_name(tree, command))}")
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    """A clone of a bare origin whose main holds a policy (`gate: mise run check-land`) and loop.md's `Affected
+    tests: mise run check-fast`, as this repo's do; the real gatekeeper reads them."""
+    origin = tmp_path / "origin.git"
+    git("init", "-q", "--bare", "-b", "main", str(origin))
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    monkeypatch.setattr(a, "load_map", lambda: ("a" * 40, object()))
+    monkeypatch.setattr(a, "targets", fake_targets)
+    git("init", "-q", "-b", "main")
+    Path("docs/agents").mkdir(parents=True)
+    Path("docs/agents/gatekeeper.md").write_text(
+        "# Gatekeeper\n\n## Policy\n\n```yaml\nloop:\n  gate: mise run check-land\n```\n"
+    )
+    Path("docs/agents/loop.md").write_text("# Loop\n\nAffected tests: mise run check-fast\n")
+    git("remote", "add", "origin", str(origin))
+    commit("seed.py")
+    git("push", "-q", "-u", "origin", "main")
+    git("remote", "set-head", "origin", "main")
+
+
+def test_only_a_record_of_the_affected_tests_command_drops_a_prs_own_tests(project, capsys) -> None:
+    """#1 has a record of loop.md's `Affected tests:` command against its branch point, #2 only one of the `gate`
+    (another command, which proves no test), #3 none: only #1's own tests leave the batch."""
+    tip, heads = draft((1, "x.py"), (2, "y.py"), (3, "z.py"))
+    for head in heads.values():
+        git("push", "-q", "origin", f"{head}:refs/heads/pr-{head[:7]}")
+    push_record(heads[1], f"GATE_BASE={tip} mise run check-fast (narrowed)", {"GATE_BASE": tip})
+    push_record(heads[2], "mise run check-land", {})
+    assert c.select(tip, unkeyed=list) == ([], ["t_y", "t_z"])
+    err = capsys.readouterr().err
+    assert (
+        f"PR #1 (head {heads[1][:12]}): record found: recorded: `GATE_BASE={tip} mise run check-fast"
+        in err
+    )
+    assert (
+        f"PR #2 (head {heads[2][:12]}): record none: no record of `GATE_BASE={tip} mise run check-fast"
+        in err
+    )
+
+
+def test_without_an_affected_tests_line_no_pr_has_a_record(project) -> None:
+    tip, heads = draft((1, "x.py"))
+    Path("docs/agents/loop.md").write_text("# Loop\n")
+    commit("loop-line-gone.py")
+    git("push", "-q", "origin", "main")
+    push_record(heads[1], f"GATE_BASE={tip} mise run check-fast (narrowed)", {"GATE_BASE": tip})
+    assert c.recorded(heads[1], tip) == (
+        False,
+        "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
+    )
+
+
+def test_a_gatekeeper_that_fails_to_answer_is_no_record(monkeypatch) -> None:
+    def broken():
+        raise RuntimeError("no gatekeeper")
+
+    monkeypatch.setattr(c, "gatekeeper", broken)
+    with pytest.raises(RuntimeError):
+        c.unkeyed_checks()
+    monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper())
+    assert c.recorded("h1", "p1") == (False, "the record could not be read: origin unreachable")
+
+
 class FakeGatekeeper:
-    """approvals' gate_record and gate_plan, as the defaults call them."""
+    """approvals' gate_plan, and a narrowing() that fails, as the defaults call them."""
 
-    def __init__(self, code: int | None) -> None:
-        self.code = code
-
-    def gate_record(self, head, words):
-        if self.code is None:
-            raise RuntimeError("origin unreachable")
-        print("recorded: Tree t on h" if self.code == 0 else f"no record of the gate on {head}")
-        return self.code
+    def narrowing(self):
+        raise RuntimeError("origin unreachable")
 
     def gate_plan(self):
         return [
@@ -185,21 +266,6 @@ class FakeGatekeeper:
         ]
 
 
-@pytest.mark.parametrize(
-    ("code", "found", "line"),
-    [
-        (0, True, "recorded: Tree t on h"),
-        (1, False, "no record of the gate on h1"),
-        (None, False, "gate-record failed: origin unreachable"),
-    ],
-)
-def test_a_record_is_the_gatekeepers_gate_record_and_a_failure_is_none(
-    monkeypatch, code, found, line
-) -> None:
-    monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper(code))
-    assert c.recorded("h1") == (found, line)
-
-
 def test_the_unkeyed_checks_are_the_gate_steps_select_unkeyed_lists(monkeypatch) -> None:
-    monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper(0))
+    monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper())
     assert c.unkeyed_checks() == ["sh live.sh"]

@@ -8,8 +8,11 @@ stdout is one pytest target per line; `--unkeyed-out` gets one command per line,
 - for each PR of the batch, the tests that both its diff and the rest of the merge reach (`targets(diff) ∩
   targets(rest)`), the rest being the base's commits since the PR's branch point plus the other PRs' diffs;
 - the floor: every test the diff of a PR with no record for its head's tree reaches, since the cross-change set is
-  safe only when each PR's own tests passed on its head. The record is the gatekeeper's (`approvals.py gate-record
-  <head>`), the one `local-ci --record` pushes as `loop-gate/<tree>-<key>`; no other is read.
+  safe only when each PR's own tests passed on its head. A record is a run of that PR's selected tests: the
+  gatekeeper's pass record (`loop-gate/<tree>-<key>`, as narrowed `local-ci --record` pushes it) of loop.md's
+  `Affected tests:` command against the PR's branch point, read as `local-ci <pr>` reads it (narrowed_to, step_pass).
+  A record of the `gate` alone proves no test, so it never counts, and without an `Affected tests:` line no PR has a
+  record, so every PR's own tests run.
 
 The PRs are the batch draft's first-parent commits on `base..HEAD`: Mergify builds the draft from `main` with one
 `Merge of PR <n>` commit per PR, its second parent the PR's head (seen on this repo's batch drafts). The per-test map
@@ -26,8 +29,6 @@ set where every PR has a record passes and says so. Every line of the selection 
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
 import re
 import subprocess
 import sys
@@ -91,17 +92,37 @@ def gatekeeper():
     return approvals
 
 
-def recorded(head: str) -> tuple[bool, str]:
-    """Whether origin holds the gatekeeper's pass record of the gate on `head`'s tree (`gate-record <head>`), and
-    its line; a gatekeeper that fails to answer is no record."""
-    out = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(out):
-            code = gatekeeper().gate_record(head, [])
+def recorded(head: str, point: str) -> tuple[bool, str]:
+    """Whether origin holds the gatekeeper's pass record of loop.md's `Affected tests:` command on `head`'s tree,
+    narrowed against `point` (the PR's branch point, the merge base `local-ci --record` selected against), and why; a
+    gatekeeper that fails to answer is no record."""
+    g = gatekeeper()
     # any failure to read the record (an import, a refusal, git) is no record, said, so the PR's tests run
+    try:
+        if g.narrowing() is None:
+            return (
+                False,
+                "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
+            )
+        with g.narrowed_to(point):
+            plan = g.gate_plan()
+            if len(plan) != 1 or not plan[0]["command"].endswith(g.NARROWED):
+                return (
+                    False,
+                    "the gate has `gate_steps`, which never run the `Affected tests:` command",
+                )
+            [step] = plan
+            if (held := g.tree_of(head)) is None:
+                return False, f"no tree for {head}"
+            why: list[str] = []
+            found = g.step_pass(head, held, step, why, show=False)
     except Exception as exc:  # noqa: BLE001
-        return False, f"gate-record failed: {exc}"
-    return code == 0, " ".join(out.getvalue().split())[:200]
+        return False, f"the record could not be read: {exc}"
+    if found is None:
+        return False, f"no record of `{step['command']}` on tree {held}" + (
+            f": {'; '.join(why)}" if why else ""
+        )
+    return True, f"recorded: `{step['command']}` on tree {held}"
 
 
 def unkeyed_checks() -> list[str]:
@@ -111,7 +132,7 @@ def unkeyed_checks() -> list[str]:
 
 def select(
     base: str,
-    record: Callable[[str], tuple[bool, str]] = recorded,
+    record: Callable[[str, str], tuple[bool, str]] = recorded,
     unkeyed: Callable[[], list[str]] = unkeyed_checks,
 ) -> tuple[list[str], list[str]]:
     """The batch's unkeyed checks and its test targets; Refused when both are empty and a PR has no record."""
@@ -128,7 +149,7 @@ def select(
         return checks, picked
     missing = []
     for pull in pulls:
-        found, line = record(pull.head)
+        found, line = record(pull.head, pull.point)
         say(
             f"PR {pull.name} (head {pull.head[:12]}): record {'found' if found else 'none'}: {line}"
         )

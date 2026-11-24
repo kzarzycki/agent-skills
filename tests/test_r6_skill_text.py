@@ -32,7 +32,9 @@ def test_the_r6_bullet_holds_the_floor_the_refusal_the_fallback_and_the_batching
     [bullet] = re.findall(r"- \*\*R6\.[^\n]*", (LOOP / "SKILL.md").read_text())
     for part in (
         "`select.unkeyed` checks",
-        "The floor: a PR in the entry with no record for its tree (R1) adds its own affected tests",
+        "The floor: a PR in the entry with no record for its tree (R1) of loop.md's `Affected tests:` command",
+        "a record of the gate alone proves no test",
+        "the local queue's `land`, which no queue run tests, refuses a head with no pass record (`gate-record <head>`)",
         "an empty set passes only when every PR has a record",
         "is refused",
         "a path that skips that step merges nothing and says why",

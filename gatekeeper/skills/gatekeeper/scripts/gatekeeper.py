@@ -147,7 +147,9 @@ policy: the GitHub merge queue where the rules carry a `merge_queue` rule, else 
 the policy says a queue does. All take the
 same candidates (step 2). A queue gates each group it merges in CI (GitHub's `merge_group` run, Mergify's batch
 check); the local merge queue runs no gate at all: a PR merges on the verifier's record on its head, with the checks
-the base requires green there, and nothing reruns at land (#1872). One `land` runs one of them, never a mix. The local
+the base requires green there, and nothing reruns at land (#1872). Since no queue run tests that merge, a head with no
+pass record on origin (`gate-record <head>` exit 1) is not landed, and `land` says which record is missing and that
+`local-ci --record` on that head makes it (head_recorded, R6); a break-glass PR, which the owner merges, is not held. One `land` runs one of them, never a mix. The local
 merge queue lands its candidates as one batch:
 1. It takes the landing lock, the branch `loop-landing/<base>` on `origin`, which only moves forward, so a host whose
 pushes may only create or fast-forward a branch under `refs/heads/` (a cloud session's) takes and releases it too. Its
@@ -7346,8 +7348,10 @@ def local_queue(
     """The local merge queue, under the lock (`held`, its commits): merge every candidate's head onto `base` locally,
     oldest PR first, leaving out a PR that conflicts or that `pre_land` refuses, move the lock to name the last PR to
     land (repointed), and merge each through GitHub in that order. No gate runs: the verifier's record on each head is
-    the proof, beside the checks the base requires green on it (landable), so nothing reruns at land (#1872)."""
+    the proof, beside the checks the base requires green on it (landable), so nothing reruns at land (#1872). With no
+    queue run to test the merge, a candidate whose head has no pass record (head_recorded) is refused (R6)."""
     candidates, waits, issues = candidates_of(named, base, tracker, loop, required, only)
+    candidates = [pull for pull in candidates if head_recorded(pull, waits)]
     waited = ""
     if (
         candidates
@@ -7386,6 +7390,26 @@ def local_queue(
     # each named PR's exit: its wait's, else 0 when it merged, else 1
     done = {pull["number"] for pull, *_ in landed} - failed
     return outcome(named, {number: (0, False) for number in done} | waits, worst, failed)
+
+
+def head_recorded(pull: dict[str, Any], waits: dict[int, tuple[int, bool]]) -> bool:
+    """Whether origin holds a pass record of the gate on the PR's head (gate_record, `gate-record <head>` exit 0): the
+    local queue runs no test, so a merge with neither a queue run nor a record of each PR is refused (engineering-loop
+    SKILL.md, R6), naming the missing record and the command that makes it; the refused PR's exit is 1 in `waits`. A
+    break-glass PR never gets here: landable holds it for the owner's own merge."""
+    head = pull["headRefOid"]
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        code = gate_record(head, [])
+    if code == 0:
+        return True
+    print(
+        f"PR #{pull['number']}: not landed: no pass record on its head {head[:12]}"
+        f" ({' '.join(said.getvalue().split())}); run `approvals.py local-ci --record` on that head, which records"
+        " one, then land again"
+    )
+    waits[pull["number"]] = (1, False)
+    return False
 
 
 def check_never_comes(pull: dict[str, Any], required: set[str]) -> bool:
