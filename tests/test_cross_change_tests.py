@@ -221,8 +221,8 @@ def test_only_a_record_of_the_affected_tests_command_drops_a_prs_own_tests(proje
     assert c.select(tip, unkeyed=list) == ([], ["t_y", "t_z"])
     err = capsys.readouterr().err
     assert (
-        f"PR #1 (head {heads[1][:12]}): record found: recorded: `GATE_BASE={tip} mise run check-fast"
-        in err
+        f"PR #1 (head {heads[1][:12]}): record found: recorded: Tree " in err
+        and f"narrowed vs {tip[:12]}" in err
     )
     assert (
         f"PR #2 (head {heads[2][:12]}): record none: no record of `GATE_BASE={tip} mise run check-fast"
@@ -286,3 +286,73 @@ class FakeGatekeeper:
 def test_the_unkeyed_checks_are_the_gate_steps_select_unkeyed_lists(monkeypatch) -> None:
     monkeypatch.setattr(c, "gatekeeper", lambda: FakeGatekeeper())
     assert c.unkeyed_checks() == ["sh live.sh"]
+
+
+@pytest.fixture
+def worker_head(project, monkeypatch):
+    """A worker's head on a branch off main, with loop.md's `Affected tests:` line set by `affected(<command>)`; the
+    gatekeeper reads no PR (no forge here) and writes no commit status."""
+    g = c.gatekeeper()
+    monkeypatch.setattr(g, "open_pulls", list)
+    monkeypatch.setattr(g, "shown", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("GATE_SLOTS", "off")
+    monkeypatch.delenv("GATE_BASE", raising=False)
+
+    def affected(command: str) -> tuple[str, str]:
+        Path("docs/agents/loop.md").write_text(f"# Loop\n\nAffected tests: {command}\n")
+        commit("loop-line.py")
+        git("push", "-q", "origin", "main")
+        point = git("rev-parse", "HEAD")
+        git("checkout", "-q", "-b", "work")
+        commit("x.py")
+        return point, git("rev-parse", "HEAD")
+
+    return g, affected
+
+
+def narrowed_words(point: str, command: str) -> list[str]:
+    return [f"GATE_BASE={point}", *command.split(), "(narrowed)"]
+
+
+def test_a_passing_affected_tests_run_records_what_gate_record_and_the_floor_read(
+    worker_head,
+) -> None:
+    g, affected = worker_head
+    point, head = affected("true")
+    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 1
+    assert c.recorded(head, point)[0] is False
+    assert g.main(["affected-tests", "--record"]) == 0
+    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 0
+    found, line = c.recorded(head, point)
+    assert found, line
+    assert line.startswith("recorded: Tree ") and f"narrowed vs {point[:12]}" in line
+    # the floor takes it: the PR's own tests leave a batch it is in
+    git("checkout", "-q", "main")
+    git("merge", "-q", "--no-ff", "-m", "Merge of PR 1", "work")
+    assert c.select(point, unkeyed=list) == ([], [])
+
+
+def test_a_failing_affected_tests_run_records_nothing(worker_head) -> None:
+    g, affected = worker_head
+    point, head = affected("false")
+    assert g.main(["affected-tests", "--record"]) == 1
+    assert g.main(["gate-record", head, "--", *narrowed_words(point, "false")]) == 1
+    assert c.recorded(head, point)[0] is False
+
+
+def test_a_run_that_cant_tell_records_nothing(worker_head, capsys) -> None:
+    g, affected = worker_head
+    point, head = affected("true")
+    assert g.main(["affected-tests", "--record", "--base", "0" * 40]) == 0
+    assert "affected-tests: nothing: no base to select against" in capsys.readouterr().err
+    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 1
+
+
+def test_without_record_a_passing_run_records_nothing(worker_head) -> None:
+    g, affected = worker_head
+    point, head = affected("true")
+    assert g.main(["affected-tests"]) == 0
+    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 1
+    # the flag is what records: the same run with it leaves the record
+    assert g.main(["affected-tests", "--record"]) == 0
+    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 0

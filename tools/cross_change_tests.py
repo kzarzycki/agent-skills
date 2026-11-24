@@ -10,7 +10,8 @@ stdout is one pytest target per line; `--unkeyed-out` gets one command per line,
 - the floor: every test the diff of a PR with no record for its head's tree reaches, since the cross-change set is
   safe only when each PR's own tests passed on its head. A record is a run of that PR's selected tests: the
   gatekeeper's pass record (`loop-gate/<tree>-<key>`, as narrowed `local-ci --record` pushes it) of loop.md's
-  `Affected tests:` command against the PR's branch point, read as `local-ci <pr>` reads it (narrowed_to, step_pass).
+  `Affected tests:` command against the PR's branch point, the one `affected-tests --record` pushes on the worker's
+  final head, read as `gate-record <head> -- <that command>` reads it.
   A record of the `gate` alone proves no test, so it never counts, and without an `Affected tests:` line no PR has a
   record, so every PR's own tests run.
 
@@ -29,7 +30,10 @@ set where every PR has a record passes and says so. Every line of the selection 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import re
+import shlex
 import subprocess
 import sys
 from collections.abc import Callable
@@ -94,9 +98,10 @@ def gatekeeper():
 
 def recorded(head: str, point: str) -> tuple[bool, str]:
     """Whether origin holds the gatekeeper's pass record of loop.md's `Affected tests:` command on `head`'s tree,
-    narrowed against `point` (the PR's branch point, the merge base `local-ci --record` selected against), and why; a
-    gatekeeper that fails to answer is no record."""
+    narrowed against `point` (the PR's branch point, the merge base `affected-tests --record` selects against), read
+    as `gate-record <head> -- <that command>` reads it; and why. A gatekeeper that fails to answer is no record."""
     g = gatekeeper()
+    said = io.StringIO()
     # any failure to read the record (an import, a refusal, git) is no record, said, so the PR's tests run
     try:
         if g.narrowing() is None:
@@ -105,24 +110,15 @@ def recorded(head: str, point: str) -> tuple[bool, str]:
                 "loop.md has no `Affected tests:` line, so no record of a PR's tests exists",
             )
         with g.narrowed_to(point):
-            plan = g.gate_plan()
-            if len(plan) != 1 or not plan[0]["command"].endswith(g.NARROWED):
-                return (
-                    False,
-                    "the gate has `gate_steps`, which never run the `Affected tests:` command",
-                )
-            [step] = plan
-            if (held := g.tree_of(head)) is None:
-                return False, f"no tree for {head}"
-            why: list[str] = []
-            found = g.step_pass(head, held, step, why, show=False)
+            narrowed = g.narrowed_gate()
+        if narrowed is None:
+            return False, "the gate has `gate_steps`, which never run the `Affected tests:` command"
+        words = [*shlex.split(narrowed[0][: -len(g.NARROWED)]), g.NARROWED.strip()]
+        with contextlib.redirect_stdout(said):
+            code = g.gate_record(head, words)
     except Exception as exc:  # noqa: BLE001
         return False, f"the record could not be read: {exc}"
-    if found is None:
-        return False, f"no record of `{step['command']}` on tree {held}" + (
-            f": {'; '.join(why)}" if why else ""
-        )
-    return True, f"recorded: `{step['command']}` on tree {held}"
+    return code == 0, " ".join(said.getvalue().split())[:300]
 
 
 def unkeyed_checks() -> list[str]:
