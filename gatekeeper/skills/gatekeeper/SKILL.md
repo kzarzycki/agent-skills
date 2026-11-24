@@ -28,6 +28,9 @@ Exit codes, for every verb: `0` allowed or done; `1` refused, with one line per 
 proof; `3` waiting (pending checks, a forge state not computed yet): run it again. The
 script's docstring is the manual: every proof each verb checks and every record it writes.
 
+A PR carrying `needs-owner` or `loop:hold` is refused at merge, by `land` and `check merge` alike, with a line naming the
+label: `loop:hold` is a lead's hold, or another coordinator's claim, and its PR comment says who and why.
+
 ## Files
 
 - `scripts/gatekeeper.py`: the CLI, the policy reader and the gate.

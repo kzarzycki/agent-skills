@@ -94,16 +94,11 @@ takes a Claude mode (codex-native hands launch args to the `codex` CLI, whose te
 `--dangerously-bypass-approvals-and-sandbox` (approval policy `never`, full-access sandbox), since a prompt
 nobody answers blocks an unattended session; `--permission-mode default` keeps Codex's own stance.
 A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
-`permission_mode` (the server answers the VM's tool requests itself under bypass), and starts in
-`bypassPermissions` unless the flag names a mode, since it runs unattended in a disposable VM where an
-`auto` prompt waits on nobody: a mode from the variable alone is not applied to it, and `start` says
-so on stderr. `start` refuses a flag naming any other mode for it. Until
-Omnigent applies a default mode per agent definition on every start path (kzarzycki/omnigent#529), this
-bypass default is the pack's own; after it, `start` passes no mode unless asked. Omnigent hands
-bypass on only from a session that runs in it itself (kzarzycki/omnigent#526) and answers any other
-creator's bypass request with HTTP 400, so `start` from such a session fails, naming the two ways on:
-start the worker from a session or host shell in bypass, or pass `--permission-mode auto` to accept
-one that waits on prompts. It never falls back to `auto` itself. Either way `start` prints the mode
+`permission_mode` (the server answers the VM's tool requests itself under bypass), from the flag only:
+with none, `start` sends no mode and the host's agent default applies. A mode from the variable alone
+is not applied to it, and `start` says so on stderr. `start` refuses a flag naming any other mode for it.
+Omnigent hands bypass on only from a session that runs in it itself and answers any other creator's
+bypass request with HTTP 400, which `start` reports as the create's failure. Either way `start` prints the mode
 the session got, read back from its record (`session <id>: permission mode <mode>`, `unknown` when
 the record can't be read). Start every child through `start` or `run`, never a raw
 `sys_session_create` with a mode of its own, since only these pick the mode and report it.
@@ -341,7 +336,9 @@ wake beside Omnigent's notice. Don't poll or `watch` a child for the wake you we
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
 each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`
 passes; keep a call's `--limit` under the harness's tool timeout, so the call returns rather
-than being cut off, and call it again while the budget lasts.
+than being cut off, and call it again while the budget lasts. It refuses a command that reads one PR through gh
+(`gh pr view|checks|status`, `gh api .../pulls/<n>`) with exit 2: `wait-for --pr <n>` reads the
+PR through ETags, which cost no quota while it doesn't move.
 
 **Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's idle CPU
 share over about a second and its available memory, and exits 0 when it has room for another
@@ -468,8 +465,8 @@ claude.ai events API (the VM has no route to the server), so a cloud lead passes
 the repo's project: the owner opens it from the sidebar and talks to it, its own children
 report to it, and archiving it ends only its own runner. Its brief opens with the lead
 preamble: only the owner's own words, quoted with where they were said, approve, the rest
-of the brief is a colleague's guidance, the lead asks the owner in its own session rather
-than in a question file, and it writes its final report to the path. Where the base policy
+of the brief is a colleague's guidance, the lead asks the owner its own questions on its own
+question card rather than in a question file, and it writes its final report to the path. Where the base policy
 of its workspace's checkout (`origin/<default branch>`'s policy file, read by engineering-loop's
 `base_policy` and `delegation`) sets `loop.delegate: all`, the preamble adds the delegation: the
 lead settles specs and gives the merge go itself (`approve merge <pr> --head <sha> --by delegate`,
@@ -478,9 +475,10 @@ question card only for a change on `risk.critical_paths`. Without that setting, 
 engineering-loop skill, the wording is unchanged. A workspace on another host has no git to ask: its `.git/config` is read through the host's file API for the
 `origin` repo, and `gatekeeper.md` and `loop.md` come from that repo's default branch on GitHub (`gh`; a 404 means the file
 is absent), chosen by gatekeeper's `chosen`, so it follows the base's policy as a local lead does. A read that fails keeps
-today's wording and prints one stderr line; a workspace outside a checkout keeps it silently. A followed lead whose turn ends `USER NEEDED` with no question card open is reported
-as an `unasked` event, which tells its waiter to post a card or act under the delegation; with a card
-open it is reported as any turn end. How it asks and where
+today's wording and prints one stderr line; a workspace outside a checkout keeps it silently. A followed lead whose turn ends `USER NEEDED` with a question card open posts nothing, since
+the card already reaches the owner; with no card open it is reported as an `unasked` event, routed `act`, which
+tells the session that started it to put a question that spans projects to the owner on its own card, or else to
+send the lead back to its card. How it asks and where
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
 archive it with `reap <session>`.
@@ -535,8 +533,8 @@ rerun sends no second one. A message held only by the lead's current step (a lon
 foreground command) is exit 0 too: the line says `queued until the session's current step
 ends` and it lands then, with no further call, and a rerun sends no second copy. Exit 5: queued
 behind an approval prompt it prints, until a person answers it; it lands then. Exit 4: not deliverable, and why (archived, a revive that failed, or
-neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). A reaped runner is
-revived in place first, as `send` does. A question card (`sys_ask_user_question`)
+neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). Exit 8: `HOST_OFFLINE`, the lead's host is offline and cannot be woken, so nothing was sent and Omnigent keeps nothing for it; relay again once the host is back (`host_online` in its info). A reaped runner is
+revived in place first, as `send` does. `--unarchive` unarchives an archived lead first, so it resumes with its history (Claude's same transcript, Codex's same thread, a cloud session's same claude.ai session); without it an archived lead is exit 4. A question card (`sys_ask_user_question`)
 leaves the lead free: a plain `relay` is delivered beside it (exit 0), its line names the card
 still open (`send` prints the same line before it waits), and the message never answers it. A message with a line that is a question for the owner (opening `USER NEEDED:`, `needs owner:` or `question for the owner:`; quoted and bullet lines, a bare mention, `--answer` and `--from` never count) is refused with exit 1: the owner's question is a card, never a relayed line, so post it with `sys_ask_user_question` and relay only the fact and the action wanted.
 **Settle it, withdraw the card.** Whoever settles a question a lead put on a card (a manager answering it, a decision made elsewhere) withdraws the card, so the owner never answers a moot one later: `python3 scripts/omnigent_agent.py withdraw <session> [<question id>]` cancels the session's open cards (or that one). The supervisor does not forward a turn end that waits on an open card (`USER NEEDED`, `needs owner`, `waiting on a card`), nor an end the lead's history already holds an item after that names the child, nor the end of an archived session, nor a failure of a worker a newer worker of its PR replaced; `reap --force` finishes such a replaced worker while its PR is open.
@@ -755,7 +753,8 @@ event, which routes `act` to the notified session, the manager, who clears the b
 proposes. Moving is a push (a commit, a force-push, the PR marked ready; a plain push, which GitHub gives no time, is dated no
 earlier than the head's first status or check run, or the sweep that first saw the head), a verifier report (`SATISFIED:`), a go (a
 green `owner` or `land` status) or a merge-queue step (`loop:queued` or `loop:dequeued` added or removed, a queue
-status or check run). The line names each blocker it finds: a red required check (the base's ruleset; any red check
+status or check run). A PR the merge queue holds (`loop:queued` on, and a queue check on its head still running or a
+queue status there pending) is waiting, not stalled, however long the queue takes (#2100). The line names each blocker it finds: a red required check (the base's ruleset; any red check
 when unread), a conflict, a verdict on the head without a go (or a fix round asked with no push since), a card waiting
 (a loop event on the PR's branch at `needs-owner`, a verifier question newer than the push), else `none found on
 GitHub`: `o/r: PR #12 <title>: no push, verdict, go or queue step for 75m; blocker: a conflict with main: <url>`. It
@@ -771,7 +770,11 @@ lists (an approved, verified PR no `land` took) is said once per head and kind o
 satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, or for a verified PR idle on a go or
 record it lacks, its line (`... missing: go`) and `: ask its approver for what it is missing`, a `stalled` event on that lead;
 the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new
-for it, and a PR is said again only once its head moved or it left the listing and came back; a PR a sweep could not
+for it, and a PR is said again only once its head moved or it left the listing and came back. Since one sweep may
+read a PR 15 minutes before its line is acted on, each line is first checked against the PR's live pull, check runs and
+statuses (`stalled_gone`): one merged, closed, moved to a new head or held by the merge queue since is logged and not
+said, nor kept as said, so a later sweep that lists it again says it; a failed read says the line as the sweep read it
+(#2100). A PR a sweep could not
 judge keeps what was listed for it. A PR the sweep could not judge, a failed sweep and a lead on another host are logged,
 never posted, except a sweep that judged none of the repo's PRs (its last line, `<n> of <n> open PRs not judged here`):
 that is said once per reason, `<owner>/<name>: check stalled judged none of its <n> open PRs: <why>`, since its silence
@@ -803,7 +806,7 @@ wait comes from the lead's last message: `parked` for a `PARKED` ending, the thi
 WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, a child's session id, or a
 background task id such as `bz3jp5aod`, `b` and 8 lowercase letters and digits with one digit at
 least, opening it or after `on`/`for`), else
-`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>|<Actions run URL>` (printed by `omnigent_agent.py wait-on`, which refuses any other form, and a bare `#<pr>` that this repo has no PR or issue for; a run's end is news once, and a line that does not parse is told to its lead once, with these forms) is read first and exactly, and a line that does not parse still decides alone: a wait on the supervisor only when it names it (supervisor, CoS or chief of staff), else none, so prose and a `CoS:` footer decide nothing; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
+`unknown`. A last line `Waits: supervisor|own supervisor|session <id>|#<pr>|CI|until <UTC>|<Actions run URL>` (printed by `omnigent_agent.py wait-on`, which refuses any other form, and a bare `#<pr>` that this repo has no PR or issue for; a run's end is news once, and a line that does not parse is told to its lead once, with these forms) is read first and exactly (`own supervisor` is for a manager whose own supervisor wakes it: the turn is recorded and no wait on its parent, which `supervisor` is; a turn's ending is its first line that opens with `DONE`, `USER NEEDED`, `PARKED` or `STILL WORKING`, `USER NEEDED` anywhere winning, so a status block that opens `STILL WORKING` and lists a `DONE:` section is still working, not done), and a line that does not parse still decides alone: a wait on the supervisor only when it names it (supervisor, CoS or chief of staff), else none, so prose and a `CoS:` footer decide nothing; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
 UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
 named-wait rule. A last message that
 is only a report's path takes its ending and wait from the report's first line, read once per
@@ -853,7 +856,9 @@ offline while idle raises nothing.
 | failed | rule | the first time a revive, after it act; a transient provider error (`authentication_failed`, a Cloudflare `Attention Required` page, any 5xx such as a cloud create's 503, `overloaded`: one table, `TRANSIENT_ERRORS`) instead a revive after a backoff of 2, 5, 10, 20 minutes, then every 20, and act once the next revive would fall more than 2 hours after the chain's first failure (`rate_limit` with no reset time too); a usage limit (`hit your … limit`, `usage limit`: `USAGE_LIMIT_ERRORS`, or a `rate_limit` printing its reset) is account-wide, so it parks instead: one post `usage limit: N sessions parked, resets <time>` (or `resets unknown`) for every lead parked on it, later ones joining unreported; one parked lead revived as a probe after the same backoff, or at once at the printed reset (`resets Nov 16, 6am (UTC)`, any IANA zone); one probe runs at a time; a probe failing on the limit again parks once more, and once a parked lead ends any other way (its turn ends, a prompt, another failure, which then routes as any other) every parked lead is revived and one post says how many resumed; act once an hour past the printed reset has passed (the reset is read once, when first parked), or with none once the next probe would fall 2 hours after the chain's first failure, and no parked lead is probed after. The parked state is each lead's `retrying` (`limit`, `resets`, `told`, `probe`), so a restart keeps it |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
-| `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
+| `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over, with no question card open (`unasked`) | rule | act, with or without `--decisions`: the manager puts a question that spans projects on its own card, or sends the lead back to its card; with a card open, nothing is posted |
+| a question card the lead posted (`asked`) | rule | recorded; the owner answers it in their Inbox |
+| a card still open `CARD_REMIND_SECONDS` (4 h) after the supervisor first saw it (`card-waiting`), once per card | rule | act, so a manager the owner told to act in their name can answer it; a lead the owner drives directly: recorded |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
 | a question | rule | act, for one `relay --answer` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |

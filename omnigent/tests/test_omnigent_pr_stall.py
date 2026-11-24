@@ -4,6 +4,7 @@ The seam: ``gh`` faked to serve each PR's GitHub timeline, statuses, check runs,
 repo's loop events, so ``pr_stalls`` and the supervisor read them as they would GitHub's."""
 
 import json
+import re
 import time
 from datetime import UTC, datetime
 
@@ -68,11 +69,22 @@ def github(
     }
 
     def lines(items: list) -> str:
-        return "".join(json.dumps(i) + "\n" for i in items)
+        return json.dumps(items)
 
     def gh(*args: str, timeout: float = 0) -> str:
+        """Answers as ``gh api -i`` does: one page of a list as a JSON array (an empty page ends a list), a single read
+        as its body, each with a status line and an ETag."""
         calls.append(args)
         path = next(a for a in args if a.startswith("repos/"))
+        paged = re.search(r"[?&]page=(\d+)", path)
+        path = re.sub(r"[?&]page=\d+", "", path).replace("?&", "?").rstrip("?")
+        out = serve(path)
+        if paged and int(paged[1]) > 1:
+            out = "[]" if out.startswith("[") else '{"check_runs": []}'
+        return f'HTTP/2.0 200 OK\nEtag: "{hash(out)}"\n\n{out}'
+
+    def serve(path: str) -> str:
+        path = path.replace("&per_page=100", "").replace("?per_page=100", "")
         if path.startswith("repos/o/r/pulls?"):
             return lines(
                 [
@@ -106,15 +118,15 @@ def github(
                 return lines(p["statuses"])
             if path.startswith(f"repos/o/r/commits/{sha(n)}/check-runs"):
                 if "filter=all" in path:
-                    return lines(p["checks"])
+                    return json.dumps({"check_runs": p["checks"]})
                 newest: dict = {}  # GitHub's default, filter=latest: each check's newest run alone
                 for c in p["checks"]:
                     if (c.get("started_at") or "") >= (
                         newest.get(c["name"], {}).get("started_at") or ""
                     ):
                         newest[c["name"]] = c
-                return lines(list(newest.values()))
-        raise AssertionError(f"unexpected read: {args}")
+                return json.dumps({"check_runs": list(newest.values())})
+        raise AssertionError(f"unexpected read: {path}")
 
     monkeypatch.setattr(omnigent_agent, "gh", gh)
     return calls
@@ -370,3 +382,72 @@ def test_a_rerun_of_a_check_is_no_push_and_its_latest_run_decides_red(monkeypatc
         "a verdict asking a fix round (SATISFIED: no)" in found[12]
     )  # the verdict is newer than the push
     assert "red" not in found[13]  # its re-run passed
+
+
+def test_a_pr_held_by_the_queue_is_no_stall(monkeypatch) -> None:
+    """omnigent #542's case (#2100): `loop:queued` on and Mergify's queue check running for over an hour is a PR
+    waiting in the queue; once the check ended and Mergify let go of it, the label alone holds nothing."""
+    queue = "Mergify Merge Queue"
+    embarked = {
+        "name": queue,
+        "status": "in_progress",
+        "conclusion": None,
+        "started_at": iso(2 * HOUR),
+    }
+    earlier = {
+        "name": queue,
+        "status": "completed",
+        "conclusion": "neutral",
+        "started_at": iso(2 * HOUR + 60),
+    }
+    held = pr(12, labels=[{"name": "loop:queued"}], checks=[earlier, embarked])
+    ended = {
+        **embarked,
+        "status": "completed",
+        "conclusion": "failure",
+        "completed_at": iso(2 * HOUR),
+    }
+    left = pr(13, labels=[{"name": "loop:queued"}], checks=[earlier, ended])
+    unlabelled = pr(14, checks=[earlier, embarked])
+    pending = {"context": queue, "state": "pending", "created_at": iso(2 * HOUR)}
+    by_status = pr(
+        15, labels=[{"name": "loop:queued"}], statuses=[pending]
+    )  # a queue that reports by status
+    assert list(stalls(monkeypatch, [held, left, unlabelled, by_status])) == [13, 14]
+
+
+QUEUED = {"labels": [{"name": "loop:queued"}]}
+RUN = {"name": "Mergify Merge Queue", "status": "in_progress", "conclusion": None}
+DONE = {**RUN, "status": "completed", "conclusion": "failure"}
+
+
+@pytest.mark.parametrize(
+    "checks, statuses, holds",
+    [
+        ([], [{"context": "Mergify Merge Queue", "state": "pending"}], True),
+        (
+            [],
+            [
+                {"context": "Mergify Merge Queue", "state": "success"},
+                {"context": "Mergify Merge Queue", "state": "pending"},
+            ],
+            False,
+        ),
+        ([], [{"context": "ci/test", "state": "pending"}], False),
+        ([{**RUN, "started_at": "1"}, {**DONE, "started_at": "2"}], [], False),
+        ([{**DONE, "started_at": "1"}, {**RUN, "started_at": "2"}], [], True),
+    ],
+    ids=[
+        "a pending queue status",
+        "its newest status ended",
+        "a pending status of no queue",
+        "a stale running run under a newer ended one",
+        "a running run over an older ended one",
+    ],
+)
+def test_the_queue_holds_by_its_newest_check_run_or_status(
+    checks: list[dict], statuses: list[dict], holds: bool
+) -> None:
+    """A queue that reports through a commit status holds a PR as one with a check run does; each check or
+    status context is read at its newest run (statuses come newest first), so an older one never decides."""
+    assert omnigent_agent.queue_holds(QUEUED, checks, statuses) is holds

@@ -13,13 +13,13 @@ components:
   research: the research plugin, multi-source research orchestration (research/)
   experimental: the experimental plugin, skills under iteration (experimental/)
   utilities: the utilities plugin, standalone skills (utilities/)
-  gatekeeper: the gatekeeper package, the merge gate and its policy reader (gatekeeper/)
-  loop: the loop package, the engineering loop's roles (loop/)
-  github: the github package, the GitHub tracker and board setup (github/)
-  chief-of-staff: the chief-of-staff package and its cos-console mod (chief-of-staff/)
-  omnigent: the omnigent package, the Omnigent runner, its operation and telemetry (omnigent/)
+  loop: the loop plugin, the engineering-loop skill (loop/)
+  gatekeeper: the gatekeeper plugin, the merge gate and its proofs (gatekeeper/)
+  github: the github plugin, the GitHub tracker and forge conventions (github/)
+  omnigent: the omnigent plugin, Omnigent as the agent runner (omnigent/)
+  chief-of-staff: the chief-of-staff plugin, supervision over many leads, and its cos-console mod (chief-of-staff/)
   vendoring: the vendoring package, the capability-pack tool, its routine and the update audit (vendoring/)
-  ci: CI workflows, rulesets, mise tasks and the repo's own agent configuration
+  ci: CI workflows, rulesets, mise tasks, tools/ and the repo's own agent configuration
 
 board:
   Done: Closed

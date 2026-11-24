@@ -5,6 +5,7 @@ waits for a REST read to move (#1984). A fake GitHub answers as the real one doe
 import hashlib
 import itertools
 import json
+import re
 import subprocess
 from typing import Any
 
@@ -33,20 +34,17 @@ class GitHub:
         if cmd[1] == "pr":  # gh pr view: GraphQL
             self.spent += 1
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(self.view))
-        if (
-            "--paginate" in cmd
-        ):  # a paged list (a verdict's comments and reviews): read only once the pull moved
-            self.spent += 1
-            return subprocess.CompletedProcess(
-                cmd,
-                0,
-                stdout="".join(
-                    json.dumps(i) + "\n" for i in self.rest[cmd[3].replace("{owner}/{repo}", "o/r")]
-                ),
-            )
         path = cmd[-1]
+        page = re.search(
+            r"[?&]page=(\d+)", path
+        )  # a paged list (a verdict's comments and reviews): an ETag read per page
+        path = re.sub(r"&page=\d+", "", path)
         assert "--cache" not in cmd and "-i" in cmd, cmd  # every single read is an ETag read
-        body = json.dumps(self.rest[path.replace("{owner}/{repo}", "o/r")])
+        path = path.replace("{owner}/{repo}", "o/r")
+        found = self.rest.get(path)
+        if found is None:
+            found = self.rest[path.removesuffix("?per_page=100")]
+        body = json.dumps(found if not page or page[1] == "1" else [])
         tag = f'"{hashlib.sha1(body.encode()).hexdigest()}"'
         if f"If-None-Match: {tag}" in cmd:
             self.free += 1  # gh exits 1 on a 304, printing the status line with -i
