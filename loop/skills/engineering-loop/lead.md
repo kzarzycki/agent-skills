@@ -264,7 +264,13 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    (step 8) merges only a head the newest verifier review covers. A fix that changes nothing an
    agent or tool reads (prose for people: a README, the changelog, a code comment), a note
    fixed after a satisfied verdict among them, gets a short delta pass: the verifier reviews
-   only the change since the last verdict's head. Instructions are code: a skill, a role
+   only the change since the last verdict's head.
+   A change that cannot alter the product (R2: docs for people, CI config outside the gating
+   job) skips the verifier's proof runs, its builds, e2e and mutation runs, and its review and
+   verdict stay, since `land` merges only on a verdict. The skip never covers instructions,
+   anything a tool parses, the gate's policy, a gating CI job, or a change rated `high` or
+   `critical`, and the PR body says it was used.
+   <!-- ponytail: skipping the review too would need a policy key the gate reads; none exists, so only the proof runs are skipped. --> Instructions are code: a skill, a role
    file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt,
    and anything a tool parses each need the full verifier pass, still reviewing only the change
    since the last verdict's head. Its "tests" are the checks that change's layer reaches
