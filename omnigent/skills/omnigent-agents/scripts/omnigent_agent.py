@@ -836,7 +836,7 @@ When done, reply with only the comment's URL. If posting fails (the session's to
 HELD_POST = (
     "Your final report is one comment on PR #{pr}, which you don't post: reply with the line `{unposted}`, then the"
     " comment body verbatim, and it is checked and posted for you."
-    " It names no host, path or session, since the PR may be public."
+    " It names no host or path outside a full Omnigent session link (`https://<server>/c/<id>`, which it may post), since the PR may be public."
 )
 # The report paragraph is one line, so a sentence added after it survives the swap.
 SELF_POSTED = re.compile(r"Your final report is one comment on PR #\{pr\}, posted once[^\n]*")
