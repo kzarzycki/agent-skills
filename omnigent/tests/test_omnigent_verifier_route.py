@@ -334,6 +334,96 @@ def test_a_start_here_sees_a_host_with_room() -> None:
     assert omnigent_agent.capacity() == (True, "")
 
 
+def fake_gatekeeper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, said: str = ""
+) -> Path:
+    """An installed gatekeeper that logs its arguments and exits ``code``; the log is returned."""
+    folder = tmp_path / "gk"
+    folder.mkdir(exist_ok=True)
+    calls = tmp_path / "gk-calls"
+    monkeypatch.setattr(omnigent_agent, "installed", lambda skill: folder)
+    real = subprocess.run
+
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[:2] == ["uv", "run"]:
+            calls.write_text(" ".join(cmd[cmd.index("record") :]))
+            return subprocess.CompletedProcess(cmd, code, "", said)
+        return real(cmd, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(omnigent_agent.subprocess, "run", run)
+    return calls
+
+
+def test_record_verdict_posts_the_report_through_record_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = fake_gatekeeper(tmp_path, monkeypatch, 0)
+    report = tmp_path / "r.md"
+    report.write_text("Head: abc\nSATISFIED: yes\n")
+    omnigent_agent.record_verdict(7, report)
+    assert calls.read_text() == f"record verdict 7 {report}"
+    assert "BLOCKED" not in report.read_text()
+
+
+def test_record_verdict_that_fails_says_so_on_the_report_and_to_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_gatekeeper(tmp_path, monkeypatch, 1, "refused: no Head: line")
+    report = tmp_path / "r.md"
+    report.write_text("SATISFIED: yes\n")
+    with pytest.raises(omnigent_agent.Fail, match="^record verdict BLOCKED: exit 1: refused"):
+        omnigent_agent.record_verdict(7, report)
+    assert report.read_text().splitlines()[-1].startswith("record verdict BLOCKED:")
+
+
+def test_gemini_route_run_records_its_verdict_like_every_route(
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    og = FakeOmnigent(reply="done")
+    og.harnesses = {"antigravity-native-ui": "antigravity-native"}
+    og.host = lambda n: {"host": og.host_id}[n]  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    for name in ("check_out_head", "refuse_stale_workspace"):
+        monkeypatch.setattr(omnigent_agent, name, lambda *a, **k: None)
+    (tmp_path / "b.md").write_text("review")
+    done = "Head: abc\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\n"
+
+    def wait(og_: object, sid: str, report: Path, *a: object, **k: object) -> str:
+        report.write_text(done)
+        return str(report)
+
+    monkeypatch.setattr(omnigent_agent, "wait", wait)
+    calls = fake_gatekeeper(tmp_path, monkeypatch, 0)
+    argv = ["run", "codex", "t", "b.md", str(tmp_path / "r.md"), "--confirm-seconds", "0"]
+    argv += ["--role", role_file("verifier.md"), "--pr", "7"]
+    argv += ["--verifier-route", "gemini", "--host", "host"]
+    assert omnigent_agent.main(argv) == 0
+    assert calls.read_text() == f"record verdict 7 {tmp_path / 'r.md'}"
+
+
+def test_a_report_on_another_host_is_brought_home_before_it_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The step `run` and `wait` share: a remote host's report is read through its file API, written here,
+    and only then recorded, where recording it in place would find no file."""
+    og = FakeOmnigent()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        omnigent_agent, "file_text", lambda og_, sid, path, far=False: "Head: abc\nSATISFIED: yes\n"
+    )
+    calls = fake_gatekeeper(tmp_path, monkeypatch, 0)
+    omnigent_agent.record_collected(og, "s0", Path("/there/r.md"), 7, far=True)
+    assert calls.read_text() == "record verdict 7 tmp/loop/r.md"
+    assert (tmp_path / "tmp/loop/r.md").read_text().startswith("Head: abc")
+    # on this host the report is recorded where it is
+    (tmp_path / "x.md").write_text("Head: abc\n")
+    omnigent_agent.record_collected(og, "s0", tmp_path / "x.md", 8, far=False)
+    assert calls.read_text().startswith("record verdict 8 ")
+
+
 @pytest.mark.parametrize(
     ("title", "report", "extra"),
     [
