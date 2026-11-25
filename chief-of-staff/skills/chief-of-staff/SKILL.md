@@ -460,6 +460,10 @@ setup's file; both hold placeholder values only. A key the loader does not list 
 a default, so a typo is caught; a value that is a secret goes in the harness's credential store,
 never in this file.
 
+## Start gate
+
+Before starting a lead, run `python3 <this skill's folder>/scripts/start_gate.py check --repo <repo> --host <host> [--owner-requested] [--registry <name>]`; exit 0 allows the start and exit 1 refuses it, printing each reason. It reads `hosts.table`, `hosts.owner_requested_only` and `managers` and refuses a host the table does not list for the repo, an owner-requested-only host when the owner did not ask, and a managed repo started outside its manager's registry. With no table it allows any host; the capacity check (`omnigent_agent.py capacity`) still judges memory and CPU.
+
 ## Memory
 
 `python3 <this skill's folder>/scripts/memory.py recall <query>` and `retain <text>`, the
