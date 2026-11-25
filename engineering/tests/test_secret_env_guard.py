@@ -133,6 +133,8 @@ PASSED = [
     'node -e "const e={...process.env}; console.log(Object.keys(e).length)"',
     "python3 - <<'X'\nprint(\"os.environ is used\")\nX",
     "echo $PUBLIC_KEY",
+    "python3 -c \"import os; print(os.environ.get('HOME'))\"",
+    "python3 -c \"import os; print(os.getenv('EDITOR'))\"",
     "cat <<< $HOME",
     "bash <<'X'\nls\nX",
     "echo ls | sh",
