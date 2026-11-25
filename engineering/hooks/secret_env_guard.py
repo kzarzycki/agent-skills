@@ -34,8 +34,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from heavy_run_guard import (
+    HEREDOC,
     SEPARATORS,
     SHELL_DEPTH,
+    SHELLS,
     drop_heredocs,
     shell_string,
     strip_leading,
@@ -60,7 +62,26 @@ READERS |= {"cp", "dd", "tee", "grep", "egrep", "fgrep", "rg", "ag", "ack", "col
 EXTRA_WRAPPERS = {"nice", "ionice", "stdbuf", "busybox", "setsid", "builtin", "chrt", "taskset"}
 INTERPRETERS = re.compile(r"^(python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lua)$")
 CODE_FLAGS = {"-c", "-e", "-p", "-r", "--eval", "--print", "-E"}
-ENV_RUN = re.compile(r"/proc/[^/\s'\"]+/environ\b")
+ENV_RUN = re.compile(r"/proc/[^\s'\"]*\benviron\b")  # also /proc/self/task/1/environ
+# code that starts a command that dumps, or opens the file
+CODE_EXEC = re.compile(
+    r"(?:popen|system|check_output|check_call|\brun|\bcall|exec\w*|spawn\w*)\(\s*[\[(]?\s*['\"]"
+    r"(?:env|printenv|set|export)\b"
+)
+# code that reduces a value to a length, a digest or a test, or only assigns the environment:
+# the parts that leave no value in the output
+CODE_REDUCED = re.compile(
+    r"\blen\(|hashlib|\bsha\d+|\bmd5\b|\bbool\(|\bis\s+(?:not\s+)?None\b|[!=]=\s*None\b"
+    r"|\bin\s+(?:os\.environ|process\.env)\b|\.length\b|\bhasOwnProperty\b"
+)
+CODE_ASSIGNED = re.compile(
+    r"(?:=|\*\*|\.\.\.)\s*(?:dict\(\s*)?(?:os\.environ|process\.env)(?:\.copy\(\))?"
+)
+CODE_STRING = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
+# the first quoted name a lookup call takes: os.environ.get('NAME'), os.getenv("NAME"), ENV.fetch
+CODE_GET = re.compile(
+    r"(?:environ\.get|environ\.setdefault|getenv|env\.get|ENV\.fetch|ENV\.dig)\(\s*['\"]([A-Za-z0-9_]+)['\"]"
+)
 AWK_ENV = re.compile(r"\bENVIRON\b(?!\s*\[\s*[\"'])")
 # the whole environment inside code: os.environ / process.env / ENV / %ENV not indexed or looked up
 CODE_WHOLE = re.compile(
@@ -70,7 +91,9 @@ CODE_WHOLE = re.compile(
     r"|(?<![\w$])%ENV\b|\bENV\.(?:to_h|each|inspect|to_a|map)\b|\bENV(?![\w\[.])|\$_ENV\b|\$_SERVER\b|\bgetenv\(\)"
 )
 CODE_NAMED = re.compile(r"(?:environ|getenv|process\.env|ENV|env\.get)\W{1,4}([A-Za-z0-9_]+)")
-CODE_PRINTS = re.compile(r"print|console\.|echo|puts|write|say\b|dump|stringify|log\b|inspect")
+CODE_PRINTS = re.compile(
+    r"print|console\.|echo|puts|write|say\b|dump|stringify|log\b|inspect|\bpp?\b"
+)
 # $NAME and ${NAME}, with ${NAME:-x}, ${NAME#x} and the like (which can print the value); not
 # ${#NAME} (a length) nor ${NAME:+x} / ${NAME+x} (which print x, never the value)
 VAR_USE = re.compile(
@@ -89,6 +112,8 @@ def secret(name: str) -> bool:
     if name in NOT_SECRET:
         return False
     if name != name.upper():  # environment names are upper case; `$key` is a loop variable
+        return False
+    if "PUBLIC" in name.split("_"):  # PUBLIC_KEY holds no secret
         return False
     return any(p.endswith(SECRET_ENDINGS) or p in SECRET_PARTS for p in name.split("_"))
 
@@ -119,10 +144,15 @@ def pipelines(command: str) -> list[tuple[list[str], str, list[str]]]:
         elif token and set(token) <= set("<>&") and set(token) & set("<>"):
             if parts[-1] and parts[-1][-1].isdigit():
                 parts[-1].pop()
-            target = "<" if token.endswith("<") and "<<" not in token else ">"
+            if token.endswith("<<<"):
+                target = "h"  # a here-string: the next word is the command's input
+            else:
+                target = "<" if token.endswith("<") and "<<" not in token else ">"
         elif target:
             if target == "<":
                 reads[-1].append(token)
+            elif target == "h":
+                reads[-1].append("<<<" + token)
             target = ""
         else:
             parts[-1].append(token)
@@ -206,11 +236,16 @@ def judge_words(rest: list[str], reduced: bool, stdin: str = "") -> str | None:
         else:
             if not plain:  # no script file: it reads its code from stdin (a heredoc or a pipe)
                 code = stdin
-        if code and CODE_PRINTS.search(code):
-            if CODE_WHOLE.search(code):
-                return f"`{prog}` code prints the whole environment"
-            if any(secret(n) for n in CODE_NAMED.findall(code)):
-                return f"`{prog}` code prints a variable that looks like a secret"
+        if code:
+            if ENV_RUN.search(code) or CODE_EXEC.search(code):
+                return f"`{prog}` code reads or dumps the whole environment"
+            if CODE_PRINTS.search(code) and not CODE_REDUCED.search(code):
+                bare = CODE_ASSIGNED.sub("=", CODE_STRING.sub("''", code))
+                if CODE_WHOLE.search(bare):
+                    return f"`{prog}` code prints the whole environment"
+                named = CODE_NAMED.findall(code) + CODE_GET.findall(code)
+                if any(secret(n) for n in named):
+                    return f"`{prog}` code prints a variable that looks like a secret"
     return None
 
 
@@ -225,6 +260,51 @@ def unwrap(rest: list[str]) -> list[str]:
         if rest and Path(rest[0]).name != "env":  # `nice env` is a dump, judged as `env`
             rest, _, _ = strip_leading(rest, None)
     return rest
+
+
+def heredoc_bodies(command: str) -> list[str]:
+    """The bodies of ``command``'s here-documents (what ``drop_heredocs`` removes)."""
+    bodies: list[str] = []
+    ending: str | None = None
+    for line in command.split("\n"):
+        if ending is not None:
+            if line.strip() == ending:
+                ending = None
+            else:
+                bodies[-1] += line + "\n"
+            continue
+        if found := HEREDOC.search(line.replace("<<<", "   ")):
+            ending = found.group(2)
+            bodies.append("")
+    return bodies
+
+
+def stdin_shell(rest: list[str]) -> bool:
+    """Whether ``rest`` is a shell that reads its commands from stdin (no ``-c``, no script)."""
+    return (
+        Path(rest[0]).name in SHELLS
+        and shell_string(rest) is None
+        and not [a for a in rest[1:] if not a.startswith("-")]
+    )
+
+
+def judge_stdin_shell(
+    items: list, i: int, reads: list[str], command: str, depth: int
+) -> str | None:
+    """The refusal for a shell at ``items[i]`` that runs what is fed to it: a here-string, a
+    here-document or the echo before a pipe."""
+    if depth >= SHELL_DEPTH:
+        return None
+    fed = [r[3:] for r in reads if r.startswith("<<<")]
+    fed += heredoc_bodies(command)
+    if i and items[i - 1][1] in ("|", "|&"):
+        before, _, _ = strip_leading(items[i - 1][0], None)
+        if before and Path(before[0]).name in PRINTERS | {"cat"}:
+            fed.append(" ".join(before[1:]))
+    for text in fed:
+        if why := judge(text, depth + 1):
+            return why
+    return None
 
 
 def judge(command: str, depth: int = 0) -> str | None:
@@ -253,6 +333,13 @@ def judge(command: str, depth: int = 0) -> str | None:
             if depth < SHELL_DEPTH and (why := judge(inner, depth + 1)):
                 return why
             continue
+        if stdin_shell(rest) and not reduced:
+            if why := judge_stdin_shell(items, i, reads, command, depth):
+                return why
+            continue
+        fed = [r[3:] for r in reads if r.startswith("<<<")]
+        if fed and not reduced and Path(rest[0]).name in READERS and names_used(fed):
+            return f"`{Path(rest[0]).name}` prints ${names_used(fed)[0]}, which looks like a secret"
         if why := judge_words(rest, reduced, command):
             return why
     return None
