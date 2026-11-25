@@ -1,0 +1,52 @@
+# Writes a `Queue failure` record on a PR Mergify drops over failing checks (#2497): the failing checks with their job
+# links, the failing tests read from those jobs' logs, and whether Mergify named the PR as the cause. Mergify's own
+# comment lists the checks and links but not the tests, so a team that does not own the PR guessed the cause from it
+# (epic #2458). This job adds its own record beside Mergify's, which it cannot edit.
+#
+# Mergify's queue only. ponytail: epic #2458 open question "does the queue story work with the GitHub merge queue as
+# well as Mergify": no, this reads Mergify's status comment; GitHub's own merge queue is not covered.
+#
+# A project with no Mergify queue never sees the trigger: the job runs only for a comment of `mergify[bot]` on a PR,
+# and posts nothing for a merge, a requeue or a dequeue that is not a failing-checks one. Mergify edits its comment as
+# the entry moves, so the job reads `edited` too and writes one record per comment (the record names the comment).
+#
+# A project copies this file with its setup step. Settings: `permissions` below (`actions: read` for the job logs,
+# `pull-requests: write` for the record) and SCRIPT, where the pack's `queue_failure.py` sits in the project's default
+# branch. The job runs the base's copy of this file and checks out the default branch only: it runs no PR code.
+name: queue failure
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: queue-failure-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  record:
+    if: github.event.issue.pull_request && github.event.comment.user.login == 'mergify[bot]' && contains(github.event.comment.body, 'Mergify Payload')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: omnigent/skills/omnigent-agents/scripts
+          persist-credentials: false
+      - name: Write the record the comment's dequeue calls for
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SCRIPT: omnigent/skills/omnigent-agents/scripts/queue_failure.py
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT_URL: ${{ github.event.comment.html_url }}
+          AUTHOR: ${{ github.event.comment.user.login }}
+          BODY: ${{ github.event.comment.body }}
+        run: python3 "$SCRIPT"
