@@ -10,7 +10,7 @@
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
-    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
+    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--wait] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>   (send, relay: [--expires MINUTES])
     python3 scripts/omnigent_agent.py broadcast <message-file> [--stop | --decisions FILE] [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -47,8 +47,8 @@ workspace it started from and that a foreground command stops at 10 minutes; ``w
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
 exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
-``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. Omnigent already wakes this session for a child that is its sub-agent or one it subscribes to: when that child ends its turn with the report in, the line is skipped and said on stderr, so a child wakes its lead once (#1086). ``send`` answers that question in the same session, also mid-turn, then waits the
-same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. Omnigent already wakes this session for a child that is its sub-agent or one it subscribes to: when that child ends its turn with the report in, the line is skipped and said on stderr, so a child wakes its lead once (#1086). ``send`` answers that question in the same session, also mid-turn, and returns once it is accepted (``--wait``, ``--notify`` and ``--verdict`` then wait
+for the report the same way). A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:

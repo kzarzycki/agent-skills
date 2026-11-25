@@ -867,7 +867,9 @@ def test_run_fails_only_on_a_tracked_change_the_child_made(
     # a follow-up, too, holds only the child to what changed since it was sent
     (repo / "f.md").write_text("fix Y")
     sid = next(iter(og.sessions))
-    assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
+    assert (
+        omnigent_agent.main(["send", sid, "f.md", "r.md", "--wait", "--confirm-seconds", "0"]) == 0
+    )
 
     (repo / "c.txt").write_text("c\n")
     subprocess.run(["git", "-C", str(repo), "add", "c.txt"], check=True)
