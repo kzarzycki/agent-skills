@@ -26,7 +26,7 @@ the next run reads to find where the new merges start.
 
 Every body is checked first against the local deny list, the file the environment variable `LOOP_DENY_LIST` names
 (one term per line, `#` starts a comment, matched ignoring case at word boundaries): a line naming a term refuses the
-post before any call to GitHub, since a public repo keeps an issue's first text in its edit history. A list the
+post before any call to GitHub (a term inside an Omnigent session link doesn't count), since a public repo keeps an issue's first text in its edit history. A list the
 variable names that can't be read refuses too. `--dry-run` prints the body it would post and posts nothing.
 
 The repository is `--repo`, else `GITHUB_REPOSITORY` (set in GitHub Actions), else the `origin` remote's GitHub slug.
@@ -65,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _installed import installed
 
 sys.path.insert(0, str(installed("gatekeeper")))
+import denylist
 from folding import fold
 
 # the environment variable naming the local deny list, a file kept outside the repo (gatekeeper.py's DENY_LIST)
@@ -112,23 +113,11 @@ def gh(*args: str) -> Any:
 
 
 def denied(text: str) -> None:
-    """Refuse `text` when a line names a term of the deny list `LOOP_DENY_LIST` names; without it, check nothing."""
-    where = os.environ.get(DENY_LIST)
-    if not where:
-        return
+    """Refuse `text` when a line names a term of the deny list `LOOP_DENY_LIST` names (denylist.py); without it, check nothing."""
     try:
-        listed = Path(where).expanduser().read_text().splitlines()
-    except OSError as exc:
-        raise Refused(
-            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
-        ) from exc
-    terms = [term for term in (line.split("#", 1)[0].strip() for line in listed) if term]
-    for number, line in enumerate(text.splitlines(), 1):
-        for term in terms:
-            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
-                raise Refused(
-                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
-                )
+        denylist.check(text)
+    except denylist.Denied as exc:
+        raise Refused(str(exc)) from exc
 
 
 def repository(given: str | None) -> str:

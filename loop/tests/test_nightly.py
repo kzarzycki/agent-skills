@@ -387,6 +387,24 @@ def test_a_term_inside_a_longer_word_is_not_denied(project: dict, monkeypatch) -
     assert len(created(project)) == 1
 
 
+def test_a_listed_host_inside_a_session_link_is_denied_only_outside_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """nightly.py runs the gatekeeper's denylist.py: a listed host inside an Omnigent session link passes (#2571)."""
+    spec = importlib.util.spec_from_file_location("nightly_under_test", NIGHTLY)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    deny = tmp_path / "deny.txt"
+    deny.write_text("build-host.local\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    link = "https://build-host.local:8443/c/" + "ab" * 16
+
+    module.denied(f"Session: {link}\n")
+    with pytest.raises(module.Refused, match="line 2 names `build-host.local`"):
+        module.denied(f"Session: {link}\nran on build-host.local\n")
+
+
 def test_dry_run_prints_the_body_and_posts_nothing(project: dict) -> None:
     result = nightly(project, "--dry-run")
 

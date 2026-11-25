@@ -476,7 +476,7 @@ a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` 
 naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
 any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
-variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
+variable `LOOP_DENY_LIST` names (denied): a line naming a listed term, outside an Omnigent session link, refuses the post before any call to GitHub.
 `verdict` posts a report in the verifier role's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
 (a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
@@ -5369,25 +5369,12 @@ DENY_LIST = "LOOP_DENY_LIST"
 
 
 def denied(text: str) -> None:
-    """Refuse to post `text` when it names a term of the local deny list: the file `LOOP_DENY_LIST` names, one term per
-    line (a name, a repo slug, a hostname; `#` starts a comment), matched ignoring case at word boundaries, since a
-    public repo's comment keeps its first text in GitHub's edit history for good. Without the variable nothing is
-    checked; a list it names that can't be read refuses, since an unread list would let every post through."""
-    if not (where := os.environ.get(DENY_LIST)):
-        return
+    """Refuse to post `text` when it names a term of the local deny list (denylist.py, which has the format and the
+    one allowance: an Omnigent session link); a refusal exits 1 like any other."""
     try:
-        listed = Path(where).expanduser().read_text().splitlines()
-    except OSError as exc:
-        raise Refused(
-            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
-        ) from exc
-    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
-    for number, line in enumerate(text.splitlines(), 1):
-        for term in terms:
-            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
-                raise Refused(
-                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
-                )
+        denylist.check(text)
+    except denylist.Denied as exc:
+        raise Refused(str(exc)) from exc
 
 
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5509,6 +5496,7 @@ def sibling(name: str) -> ModuleType:
 github = sibling("github_adapter")
 # every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
 folding = sibling("folding")
+denylist = sibling("denylist")
 fold, machine = folding.fold, folding.machine
 # the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
