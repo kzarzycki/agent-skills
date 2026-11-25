@@ -19,7 +19,7 @@ from approvals_harness import (  # noqa: F401
 )
 from test_approvals import gatekeeper_md, github, reviewing  # noqa: F401
 from test_approvals_rerun import ASKED, GATES, check_merge, forge, policy  # noqa: F401
-from test_approvals_setup_check import FENCED, POLICY, repo_with, run_setup
+from test_approvals_setup_check import POLICY, repo_with, run_setup
 
 Gate = tuple[dict[str, Any], list[tuple[int, str]]]
 
@@ -92,7 +92,7 @@ def test_no_ci_or_rerun_off_changes_nothing(
     policy(GATES + "loop:\n  ci: false\n")
     out = check_merge(capsys)[1]
     assert "can't come" not in out[0] and "with no CI, the verifier" in out[0]
-    policy(GATES + "    rerun: false\n")
+    policy(GATES.replace("rerun: true", "rerun: false"))
     assert check_merge(capsys) == (0, [])
 
 
@@ -115,7 +115,9 @@ def test_land_refuses_on_it_without_waiting_on_ci(
 def test_check_setup_warns_for_each_level_with_rerun_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo = repo_with(tmp_path, monkeypatch, {POLICY: FENCED})
+    # `rerun` is off by default (#2472), so the repo turns it on for the two levels that warn
+    on = "levels:\n  high:\n    rerun: true\n  critical:\n    rerun: true\n"
+    repo = repo_with(tmp_path, monkeypatch, {POLICY: gatekeeper_md(on)})
     code, out = run_setup(capsys)
     assert code == 0 and MISSING in out and "`levels.critical.rerun`" in out
     (repo / RERUN_FLOW).parent.mkdir(parents=True)
