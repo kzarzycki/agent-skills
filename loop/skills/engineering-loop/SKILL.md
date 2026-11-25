@@ -705,10 +705,10 @@ With `opt_out: true` in gatekeeper.md, a developer may keep their own PRs out of
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
 PR. `check merge` then reads a PR with no loop trail (no verifier review, no
 `Approved: spec` record or `approved:spec` on an issue it links, no `Reverts #<n>` line,
-not an exempt bot PR) as outside the loop: it prints one line saying so and exits 0, so the
-`loop:approvals` status is green and the PR's author merges it their usual way, under the
-repo's own rules. `land` leaves it out of every batch and, named, prints the same line and
-exits 1, so no agent merges it. Risk rules and `risk:high` hold no PR outside the loop; the project
+not an exempt bot PR) as outside the loop: it prints one line saying so, naming the proofs it lacks, and exits 1,
+as `land` does for the same PR: `land` leaves it out of every batch and, named, prints the same
+line and exits 1, so no agent merges it and the PR's author merges it their usual way, under the
+repo's own rules. Risk rules and `risk:high` hold no PR outside the loop; the project
 accepts that by setting it. A spec a policy covers is no trail, since under
 `spec.auto: true` every issue is covered. Any trail puts the PR back under every proof. Without
 it, a PR with no trail fails the gate.
@@ -797,7 +797,7 @@ or the owner's private network.
 - **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
   `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the
-  review or comment to read, to that kept worker with `send --pr` while it is still there,
+  review or comment to read, to that kept worker with `send --pr --wait` while it is still there,
   since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
   else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
@@ -823,8 +823,11 @@ or the owner's private network.
   instance build together, plus at most one compile for the verifier's mutation check, since
   taking builds off the host is the split's point; a worker's iterations compile only in the
   cloud.
-- **Nothing on GitHub names a host or a path**: not the report, the verdict, the evidence or
-  a brief's text quoted there, since a public repo publishes them.
+- **Nothing on GitHub names a host or a path, except an Omnigent session link**: not the report,
+  the verdict, the evidence or a brief's text quoted there, since a public repo publishes them. A
+  session link (`<scheme>://<host>[:port]/c/<32 hex id>`) may go in issues, PRs and comments, and the
+  deny-list check lets a term inside one through; the same host name outside a link, and any
+  filesystem path, still stay off GitHub.
 - **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host; the sharing a
@@ -841,7 +844,7 @@ or the owner's private network.
   keeping the run (`sys_session_keep`) when it exits non-zero. The script never prints a secret's value, in its own output, a
   traceback or the verifier's, and a refused seed is described by its length, hash and days left, which is how to check one. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
-  the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr`, asking it to save the
+  the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr --wait`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort

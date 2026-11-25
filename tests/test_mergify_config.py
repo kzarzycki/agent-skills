@@ -28,9 +28,16 @@ HANDED_OVER = [
     "base = main",
     "-draft",
     "label = loop:queued",
+    "-label = loop:solo",
     "-label = loop:hold",
     "check-success = land",
 ]
+
+
+def named(rules: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    """The one rule called `name`: the default queue rule beside the whole-suite `solo` one (#2553)."""
+    [found] = [rule for rule in rules if rule["name"] == name]
+    return found
 
 
 def config() -> dict[str, Any]:
@@ -61,7 +68,7 @@ def policy() -> dict[str, Any]:
 
 def test_one_squash_queue_takes_in_only_what_land_handed_over() -> None:
     """Its conditions are exactly land's hand-over: no CI check, which the base's rules give Mergify."""
-    [rule] = config()["queue_rules"]
+    rule = named(config()["queue_rules"], "default")
     assert rule["merge_method"] == "squash"
     assert rule["queue_conditions"] == HANDED_OVER
     assert "check-success" not in " ".join(rule["queue_conditions"]).replace(
@@ -70,7 +77,7 @@ def test_one_squash_queue_takes_in_only_what_land_handed_over() -> None:
 
 
 def test_a_red_batch_is_retried_once_and_a_dropped_pr_labelled_for_eviction() -> None:
-    [rule] = config()["queue_rules"]
+    rule = named(config()["queue_rules"], "default")
     assert rule["max_checks_retries"] == 1
     assert config()["merge_queue"]["dequeued_label"] == "loop:dequeued"
 
@@ -79,14 +86,14 @@ def test_a_red_batch_is_split_until_only_the_failing_pr_leaves() -> None:
     """`null` is Mergify's no-cap: it splits the batch as many rounds as it takes, so the culprit alone is dequeued; a
     number would dequeue a part still holding several PRs, and 0 the whole batch. The key is set on purpose, never
     left to the default."""
-    [rule] = config()["queue_rules"]
+    rule = named(config()["queue_rules"], "default")
     assert "batch_max_failure_resolution_attempts" in rule
     assert rule["batch_max_failure_resolution_attempts"] is None
 
 
 def test_every_batch_is_tested_on_a_draft_pr_from_the_prefix_ci_tests() -> None:
     """The prefix is the one the test step matches."""
-    [rule] = config()["queue_rules"]
+    rule = named(config()["queue_rules"], "default")
     assert rule["max_checks_retries"] >= 1
     [tests] = runs("mise run test-batch")
     # but not on a rerun attempt that read the red attempt's failed tests: rerun-tests runs the selection then (R5, #1794)
@@ -100,7 +107,7 @@ def test_the_queue_never_checks_a_pr_in_place() -> None:
     """#2157: Mergify checks a PR on its own branch, where `qualify` runs no tests, unless its CI is two-step. It
     computes that (`allow_inplace_checks` is deprecated), so the one key that forbids it is `merge_conditions` that
     are not empty and differ from `queue_conditions`; set the setting back and #2151 and #2134 merge untested again."""
-    [rule] = config()["queue_rules"]
+    rule = named(config()["queue_rules"], "default")
     assert rule.get("allow_inplace_checks") is not True
     assert rule["merge_conditions"], (
         "empty merge_conditions are single-step: Mergify may check in place"
@@ -149,15 +156,17 @@ def rendered(land: str) -> dict[str, Any]:
 
 def test_the_batch_size_and_wait_in_land_reach_the_rendered_config() -> None:
     """#2178: batching is the project's `land` config; `batch_size: 1` is one PR per entry."""
-    [rule] = rendered("  batch_size: 1\n  batch_wait_seconds: 90\n")["queue_rules"]
+    rule = named(rendered("  batch_size: 1\n  batch_wait_seconds: 90\n")["queue_rules"], "default")
     assert (rule["batch_size"], rule["batch_max_wait_time"]) == (1, "90 seconds")
-    [rule] = rendered("  batch_size: 5\n  batch_wait_seconds: 3600\n")["queue_rules"]
+    rule = named(
+        rendered("  batch_size: 5\n  batch_wait_seconds: 3600\n")["queue_rules"], "default"
+    )
     assert (rule["batch_size"], rule["batch_max_wait_time"]) == (5, "1 hour")
 
 
 def test_a_land_block_without_the_keys_keeps_the_templates_batching() -> None:
-    [rule] = rendered("")["queue_rules"]
-    [template] = yaml.safe_load(TEMPLATE.read_text())["queue_rules"]
+    rule = named(rendered("")["queue_rules"], "default")
+    template = named(yaml.safe_load(TEMPLATE.read_text())["queue_rules"], "default")
     assert (rule["batch_size"], rule["batch_max_wait_time"]) == (
         template["batch_size"],
         template["batch_max_wait_time"],
@@ -178,21 +187,23 @@ def test_the_repo_file_is_the_rendered_template_and_the_head_check_catches_drift
 
 
 def test_the_rendered_queue_timeout_follows_timeouts_run() -> None:
-    """#2228: `checks_timeout` is `timeouts.run`; this repo sets none, so it keeps the template's 1 hour."""
-    assert "timeouts" not in policy()
-    [rule] = config()["queue_rules"]
+    """#2228: `checks_timeout` is `timeouts.run`; this repo's block says 60m (#2232), the template's 1 hour."""
+    assert policy()["timeouts"] == {"test": "60s", "run": "60m"}
+    rule = named(config()["queue_rules"], "default")
     assert rule["checks_timeout"] == "1 hour"
     policy_text = approvals.Policy(
         "## Policy\n\n```yaml\nland:\n  queue: mergify\ntimeouts:\n  run: 4h\n```\n"
     )
-    [rendered_rule] = yaml.safe_load(approvals.queue_config(policy_text))["queue_rules"]
+    rendered_rule = named(
+        yaml.safe_load(approvals.queue_config(policy_text))["queue_rules"], "default"
+    )
     assert rendered_rule["checks_timeout"] == "4 hours"
 
 
 def test_a_batch_merges_only_once_its_test_step_ran_its_selection() -> None:
     """R6's refusal (#2169, #2121): `queue-run`, the one merge condition beside `-conflict`, runs only on a batch
     branch after `qualify` and passes only on the output the step after the batch's test step sets once it passed."""
-    [rule] = config()["queue_rules"]
+    rule = named(config()["queue_rules"], "default")
     assert rule["merge_conditions"] == ["-conflict", "check-success = queue-run"]
     workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "engineering-ci.yml").read_text())
     job = workflow["jobs"]["queue-run"]
@@ -210,7 +221,7 @@ def test_a_batch_merges_only_once_its_test_step_ran_its_selection() -> None:
 
 def test_batches_of_three_wait_five_minutes_and_a_silent_check_times_out() -> None:
     """The spec's batch values, and a timeout so a check that never reports can't hold the queue."""
-    [rule] = config()["queue_rules"]
+    rule = named(config()["queue_rules"], "default")
     assert (rule["batch_size"], rule["batch_max_wait_time"], rule["checks_timeout"]) == (
         3,
         "5 minutes",
@@ -220,7 +231,7 @@ def test_batches_of_three_wait_five_minutes_and_a_silent_check_times_out() -> No
 
 def test_the_queue_action_fires_on_the_same_conditions() -> None:
     """Mergify queues a PR only through an action, here on exactly land's hand-over."""
-    [rule] = config()["pull_request_rules"]
+    rule = named(config()["pull_request_rules"], "queue what land handed over")
     assert rule["actions"] == {"queue": {"name": "default"}}
     assert rule["conditions"] == HANDED_OVER
 
