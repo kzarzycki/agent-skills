@@ -132,6 +132,59 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) runs have no draft.
 
+#### Moving a repo onto the rule set
+
+A repo keeps only what really differs per repo: its loop configuration, the `docs/agents/gatekeeper.md`
+block (step 2) and the `Affected tests:`, `Acceptance tests:` and `Acceptance budget:` lines in `loop.md`.
+Anything else repo-local that implements a loop rule is a copy to delete (step 3), since a rule fix in the
+pack reaches a copy only by hand and each copy drifts on its own. A repo's migration story is then the
+release tag, the config block and one row per deleted file with its kind from step 3, and links here.
+
+1. **Install the pack at a release tag.**
+   - `apm.yml` pins `kzarzycki/agent-skills/engineering` to an `engineering-v*` tag; `apm install` writes
+     `.claude/` and `.agents/`. Renovate or a scheduled `apm update` moves the pin.
+   - Delete what reads the pack another way: a host checkout path, a vendored copy of a pack directory, a
+     script that copies skill files in.
+   - `apm audit` shows no local edit to a deployed skill. A needed change goes upstream as an agent-skills
+     issue.
+2. **State the project's facts in `docs/agents/gatekeeper.md`.** The rules are the pack's; the repo supplies
+   only its facts:
+
+   | Key | What the repo says | Rule |
+   |---|---|---|
+   | `land.queue` | `mergify`, `github`, or none | R6 |
+   | `land` batch keys | batch size and wait, or per-PR | R6 |
+   | `select.layers` | which paths are docs, agent config, CI config, infra; which checks each reaches | R2 |
+   | `select.build_inputs` | lock files, toolchain pins, test-runner config, and the affected-test selector's own code and map: a change to the selector can't be judged by the selector it changes, so it runs the whole suite | R3 |
+   | `select.unkeyed` | checks every PR head runs | R1 |
+   | `select.shards` | optional, only where runners allow | R6 |
+   | `timeouts` | `test` and `run` | R6 |
+
+   `docs/agents/loop.md` names the selector, `Affected tests: <command>` (R3), and, where the project has
+   acceptance checks, `Acceptance tests: <command>` and `Acceptance budget: <spec minutes>, <nightly minutes>`.
+3. **Delete the local copies, by kind.**
+
+   | Kind | What it looks like | Replaced by |
+   |---|---|---|
+   | Selector | a script that maps changed paths to tests, or a path-filter file read by repo code | the pack's `affected-tests` with its fallback to the narrowest set it can name; paths move to `select` |
+   | Red rerun | a script or workflow step that reruns failed tests or a failed job | R5 |
+   | Queue selection | a queue job that reruns each PR's own tests or the whole suite | the cross-change set with the floor (R6) |
+   | Push run | a run on main for a tree the queue tested | R7 |
+   | Nightly | an unconditional cron, or a repo-local "main moved" guard | the pack's nightly (R7) |
+   | Release or tag run | a full-suite run on a tagged tree the queue or nightly already tested | a read of the record (R1) |
+   | Hook | a pre-push hook that runs product tests | the recorded head run (R1) |
+   | Limits | per-test timeouts, job `timeout-minutes`, queue timeouts set by hand | `timeouts` |
+   | Carry rule | prose in `loop.md` saying when a result carries to a new tree | R1 |
+   | Duplicate skill text | a second copy of a pack skill under another path | one path |
+
+   Keep only the loop configuration from step 2, plus the project's own check commands (`check:*` tasks and
+   the like), which are the product's checks, not loop rules. A file that decides when, where or how often a
+   check runs is a loop rule: if it isn't step 2's configuration, it's a copy to delete.
+
+After a migration, the repo's loop-specific content is the `gatekeeper.md` block and the `Affected tests:`,
+`Acceptance tests:` and `Acceptance budget:` lines, and nothing else. Measure it: one week of merged PRs, the
+median ready-to-merged time and the runner-minutes per merged PR, against the week before.
+
 #### A check runs only if it can fail because of the change
 
 **A check runs only if it can fail because of this change.** A check's result is known, so the check doesn't run, when both hold:
