@@ -14536,7 +14536,12 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
     ).stdout
     monkeypatch.setattr(omnigent_agent, "pr_head", lambda *a: head.strip())  # the checkout is at it
     argv = ["b.md", "r.md", "--role", role_file(role), "--pr", "7"]
-    assert omnigent_agent.main(["start", agent, "t", *argv, "--same-family"]) == 0
+    assert (
+        omnigent_agent.main(
+            ["start", agent, "t", *argv, *(["--same-family"] if role == "verifier.md" else [])]
+        )
+        == 0
+    )
     sid = next(iter(og.sessions))
     sent = omnigent_agent.text_of(og.sessions[sid][1])
     full = (
