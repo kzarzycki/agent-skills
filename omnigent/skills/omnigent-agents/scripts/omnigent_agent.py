@@ -6544,6 +6544,23 @@ queue_comment = QUEUE_FAILURE.queue_comment
 failed_tests = QUEUE_FAILURE.failed_tests
 
 
+def wait_note(memo: dict, comment: dict) -> None:
+    """Keep in ``memo["waits"]`` (PR number to ``what``, ``deadline``) the PR a ``Waiting on:`` comment is on, until
+    its ``wait_round`` reads the PR itself; a clearing record drops it. Read off the comments ``queue_read`` already
+    lists, so a project with no such record costs no call."""
+    found = wait_record(str(comment.get("body") or ""))
+    pr = re.search(r"/issues/(\d+)$", str(comment.get("issue_url") or ""))
+    if not found or not pr:
+        return
+    waits = memo.setdefault("waits", {})
+    if found["cleared"]:
+        waits.pop(pr[1], None)
+    elif (
+        waits.get(pr[1], {}).get("deadline") != found["deadline"]
+    ):  # the same record seen again keeps its ``told``
+        waits[pr[1]] = {"what": found["what"], "deadline": found["deadline"]}
+
+
 def queue_read(repo: str, memo: dict, now: float | None = None) -> list[str]:
     """Read GitHub repo ``repo``'s issue comments updated since the last read (the first read: ``QUEUE_WINDOW`` back),
     paged and ETag-guarded (``rest_pages``, its ``since`` moved only when a comment is new, so a poll where nothing
@@ -6564,6 +6581,7 @@ def queue_read(repo: str, memo: dict, now: float | None = None) -> list[str]:
     new = []
     for comment in listed:
         cid = str(comment.get("id"))
+        wait_note(memo, comment)
         entry = queue_comment(comment)
         if cid in entries or not entry or entry["state"] not in ("merged", "dequeued"):
             continue
@@ -6673,6 +6691,40 @@ def queue_alarms(repo: str, memo: dict, now: float | None = None) -> list[tuple[
     if over or counts["share"] <= QUEUE_REJECT_SHARE:
         memo["over"] = over  # re-armed only once the share is back at or under the ceiling
     return said
+
+
+# a PR's `Waiting on: <what>` record (gatekeeper's `record waiting`, #2501), its `Deadline:` and `Cleared:` lines folded under it
+WAIT_DEADLINE = re.compile(r"^Deadline: (\S+)[ \t]*$", re.MULTILINE)
+WAIT_CLEARED = re.compile(r"^Cleared: \S+", re.MULTILINE)
+
+
+def wait_record(body: str) -> dict | None:
+    """The record a comment body is, ``{what, deadline (seconds), cleared}``, else None: one that opens ``Waiting on: ``
+    with a ``Deadline:`` line this can read. ponytail: a small copy of the gatekeeper's record format, as ``owner_record``."""
+    body = body.lstrip()
+    if not body.startswith("Waiting on: "):
+        return None
+    cleared = bool(WAIT_CLEARED.search(body))  # a clearing record carries no deadline
+    when = WAIT_DEADLINE.search(body)
+    try:
+        deadline = stamp(when[1]) if when else (0.0 if cleared else None)
+    except ValueError:
+        deadline = None
+    if deadline is None:
+        return None
+    return {
+        "what": body.split("\n", 1)[0][len("Waiting on: ") :].strip(),
+        "deadline": deadline,
+        "cleared": cleared,
+    }
+
+
+def wait_last(comments: list) -> dict | None:
+    """The PR's newest ``Waiting on:`` record (``wait_record``) among its ``comments``, else None."""
+    for c in reversed(comments):
+        if found := wait_record(str((c or {}).get("body") or "")):
+            return found
+    return None
 
 
 # a PR's `Owner: <the lead's session link>` record, which gatekeeper's `check build` writes (#2494)
@@ -9174,6 +9226,12 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
             "act",
             "the merge queue dequeued a PR no lead owns: relay it to one, or fix it",
         )
+    if kind == "wait-due":  # a PR's Waiting record past its deadline, raised on its owner's session
+        return (
+            "rule",
+            "tell",
+            "its PR waits on another agent tree past its deadline: ask for the go, or clear the record",
+        )
     if kind == "queue-rejects":
         return (
             "rule",
@@ -10531,6 +10589,7 @@ def supervise_registry(
             return
         log(("queue", repo), None)
         etags_save(etags_path)
+        wait_round(repo, memo, sid)
         entries = memo["entries"]
         flakes = queue_counts(entries)["flakes"]
         sessions: list[dict] | None = None
@@ -10600,6 +10659,64 @@ def supervise_registry(
                 entry.update(told=False, tries=tries + 1)
         for eid, kind, line in queue_alarms(repo, memo):
             say(line, sid, eid, kind)
+
+    def wait_round(repo: str, memo: dict, sid: str) -> None:
+        """Raise, once, each ``Waiting on:`` record of ``repo``'s PRs (``wait_note``) whose deadline has passed: the
+        PR's comments are read for its newest record and its ``Owner:`` record, and if no clearing record has come
+        and the owner is a session this server lists, one ``wait-due`` event goes to it (the lead found by label when
+        no record names one, ``pr_lead``); a PR owned by a session this server does not list is the other agent tree's, so
+        its supervisor raises it and this prints one line. A rate limit or failed read keeps the record for the next
+        poll. ponytail (#2501): only a PR with an owner is raised, on this server's own session, never the manager."""
+        waits = memo.get("waits") or {}
+        now, sessions = time.time(), None
+        for pr, wait in sorted(waits.items(), key=lambda x: x[1]["deadline"]):
+            if wait["deadline"] > now or wait.get("told"):
+                continue
+            try:
+                comments = rest_pages(f"repos/{repo}/issues/{pr}/comments")
+            except RateLimited as e:
+                limited[0] = time.monotonic() + e.jittered()
+                log(("queue", repo), f"GitHub rate limit: {repo}#{pr}'s Waiting record not read")
+                return
+            except Exception as e:  # noqa: BLE001 - read again at the next PR_STALL_POLL
+                log(("queue-wait", repo), f"{repo}#{pr}: Waiting record not read: {reason(e)}")
+                continue
+            last = wait_last(comments)
+            if last is None or last["cleared"]:
+                wait["told"] = True  # cleared, or gone: nothing to raise
+                continue
+            if last["deadline"] > now:  # moved on: kept for its new deadline
+                wait.update(what=last["what"], deadline=last["deadline"])
+                continue
+            if sessions is None:
+                try:
+                    sessions = every_session()
+                except Exception as e:  # noqa: BLE001 - raised at the next poll
+                    log(
+                        ("queue-sessions", repo),
+                        f"{repo}: sessions not read, waits stay: {reason(e)}",
+                    )
+                    return
+            owner = owner_record(comments) or ""
+            if owner and not any(str(s.get("id")) == owner for s in sessions):
+                wait["told"] = True
+                print(
+                    stamp(f"{repo}#{pr} waits past its deadline: owned elsewhere"),
+                    flush=True,
+                )
+                continue
+            lead = owner or pr_lead(repo, int(pr), sessions)
+            wait["told"] = True  # on disk with the event it raises: one per record
+            if not lead:
+                continue
+            hours = (now - last["deadline"]) / 3600
+            say(
+                f"{repo}#{pr} has waited on {last['what']} past its deadline ({hours:.0f} h): ask for the go,"
+                f" or clear the record (`record waiting {pr} --clear`)",
+                lead,
+                f"wait-due:{repo}:{pr}:{last['deadline']:.0f}",
+                "wait-due",
+            )
 
     def every_session() -> list[dict]:
         """Every session the supervisor sees, archived ones included, each with its labels and parent."""
