@@ -10609,7 +10609,8 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
             )
     except OSError as exc:
         raise Refused(f"`{words[0]}` can't run: {exc}") from None
-    note_run(root, estimate, time.monotonic() - started, code)
+    if estimate is not None:  # no estimate, nothing to compare, and no file to dirty a checkout
+        note_run(root, estimate, time.monotonic() - started, code)
     if spent is SPENT:
         print(over_budget(budget, root, base if written is not None else None), file=sys.stderr)
     return code
