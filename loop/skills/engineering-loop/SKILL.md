@@ -705,10 +705,10 @@ With `opt_out: true` in gatekeeper.md, a developer may keep their own PRs out of
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
 PR. `check merge` then reads a PR with no loop trail (no verifier review, no
 `Approved: spec` record or `approved:spec` on an issue it links, no `Reverts #<n>` line,
-not an exempt bot PR) as outside the loop: it prints one line saying so and exits 0, so the
-`loop:approvals` status is green and the PR's author merges it their usual way, under the
-repo's own rules. `land` leaves it out of every batch and, named, prints the same line and
-exits 1, so no agent merges it. Risk rules and `risk:high` hold no PR outside the loop; the project
+not an exempt bot PR) as outside the loop: it prints one line saying so, naming the proofs it lacks, and exits 1,
+as `land` does for the same PR: `land` leaves it out of every batch and, named, prints the same
+line and exits 1, so no agent merges it and the PR's author merges it their usual way, under the
+repo's own rules. Risk rules and `risk:high` hold no PR outside the loop; the project
 accepts that by setting it. A spec a policy covers is no trail, since under
 `spec.auto: true` every issue is covered. Any trail puts the PR back under every proof. Without
 it, a PR with no trail fails the gate.

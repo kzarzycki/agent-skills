@@ -4963,7 +4963,7 @@ def test_a_batch_squash_lands_the_gated_tree_on_the_commit_before_it(
 OPTED = add(LOOP, "loop", "opt_out: true\n")
 OUTSIDE = (
     "PR #7 is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
-    " revert or bot exemption): its author merges it"
+    " revert or bot exemption): land refuses it, and its author merges it"
 )
 
 
@@ -5494,10 +5494,16 @@ def test_a_pr_with_no_loop_trail_is_outside_the_loop_where_opt_out_is_allowed(
     mine = landing["pull"]
     mine["reviews"]["nodes"] = []
     mine["closingIssuesReferences"]["nodes"] = [specced(1, "kind:bug")]
-    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
+    # land refuses this PR, so check merge exits 1 on the same line (#2576)
+    assert gate(capsys, "check", "merge", "7") == (1, [OUTSIDE])
     # risk rules hold no PR outside the loop: the project accepted that with the setting
     mine["labels"]["nodes"].append({"name": "risk:high"})
-    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
+    assert gate(capsys, "check", "merge", "7") == (1, [OUTSIDE])
+    # a verifier review on the head puts it back in the loop: check merge no longer says it is outside
+    mine["labels"]["nodes"].pop()
+    mine["reviews"]["nodes"] = [VERDICT]
+    assert OUTSIDE not in gate(capsys, "check", "merge", "7")[1]
+    mine["reviews"]["nodes"] = []
     # without the setting, the same PR fails the gate as before
     Path("docs/agents/loop.md").write_text(LOOP)
     code, lines = gate(capsys, "check", "merge", "7")
