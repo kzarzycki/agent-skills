@@ -492,6 +492,18 @@ def test_every_brief_says_a_message_that_adds_no_task_never_rewrites_the_report(
         assert RELAY_RULE in omnigent_agent.brief_of(report).read_text()
 
 
+def test_a_listed_host_inside_a_session_link_is_denied_only_outside_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deny = tmp_path / "deny.txt"
+    deny.write_text("build-host.local\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    link = "https://build-host.local:8443/c/" + "ab" * 16
+    omnigent_agent.denied(f"Session: {link}\n")
+    with pytest.raises(omnigent_agent.Fail, match="line 2 names `build-host.local`"):
+        omnigent_agent.denied(f"Session: {link}\nran on build-host.local\n")
+
+
 def test_a_held_cloud_worker_with_a_pr_still_gets_the_relay_rule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -855,7 +867,9 @@ def test_run_fails_only_on_a_tracked_change_the_child_made(
     # a follow-up, too, holds only the child to what changed since it was sent
     (repo / "f.md").write_text("fix Y")
     sid = next(iter(og.sessions))
-    assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
+    assert (
+        omnigent_agent.main(["send", sid, "f.md", "r.md", "--wait", "--confirm-seconds", "0"]) == 0
+    )
 
     (repo / "c.txt").write_text("c\n")
     subprocess.run(["git", "-C", str(repo), "add", "c.txt"], check=True)
@@ -3863,7 +3877,7 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert "detached" in omnigent_agent.NUDGE and "foreground" not in omnigent_agent.NUDGE
     assert (
         "restart it only if it did not" in omnigent_agent.PR_NUDGE
-        and "foreground" not in omnigent_agent.PR_NUDGE
+        and "foreground" in omnigent_agent.PR_NUDGE
     )
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
@@ -4233,7 +4247,7 @@ def test_a_cloud_worker_s_follow_up_takes_only_a_report_comment_newer_than_its_r
     report.write_text("the first report")
     os.utime(report, (1e9, 1e9))  # 2001-09-09T01:46:40Z, written by the first turn's wait
     (tmp_path / "fix.md").write_text("fix ST1, read the review on PR #7")
-    argv = ["send", sid, "fix.md", "r.md", "--pr", "7", "--confirm-seconds", "0"]
+    argv = ["send", sid, "fix.md", "r.md", "--pr", "7", "--wait", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == code
     assert report.read_text() == ("the fix report" if code == 0 else "the first report")
     assert og.posts == 1 + code  # the follow-up, and a nudge for a turn without a fresh one
@@ -4275,7 +4289,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     # a follow-up takes that copy as the report before: a turn ending on its comment is not a new one
     fake_gh(monkeypatch, {"42": {**on_pr(7, "old"), "created_at": "2001-01-01T00:00:00Z"}})
     (tmp_path / "fix.md").write_text("fix it")
-    send = ["send", "s0", "fix.md", report, "--pr", "7", "--confirm-seconds", "0"]
+    send = ["send", "s0", "fix.md", report, "--pr", "7", "--wait", "--confirm-seconds", "0"]
     assert omnigent_agent.main(send) == 1
     assert not (tmp_path / "there").exists()
 
@@ -4329,7 +4343,7 @@ def test_send_pr_delivers_to_a_session_whose_workspace_is_on_another_host(
     monkeypatch.chdir(tmp_path)
     sid = og.create("claude-cloud", "t", workspace="/home/elsewhere/repo")  # no such path here
     (tmp_path / "fix.md").write_text("fix ST1")
-    argv = ["send", sid, "fix.md", "tmp/r.md", "--pr", "7", "--confirm-seconds", "0"]
+    argv = ["send", sid, "fix.md", "tmp/r.md", "--pr", "7", "--wait", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == 0
     assert (tmp_path / "tmp" / "r.md").read_text() == "the fix report"
 
@@ -7294,7 +7308,9 @@ def test_send_arms_the_registry_appending_its_message_file_and_disarms_it_on_the
         return info(s)
 
     og.info = reporting  # type: ignore[method-assign]
-    assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--confirm-seconds", "0"]) == 0
+    assert (
+        omnigent_agent.main(["send", sid, "a.md", "r.md", "--wait", "--confirm-seconds", "0"]) == 0
+    )
     assert seen[0] == f"x={tmp_path / 'x.md'}\n{sid}={report}\t{brief}\t{tmp_path / 'a.md'}\n"
     assert registry.read_text() == f"x={tmp_path / 'x.md'}\n"
 
@@ -7351,6 +7367,25 @@ def test_send_arms_only_once_its_message_is_in_the_history(
     assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--confirm-seconds", "0"]) == 0
     assert at_send == [""]
     assert stale == [False]
+
+
+def test_send_to_a_session_mid_turn_returns_once_accepted_without_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The message waits in pending_inputs until the harness's next tool boundary, which a long
+    step holds off for minutes: `send` ends at once with the delivery line, exit 0, no report."""
+    repo = git_checkout(tmp_path / "w")
+    (repo / "a.md").write_text("fix it")
+    og = LateBrief(None, True)  # never lands: the session is mid-step
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    sid = og.create("claude", "t")
+    argv = ["send", sid, "a.md", "r.md", "--confirm-seconds", "0", "--timeout", "1"]
+    assert omnigent_agent.main(argv) == 0
+    out = capsys.readouterr().out
+    assert f"session {sid}: delivered (queued until its current step ends)" in out
+    assert "not waiting for the report" in out and not (repo / "r.md").exists()
+    assert og.posts == 1
 
 
 QUESTION = {
@@ -10732,7 +10767,7 @@ def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
         "wait",
         lambda *a, **k: seen.append(registry.read_text()) or str(report),
     )
-    argv = ["send", sid, "use main as the base", str(report), "--registry", str(registry)]
+    argv = ["send", sid, "use main as the base", str(report), "--registry", str(registry), "--wait"]
     assert omnigent_agent.main(argv) == 0
     followup = tmp_path / "r.md.followup"
     assert followup.read_text() == "use main as the base"
@@ -10904,7 +10939,9 @@ def test_the_cloud_preamble_forbids_a_question_tool_and_a_page() -> None:
     preamble = omnigent_agent.PR_PREAMBLE
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
-    assert "session link" not in preamble
+    # a full session link may be posted (#2571), and the old ban on a session is gone
+    assert "no host or path outside a full Omnigent session link" in preamble
+    assert "no host, path or session" not in preamble
 
 
 def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
@@ -11079,9 +11116,9 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
     # the rule the pointer names is there, with both variant conditions
     rule = long_run_rule()
     assert "since macOS has no `setsid` command" in rule
-    assert "Where a foreground command stops at 10 minutes" in rule
-    assert "the run is waited on within the same turn" in rule
-    assert "stops at 10 minutes" in rule
+    assert "is not woken by a finished background task" in rule
+    assert "wait in the same turn with" in " ".join(rule.split())
+    assert "10-minute tool limit" in rule
     assert (
         "Never end a turn saying you wait on a detached run alone, since its end never wakes you"
         in rule
@@ -11491,7 +11528,7 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     flat = " ".join(rule.split())  # the relocated clauses, each the only copy now
     # one wake per run: one tracked wait as long as the run, never a poll loop (waste audit, finding 1)
     assert (
-        "--budget <the run's expected length>` started as a background call your harness tracks"
+        "--budget <the run's expected length>` started as a background call whose exit wakes the session"
         in flat
     )
     assert "Never a short `wait-for`, an `until grep` or a `sleep` loop" in flat
@@ -11501,7 +11538,7 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     )
     assert "starts detached (in its own session)" in flat
     assert (
-        "Where the harness tracks no background call, each foreground `wait-for` blocks close to the tool's limit"
+        "A claude-cloud session (Claude Code in a hosted VM) is not woken by a finished background task"
         in flat
     )
     assert "a gate your role file says to run bare" in flat
@@ -11728,7 +11765,17 @@ def test_send_fails_when_a_remote_question_survives_its_delete(
     with pytest.raises(omnigent_agent.Undeleted, match="not deleted"):
         omnigent_agent.send(og, sid, "use main", report, 0, far=True)
     registry = tmp_path / "registry"
-    argv = ["send", sid, "use dev", "tmp/loop/r.md", "--confirm-seconds", "0", "--timeout", "5"]
+    argv = [
+        "send",
+        sid,
+        "use dev",
+        "tmp/loop/r.md",
+        "--wait",
+        "--confirm-seconds",
+        "0",
+        "--timeout",
+        "5",
+    ]
     assert omnigent_agent.main([*argv, "--registry", str(registry)]) == 1
     assert "was not deleted on the session's host" in capsys.readouterr().err
     assert registry.read_text() == f"{sid}=tmp/loop/r.md\ttmp/loop/r.md.followup\n"
@@ -11758,7 +11805,17 @@ def test_send_to_a_remote_session_answers_its_question_on_its_host(
     og.times["tmp/loop/r.md.question"] = time.time() - 120
     (tmp_path / "a.md").write_text("use main")
     registry = tmp_path / "registry"
-    argv = ["send", sid, "a.md", "tmp/loop/r.md", "--confirm-seconds", "0", "--timeout", "5"]
+    argv = [
+        "send",
+        sid,
+        "a.md",
+        "tmp/loop/r.md",
+        "--wait",
+        "--confirm-seconds",
+        "0",
+        "--timeout",
+        "5",
+    ]
     argv += ["--registry", str(registry)]
     assert omnigent_agent.main(argv) == 0
     assert capsys.readouterr().out.strip() == "tmp/loop/r.md"
@@ -14522,7 +14579,12 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
     ).stdout
     monkeypatch.setattr(omnigent_agent, "pr_head", lambda *a: head.strip())  # the checkout is at it
     argv = ["b.md", "r.md", "--role", role_file(role), "--pr", "7"]
-    assert omnigent_agent.main(["start", agent, "t", *argv, "--same-family"]) == 0
+    assert (
+        omnigent_agent.main(
+            ["start", agent, "t", *argv, *(["--same-family"] if role == "verifier.md" else [])]
+        )
+        == 0
+    )
     sid = next(iter(og.sessions))
     sent = omnigent_agent.text_of(og.sessions[sid][1])
     full = (

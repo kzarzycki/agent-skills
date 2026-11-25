@@ -10,7 +10,7 @@
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
-    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
+    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--wait] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>   (send, relay: [--expires MINUTES])
     python3 scripts/omnigent_agent.py broadcast <message-file> [--stop | --decisions FILE] [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -47,8 +47,8 @@ workspace it started from and that a foreground command stops at 10 minutes; ``w
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
 exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
-``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. Omnigent already wakes this session for a child that is its sub-agent or one it subscribes to: when that child ends its turn with the report in, the line is skipped and said on stderr, so a child wakes its lead once (#1086). ``send`` answers that question in the same session, also mid-turn, then waits the
-same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. Omnigent already wakes this session for a child that is its sub-agent or one it subscribes to: when that child ends its turn with the report in, the line is skipped and said on stderr, so a child wakes its lead once (#1086). ``send`` answers that question in the same session, also mid-turn, and returns once it is accepted (``--wait``, ``--notify`` and ``--verdict`` then wait
+for the report the same way). A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
@@ -95,7 +95,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call; the run's expected length for one call the harness tracks in the background, so the wait wakes once), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300; for a gate run, one whose log shows the gate lock, the project's ``timeouts.run`` instead; 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group (rerun with a longer --stall, or --stall 0)`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
+call; the run's expected length for one background call whose exit wakes the session, so the wait wakes once; never in a claude-cloud session, which no finished background task wakes), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300; for a gate run, one whose log shows the gate lock, the project's ``timeouts.run`` instead; 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group (rerun with a longer --stall, or --stall 0)`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -389,8 +389,8 @@ NO_REPORT = "Your turn ended without the report."
 # What a cloud session's nudge says in place of "poll a run you started detached": that run died.
 CLOUD_RUN_NUDGE = (
     "A run you started in the background may not have outlived your turn (a cloud VM may not): check"
-    " whether it finished and posted its result, restart it only if it did not, and wait on it with one"
-    " harness-tracked background `wait-for --budget <its expected length>` (engineering-loop's verifier.md, its long-run rule),"
+    " whether it finished and posted its result, restart it only if it did not, and wait on it in"
+    " the foreground with `wait-for --budget 570`, called again on `still running` (engineering-loop's verifier.md, its long-run rule),"
 )
 NUDGE = NO_REPORT + " Poll any long run you started detached, then write the report to {report}."
 # A cloud worker's report: a comment on the PR its last message links (wait --pr).
@@ -437,9 +437,10 @@ LEAD_NUDGE = (
 LEAD_NUDGE_CLOUD = (
     "Supervisor: your turn ended with no ending and no named wait. If it ended on your own background"
     " run, that run may not outlive the turn (a cloud VM may not): check whether it finished and"
-    " posted its result, restart it only if it did not, and wait on it with one harness-tracked"
-    " background `wait-for --budget <its expected length>`. Then end your turn with DONE, STILL WORKING"
-    " naming what you wait on (that tracked wait's task id, never your detached run), or USER NEEDED."
+    " posted its result, restart it only if it did not, and wait on it in the"
+    " foreground with `wait-for --budget 570`, called again on `still running`, since a claude-cloud session is not"
+    " woken by a finished background task. Then end your turn with DONE, STILL WORKING naming what you wait on"
+    " (never a background task or your detached run), or USER NEEDED."
     ' For example: "STILL WORKING: waiting on the verifier".'
 )
 # A STILL WORKING whose wait nothing wakes the lead for (#1753): a harness re-invokes a session for
@@ -448,9 +449,9 @@ LEAD_NUDGE_CLOUD = (
 LEAD_UNTRACKED = (
     "Supervisor: your turn ended waiting on something that does not wake you when it ends (a pid,"
     " a log, or a background subagent in a cloud session). Check whether it has ended; if not, wait"
-    " on it with one harness-tracked background `omnigent_agent.py wait-for --log <log> --pid <pid file>"
-    " --budget <its expected length>` (or the subagent's own result), or restart it detached with"
-    " LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
+    " on it in the foreground with `omnigent_agent.py wait-for --log <log> --pid <pid file> --budget 570`, called"
+    " again on `still running` (or the subagent's own result), since a claude-cloud session is not woken by a"
+    " finished background task, or restart it detached with LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
     " what wakes you, or USER NEEDED."
 )
 UNTRACKED_WHY = "waits on what does not wake it"
@@ -729,7 +730,7 @@ EVERY_MAX = 60.0  # a wait-until sleep, short of any harness's tool timeout
 # a wait-until command that reads one PR through gh: wait-for --pr reads it through ETags, free while it doesn't move
 PR_POLL = re.compile(r"\bgh\s+(?:pr\s+(?:view|checks|status)\b|api\b[^;&|\n]*\bpulls/\d)")
 # wait-for's default budget, for a foreground call: under a 10-minute tool call with room for the call's own start
-# and exit. A wait the harness tracks in the background passes the run's expected length instead, so it wakes once.
+# and exit. A wait in a background call that wakes the session passes the run's expected length instead, so it wakes once.
 WAIT_FOR_BUDGET = 570.0
 WAIT_FOR_EVERY = 2.0  # a local read: a log or a pid
 WAIT_FOR_PR_EVERY = 120.0  # a poll is several GitHub calls, and several waiters run at once
@@ -790,18 +791,14 @@ DETACH = "perl -MPOSIX=setsid -e 'fork and exit; setsid; exec @ARGV'"
 # keeps the conversation, not the machine, so a run detached in one turn dies when it ends.
 DETACH_LINE = "A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role."
 CLOUD_RUN_LINE = (
-    "A run may not outlive the turn that started it, since a cloud VM may be replaced between turns,"
-    " and a foreground call there is cut short: start it detached as engineering-loop's verifier.md's recipe says (its"
-    " log, pid and exit in files), then wait on it with one wake: one `omnigent_agent.py wait-for --log <log>"
-    " --pid <pid> --budget <the run's expected length>` started as a background call your harness tracks"
-    " (Claude Code: Bash `run_in_background`), never a short `wait-for`, `until grep` or `sleep` loop,"
-    " since each return re-reads your whole context. Before the run has ended and its result is posted,"
-    " end a turn only on that tracked wait, naming its task id. A turn the run wakes never reaches the"
-    " host (it sees a cloud turn only once it sends the next message), so the host checks in every 5"
-    " minutes while you wait: answer each check-in with your report once the run has ended, in full"
-    " even if a woken turn already gave it, else end the turn again naming the task id. The lead waits"
-    " on the completion signal you post (the PR comment or a status file), not on your turn, so a"
-    " `STILL WORKING` that names only your own detached run is not a valid ending."
+    "A run may not outlive the turn that started it, since a cloud VM may be replaced between turns: start it"
+    " detached as engineering-loop's verifier.md's recipe says (its log, pid and exit in files), then wait on it in"
+    " this turn, in the foreground: `omnigent_agent.py wait-for --log <log> --pid <pid> --budget 570`, called again"
+    " on `still running`, each call under the 10-minute tool limit, never a short `wait-for`, `until grep` or `sleep`"
+    " loop. A claude-cloud session is not woken by a finished background task, so never end a turn waiting on one"
+    " (Bash `run_in_background` included) or on a detached run: end the turn only once the run has ended and its result"
+    " is posted. The lead waits on the completion signal you post (the PR comment or a status file), not on your"
+    " turn, so a `STILL WORKING` that names only your own run is not a valid ending."
 )
 PREAMBLE = """\
 The owner authorized this task; do it now, without asking for a go-ahead. This file is your brief.
@@ -820,7 +817,7 @@ The owner authorized this task; do it now, without asking for a go-ahead. This i
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
 Read issues and PRs through REST too, since GraphQL answers 403 here: `gh api repos/{{owner}}/{{repo}}/issues/<n>` and `.../pulls/<n>`, never `gh issue view` or `gh pr view`.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
-Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (`gh pr comment` goes through GraphQL too). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
+Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (`gh pr comment` goes through GraphQL too). Keep progress notes elsewhere, since that comment is read as your answer. It names no host or path outside a full Omnigent session link (`https://<server>/c/<id>`, which it may post), since the PR may be public.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
 Demo: for a user-visible change, state in the report the command you ran and its output (or the demo skill's recording); otherwise say `Demo: none`, since a reviewer judges a visible change without checking out the branch.
@@ -836,7 +833,7 @@ When done, reply with only the comment's URL. If posting fails (the session's to
 HELD_POST = (
     "Your final report is one comment on PR #{pr}, which you don't post: reply with the line `{unposted}`, then the"
     " comment body verbatim, and it is checked and posted for you."
-    " It names no host, path or session, since the PR may be public."
+    " It names no host or path outside a full Omnigent session link (`https://<server>/c/<id>`, which it may post), since the PR may be public."
 )
 # The report paragraph is one line, so a sentence added after it survives the swap.
 SELF_POSTED = re.compile(r"Your final report is one comment on PR #\{pr\}, posted once[^\n]*")
@@ -870,7 +867,7 @@ def installed(skill: str) -> Path | None:
     Code's cache (`<marketplace>/<plugin>/<version>/`, beside the script or in `~/.claude/plugins/cache`) that no
     update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
     searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
-    tests set it. None when none holds it."""
+    tests set it, or the checkout is the GITHUB_WORKSPACE of the CI job running there. None when none holds it."""
     # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
     import os
 
@@ -878,7 +875,13 @@ def installed(skill: str) -> Path | None:
     plugin = own.parent.parent
     root = plugin.parent
     checkout = (root / ".git").exists() and (root / ".claude-plugin" / "marketplace.json").is_file()
-    laid = not checkout or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
+    # the pack's own CI runs in the workspace its job checked out: that checkout is the repo it runs in, not a stale clone
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    laid = (
+        not checkout
+        or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
+        or bool(workspace and Path(workspace).resolve() == root)
+    )
     cached = [
         *(root.parent.glob(f"[!.]*/[!.]*/skills/{skill}") if laid else []),
         *(Path.home() / ".claude" / "plugins" / "cache").glob(f"[!.]*/[!.]*/[!.]*/skills/{skill}"),
@@ -2742,10 +2745,13 @@ def send(
     queued_after: float | None = None,
     far: bool = False,
     unarchive: bool = False,
+    accepted: bool = False,
 ) -> tuple[str, bool]:
     """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands:
     ``delivered``, or ``already`` when a copy had landed before, and whether this call posted. With ``queued_after`` (a relay),
-    ``queued`` once the copy has been pending that long instead. ``far``: the session runs on
+    ``queued`` once the copy has been pending that long instead. With ``accepted`` (``send`` without
+    ``--wait``), ``queued`` as soon as the copy is pending: the server holds it for the harness, so a
+    session mid-turn does not hold the caller until its next tool boundary. ``far``: the session runs on
     another host (``elsewhere``), where ``report`` and its question are. ``unarchive``: an
     archived session is unarchived first, so it resumes with its history; otherwise it is Gone.
 
@@ -2845,6 +2851,8 @@ def send(
                     file=sys.stderr,
                 )
             held = held or time.monotonic()
+            if accepted:
+                return "queued", posted
             if queued_after is not None and time.monotonic() - held >= queued_after:
                 return "queued", posted
             deadline = time.monotonic() + confirm_seconds
@@ -6850,24 +6858,26 @@ DENY_LIST = "LOOP_DENY_LIST"
 
 
 def denied(text: str) -> None:
-    """A ``Fail`` when ``text`` names a term of the local deny list (``LOOP_DENY_LIST``'s file, one term per line,
-    ``#`` starts a comment), ignoring case at word boundaries, or when the list it names can't be read; the same check
-    as approvals.py's, which ships in another skill, so this script imports nothing of it."""
-    if not (where := os.environ.get(DENY_LIST)):
+    """A ``Fail`` when ``text`` names a term of the local deny list (``LOOP_DENY_LIST``'s file), outside an Omnigent
+    session link: the one check, ``denylist.py`` beside the loop's gatekeeper.py, loaded by path. With a deny list on this host
+    and that skill absent the check can't run, so it refuses."""
+    if not os.environ.get(DENY_LIST):
         return
+    folder = installed("gatekeeper")
     try:
-        listed = Path(where).expanduser().read_text().splitlines()
-    except OSError as e:
-        raise Fail(
-            f"{DENY_LIST} names {where}, which can't be read ({e.strerror}): nothing posted"
-        ) from e
-    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
-    for number, line in enumerate(text.splitlines(), 1):
-        for term in terms:
-            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
-                raise Fail(
-                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
-                )
+        assert folder
+        spec = importlib.util.spec_from_file_location(
+            f"{__name__}_denylist", folder / "denylist.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (Exception, SystemExit) as e:  # absent or broken: refuse, never let a post through
+        raise Fail(f"{DENY_LIST} is set but its denylist.py can't be loaded: nothing posted") from e
+    try:
+        module.check(text)
+    except module.Denied as e:
+        raise Fail(str(e)) from e
 
 
 def gh(*args: str, timeout: float = HTTP_SECONDS, cwd: Path | None = None) -> str:
@@ -8010,12 +8020,64 @@ def offline(og: Omnigent, sid: str, path: Path) -> Fail:
     )
 
 
+RECORD_BLOCKED = "record verdict BLOCKED:"
+
+
+def record_verdict(pr: int, report: Path, repo: str = "") -> None:
+    """Record a verifier's ``report`` on PR ``pr`` through the installed gatekeeper's ``record verdict``, the one path
+    every route's verdict takes (Codex, Claude, Gemini, a fallback): a review on the head the report names. When it
+    can't be recorded the report gets a ``record verdict BLOCKED: <reason>`` line and a ``Fail`` carries the same line
+    to the caller, so no route ends on a verdict nothing read (#2575)."""
+    folder = installed("gatekeeper")
+    why = ""
+    if folder is None:
+        why = "the gatekeeper is not installed beside this skill"
+    elif not report.is_file():
+        why = f"{report} is not on this host: copy it here (`wait --verdict` does) and run `approvals.py verdict {pr} <report>`"
+    else:
+        cmd = ["uv", "run", "-q", "--script", str(folder / "gatekeeper.py"), "record", "verdict"]
+        try:
+            done = subprocess.run(
+                [*cmd, str(pr), str(report)],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            why = f"record verdict did not run: {e}"
+        else:
+            if done.returncode:
+                tail = (done.stderr or done.stdout).strip().splitlines()
+                why = f"exit {done.returncode}: {tail[-1] if tail else 'no output'}"
+    if not why:
+        return
+    line = f"{RECORD_BLOCKED} {why}"
+    if report.is_file():
+        with report.open("a") as out:
+            out.write(f"\n{line}\n")
+    raise Fail(line)
+
+
+def record_collected(og: Omnigent, sid: str, report: Path, pr: int, far: bool) -> None:
+    """Record a collected verifier ``report`` on PR ``pr``, the one step ``run`` and ``wait`` share: a report on
+    another host (``far``, a path there) is copied here first, as ``approvals.py verdict`` reads a local file."""
+    record_verdict(pr, bring_home(og, sid, report, keep=True) if far else report)
+
+
 def apply_route(args: argparse.Namespace) -> None:
     """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
     agy needs to run unattended) and `claude` a fresh Claude session of any model, the author's own included, marked
     same-family: a fresh session given only the code and the spec is what makes a verifier independent. Refused where
     the route can't run, naming the fix, since a verifier started wrong costs a pass."""
     if args.verifier_route == "gemini":
+        if os.environ.get("CLAUDE_CODE_REMOTE") == "true":
+            raise Fail(
+                "--verifier-route gemini cannot start from a cloud VM: it has no Omnigent server route to drive agy."
+                " The verifier must be started by the coordinator on a host with an Omnigent server route: ask"
+                " your coordinator to start it, or use --verifier-route claude only if it says Gemini can't run (#2572)"
+            )
         if not args.host:
             raise Fail(
                 "--verifier-route gemini runs agy on a host that has it logged in: pass --host"
@@ -8025,6 +8087,23 @@ def apply_route(args: argparse.Namespace) -> None:
         return
     args.agent = "claude"
     args.same_family = True
+
+
+VERIFIER_WORDS = re.compile(r"\bverif(?:y|ier|iers|ication)\b", re.IGNORECASE)
+
+
+def verifier_without_role(args: argparse.Namespace) -> bool:
+    """Whether a start that is not a verifier's role reads as one: it names a PR and a verifier by ``--same-family`` or
+    by its title or report name. A fallback started so posts a plain PR comment in no format the gatekeeper reads
+    (#2573)."""
+    return bool(
+        args.pr
+        and (
+            getattr(args, "same_family", False)
+            or VERIFIER_WORDS.search(args.title)
+            or VERIFIER_WORDS.search(args.report.stem)
+        )
+    )
 
 
 def reviews(role: str | None) -> bool:
@@ -11979,6 +12058,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         help="unarchive an archived session even when the registry does not list it; a listed"
         " one is unarchived without it, and an unlisted one exits 4",
     )
+    p.add_argument(
+        "--wait",
+        action="store_true",
+        help="after delivering, wait for the report as `run` does (the default is to return once"
+        " the message is accepted: delivery line, exit 0); --notify and --verdict imply it",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p.add_argument(
         "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
@@ -12368,6 +12453,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 "--verdict",
                 action="store_true",
                 help="a verifier's report: done only once it has a SATISFIED: line",
+            )
+        if p.prog.split()[-1] == "wait":
+            p.add_argument(
+                "--record-pr",
+                type=int,
+                help="with --verdict: record the report as PR N's verifier review (`record verdict`), as run does",
             )
         if p.prog.split()[-1] not in (
             "start",
@@ -12780,10 +12871,19 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
             finish_delivered(og, args.session, keep=keeps(args, args.verdict), hold_pr=False)
+            if args.verdict and args.record_pr:
+                record_collected(og, args.session, report, args.record_pr, far)
             return 0
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
         verifier = args.cmd in ("run", "start") and reviews(args.role)
+        if args.cmd in ("run", "start") and not verifier and verifier_without_role(args):
+            raise Fail(
+                f"--pr {args.pr} on a start that reads as a verifier's (--same-family, or a title or report named"
+                " for one) without --role <skills>/engineering-loop/verifier.md: its report would carry no `Head:`,"
+                " `VERDICT:` or finding format, and `record verdict` would refuse it. Every verifier route, a"
+                " fallback included, starts with --role verifier"
+            )
         if args.cmd in ("run", "start"):
             if args.verifier_route not in (None, "codex") and not verifier:
                 raise Fail(
@@ -12935,12 +13035,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
             mark = RELAYED.format(who=own_id() or "an agent")
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
+            waits = args.wait or args.notify or args.verdict
             undeleted = None
             try:
                 # an archived lead the registry still lists is the supervisor's own archive after
                 # its DONE, so its next brief resumes it; an unlisted one was reaped (#2420)
                 listed = bool(registry) and args.session in registered(Path(registry))[0]
-                send(
+                outcome, _ = send(
                     og,
                     args.session,
                     f"{mark}\n{text}",
@@ -12948,6 +13049,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     args.confirm_seconds,
                     far=far,
                     unarchive=args.unarchive or listed,
+                    accepted=not waits,
                 )
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
@@ -12964,7 +13066,15 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 )
             if undeleted:
                 raise undeleted
-            if opened := still_open(og, args.session):  # a card blocks nothing: it stays open
+            opened = still_open(og, args.session)  # a card blocks nothing: it stays open
+            if not waits:
+                held = " (queued until its current step ends)" if outcome == "queued" else ""
+                print(
+                    f"session {args.session}: delivered{held}{opened}; not waiting for the report:"
+                    f" `wait {args.session} {report}` waits for it"
+                )
+                return 0
+            if opened:
                 print(f"session {args.session}: delivered{opened}")
             print(
                 wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
@@ -13149,6 +13259,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             report_cold_start(og, sid)
             arm_quietly(registry, sid)
             finish_delivered(og, sid, keep=keeps(args, verifier), hold_pr=False)
+            if verifier and verifies:
+                record_collected(og, sid, report, verifies, not here)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
         return 0

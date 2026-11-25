@@ -37,6 +37,7 @@ from approvals_harness import (  # noqa: F401
     attached,
     board_risks,
     graphql_answers,
+    green_base,
     hub,
     merging,
     others_open,
