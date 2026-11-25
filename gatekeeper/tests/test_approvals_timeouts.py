@@ -285,6 +285,24 @@ def test_a_full_run_over_the_budget_names_the_whole_suite(
     assert "running the whole suite (`Gate: full`), unsharded" in line
 
 
+def test_a_no_line_run_over_the_budget_names_the_missing_line_not_gate_full(
+    worker: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A loop.md with no `Affected tests:` line runs the whole suite too (#2217), but the project never set `Gate:
+    full`: the line names the missing line as the cause (#2361)."""
+    mise = worker["repo"].parent / "tools" / "mise"
+    mise.write_text("#!/bin/sh\nsleep 30\n")
+    worker["set_loop"]("# Loop\n\n")
+    worker["commit"]("app.py", "value = 2\n")
+    monkeypatch.setitem(approvals.TIMEOUTS, "run", "1s")
+    assert approvals.main(["affected-tests"]) == approvals.TIMED_OUT
+    [line] = [each for each in capsys.readouterr().err.splitlines() if "timed out" in each]
+    assert "running the whole suite (no `Affected tests:` line), unsharded" in line
+    assert "Gate: full" not in line
+
+
 # --- a queue's timeout is no red
 
 
