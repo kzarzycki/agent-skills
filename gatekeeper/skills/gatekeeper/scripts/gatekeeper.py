@@ -2569,6 +2569,34 @@ def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
     return found
 
 
+# the first line of the record `check build` leaves on a PR: `Owner: <the lead's session link>`, and nothing else
+OWNER = "Owner: "
+
+
+def owner_record(pull: dict[str, Any]) -> list[str]:
+    """Several agent trees (independent groups of agents) work one repo and align only through GitHub, so `check build`
+    writes one `Owner:` record on the PR: the lead's session link (session_link). A line when it cannot write the
+    record, which `check build` counts as a failure; nothing is written again while the PR's last `Owner:` record
+    already says the same.
+    ponytail: the record is written whenever the run has a session to name, and a run with no session at all (a
+    project that does not use sessions) writes none and is not refused, so a single-user project changes nothing; the
+    epic left open what turns the record on, and the owner chose this reading (#2458)."""
+    link = session_link()
+    if not link:
+        return []
+    body = f"{OWNER}{link}\n"
+    kept = [n for n in notes(pull) if n["body"].startswith(OWNER)]
+    if kept and kept[-1]["body"].strip() == body.strip():
+        return []
+    try:
+        comment(pull["number"], body)
+    except subprocess.CalledProcessError as exc:
+        return [
+            f"PR #{pull['number']}: could not write the `Owner:` record ({(exc.stderr or '').strip() or exc})"
+        ]
+    return []
+
+
 def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
     """Whether the loop's claim() made `login` the issue's assignee: its record names them, and the loop's own
     assignment, the first of them at or after the record, is the last; a later one is a person claiming it again.
@@ -6404,6 +6432,8 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
+    if point == "build" and not found:
+        found = owner_record(pull)
     covered = breakglass_cover(pull, loop, ran(pull)) if point == "merge" else Covered([], [])
     waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
