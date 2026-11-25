@@ -62,7 +62,8 @@ ends``, it lands then), 5 while an approval prompt or a question holds it, 4 whe
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy), 8 when the
 session's host is offline (nothing sent, nothing kept: run it again once the host is back).
-``relay --unarchive`` unarchives an archived session first, so it resumes with its history. An open
+``relay --unarchive`` unarchives an archived session first, so it resumes with its history; ``send`` does so for a session the
+supervisor registry lists, and ``send --unarchive`` for one it does not. An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
 nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
 ``card open: <question>``; a plain relay (or ``send``, which prints the same line before it waits) is
@@ -355,6 +356,9 @@ TURN_END_SECONDS = 30.0
 PROMPT_CONFIRM_SECONDS = 120.0
 # how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
 CREATED_SECONDS = 30.0
+# A PR with this label is parked on purpose and dropped from the merge queue by a rule (#2164): it raises no stall and no
+# dequeue for a manager to fix (#2316).
+HOLD_LABEL = "loop:hold"
 # A session younger than this is not adopted: its launcher may still be writing it to its own supervisor's registry (#2313).
 ADOPT_GRACE_SECONDS = 60.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
@@ -3748,7 +3752,24 @@ def refuse_shadowed_pin(workspace: Path, env: str, main: Path | None) -> None:
         )
 
 
-def pin_environment(workspace: Path) -> None:
+def cloud_env_id(name: str) -> str:
+    """The id of the environment called ``name`` on this host's claude login, for ``start --cloud-env``; a name
+    not there is a ``Fail`` listing the names that are, since a ``-code-mode`` variant is made apart."""
+    envs = cloud_environments()
+    try:
+        hit = ENVS.named(envs, name)
+    except ENVS.Refused as e:
+        raise Fail(f"--cloud-env {name}: {e}") from None
+    if hit:
+        return str(hit["environment_id"])
+    names = ", ".join(sorted({str(e.get("name")) for e in envs if e.get("name")})) or "none"
+    raise Fail(
+        f"--cloud-env {name}: no cloud environment named {name!r} on this host's claude login (it has: {names});"
+        " `claude-code-mode --cloud-env <base>` makes an environment's <base>-code-mode variant"
+    )
+
+
+def pin_environment(workspace: Path, cloud_env: str = "") -> None:
     """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
     takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
     worktree lacks, and without it lands in the account's default environment. The environment the
@@ -3756,9 +3777,26 @@ def pin_environment(workspace: Path) -> None:
     and pinned, replacing another pin. With no name, a pin already there stays; a worktree missing
     one takes its main checkout's; with neither, the environment named after the repository, else
     the account's ``Default``, is pinned. With none of them, fail before any session exists, as with
-    a pin that the worktree's main checkout's shadows."""
+    a pin that the worktree's main checkout's shadows.
+
+    ``cloud_env`` (``start --cloud-env``) names the environment instead, and the workspace must already
+    pin it: the bridge reads the pin each time it creates the session's cloud session (on the first
+    prompt, and again on a later message after a failed setup or an unstarted stall), so a pin written
+    for one start and put back could be read back by that session in the project's environment. A launch
+    dir of its own holds it for good; any other workspace is refused, naming ``launch-dir``."""
     own = own_settings(workspace)
     main = main_worktree(workspace)  # no checkout: no main to copy from
+    if cloud_env:
+        env = cloud_env_id(cloud_env)
+        if (pinned := environment_pin(own)) != env:
+            raise Fail(
+                f"--cloud-env {cloud_env}: {workspace / SETTINGS} pins {pinned or 'no environment'}, not"
+                f" {cloud_env} ({env}), and a cloud session rereads its workspace's pin whenever its cloud"
+                f" session is made again: make a launch dir of its own, `launch-dir <remote> <branch> {env} <path>`,"
+                " and start with --workspace <path>"
+            )
+        refuse_shadowed_pin(workspace, env, main)
+        return
     line = cloud_worker(project_loop(workspace))
     named = line.env if line else ""
     if named:
@@ -6319,11 +6357,28 @@ def pr_stalls(
     refs: dict | None = None
     last = memo.get("swept", 0.0)  # the sweep before this one: a head new since was pushed after it
     said = []
+    memo["held"] = sorted(  # ``queue_round`` tells no dequeue of these
+        p["number"]
+        for p in listed
+        if HOLD_LABEL in {str(x.get("name")) for x in p.get("labels") or []}
+    )
     for row in sorted(listed, key=lambda p: p["number"]):
         if row.get("draft"):
             continue  # its lead is still building it: the lead's own deadline watches that
         key = str(row["number"])
         seen = prs.get(key) or {}
+        if row["number"] in memo["held"]:
+            # no read while held, but its head stays first-seen and it is due at once: it stalls as before when released
+            prs[key] = {
+                "head": row["head"]["sha"],
+                "updated": row.get("updated_at"),
+                "said": seen.get("said"),
+                "seen_at": seen.get("seen_at", 0.0)
+                if seen.get("head") == row["head"]["sha"]
+                else last,
+                "due": 0,
+            }
+            continue
         same = seen.get("head") == row["head"]["sha"] and seen.get("updated") == row.get(
             "updated_at"
         )
@@ -10126,6 +10181,9 @@ def supervise_registry(
         for cid, entry in sorted(entries.items(), key=lambda x: x[1]["left_at"]):
             if entry["state"] != "dequeued" or entry.get("told"):
                 continue
+            if entry["pr"] in (state["pr_stalls"].get(repo) or {}).get("held", []):
+                entry["told"] = True  # parked on purpose: its drop is no news (#2316)
+                continue
             if sessions is None:
                 try:
                     sessions = every_session()
@@ -11564,6 +11622,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             help="the child's workspace (default: this directory); the report must be inside it",
         )
         p.add_argument(
+            "--cloud-env",
+            default="",
+            metavar="NAME",
+            help="a claude-cloud start's environment, by its name on this host's claude login, in place of the"
+            " project's; the workspace must be a launch dir pinned to it (`launch-dir <remote> <branch> <env-id>"
+            " <path>`)",
+        )
+        p.add_argument(
             "--host",
             help="with --top-level, the Omnigent host (name or id) to start the lead, the --pr"
             " cloud worker, or a verifier (one loop.md's Placement: hosts: line lists) on; without"
@@ -11600,6 +11666,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("session")
     p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
     p.add_argument("report", type=Path)
+    p.add_argument(
+        "--unarchive",
+        action="store_true",
+        help="unarchive an archived session even when the registry does not list it; a listed"
+        " one is unarchived without it, and an unlisted one exits 4",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p.add_argument(
         "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
@@ -12429,10 +12501,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise Fail(
                     f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"
                 )
+        if args.cmd in ("run", "start") and args.cloud_env:
+            if args.agent in AGENTS or og.harness(args.agent) != CLOUD_HARNESS:
+                raise Fail(
+                    f"--cloud-env: {args.agent} is not a cloud agent; it names a claude-cloud start's environment"
+                )
+            if args.host and og.host(args.host) != og.host_id:
+                raise Fail(
+                    f"--cloud-env: the launch dir's pin is read on this host, not on {args.host}: drop --host"
+                )
         if (
             args.cmd in ("run", "start")
             and not args.host
             and not args.top_level
+            and not args.cloud_env  # ponytail: its launch dir is here; another host's isn't checked
             and args.agent not in AGENTS
             and og.harness(args.agent) == CLOUD_HARNESS
             and (args.workspace is None or args.workspace.is_absolute())
@@ -12528,7 +12610,18 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             undeleted = None
             try:
-                send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
+                # an archived lead the registry still lists is the supervisor's own archive after
+                # its DONE, so its next brief resumes it; an unlisted one was reaped (#2420)
+                listed = bool(registry) and args.session in registered(Path(registry))[0]
+                send(
+                    og,
+                    args.session,
+                    f"{mark}\n{text}",
+                    report,
+                    args.confirm_seconds,
+                    far=far,
+                    unarchive=args.unarchive or listed,
+                )
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
             # armed once the message is in the history: before it, the report or question of the
@@ -12604,7 +12697,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             refuse_unfit_cloud_host(og, host, workspace)
         # The aliases are native harnesses.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
-            pin_environment(workspace)
+            pin_environment(workspace, args.cloud_env)
             refuse_untrusted_launch_dir(workspace)
             if args.pr:
                 named = getattr(args.pr, "repo", "")

@@ -344,12 +344,14 @@ def test_a_failing_affected_tests_run_records_nothing(worker_head) -> None:
     assert c.recorded(head, point)[0] is False
 
 
-def test_a_run_that_cant_tell_records_nothing(worker_head, capsys) -> None:
+def test_a_base_git_cant_resolve_records_against_the_merge_base(worker_head, capsys) -> None:
+    """#2217: an all-zeros base (a new branch's push) selects against the merge base, so the record is the branch
+    point's, the one the floor reads."""
     g, affected = worker_head
     point, head = affected("true")
     assert g.main(["affected-tests", "--record", "--base", "0" * 40]) == 0
-    assert "affected-tests: nothing: no base to select against" in capsys.readouterr().err
-    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 1
+    assert "it selects against the merge base" in capsys.readouterr().err
+    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 0
 
 
 def test_without_record_a_passing_run_records_nothing(worker_head) -> None:

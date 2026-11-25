@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.9 - 2026-11-24
+
+- `engineering/skills/engineering-loop/` no longer holds copies of the loop's role docs (`lead.md`, `worker.md`, `verifier.md`, `proof-run.md`, `coding-standards.md`, `issues.md`): they live only in the `loop` package's `loop/skills/engineering-loop/`, so a rule edit is made once. A start that named an old doc path by hand names `loop/skills/engineering-loop/<role>.md`, or `--role <role>`, which finds the installed file. The forwarding scripts in that folder stay until the release that drops engineering's dependencies on the split packages (#2232).
+- engineering-loop: `_installed.py` in engineering's forwarder folder says it only serves forwarders, so `tests/test_one_package_per_skill_name.py` passes again (#2364)
+
 ## 0.35.8 - 2026-11-24
 
 - engineering-loop: lead.md's `claude` verifier route no longer asks for a `--model` other than the author's (#2297).
