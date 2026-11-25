@@ -335,7 +335,11 @@ manager per project, each a node.
   (Follow).
 - **Decision log.** While the owner is away, each decision taken for them goes in the node's
   decision log with how to undo it. A morning digest is drafted from it and the board's
-  `## Needs the owner`, and sent by hand, never by a scheduled send.
+  `## Needs the owner`, and sent by hand, never by a scheduled send. `scripts/decisions.py`
+  does the writing: `log --what --why --undo` appends an entry and refuses one with no undo,
+  `digest` prints the draft and sends nothing, and `sent --via <where>` records, after you sent
+  it, that the log is delivered up to there. Read it when logging a decision or drafting the
+  digest.
 
 ## Speaking to the owner
 
