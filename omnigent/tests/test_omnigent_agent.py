@@ -6541,7 +6541,7 @@ def test_a_timed_wait_wakes_the_lead_once_its_time_has_passed(
     assert status["wait"] == "until 2026-10-27T06:32Z"  # judged at its created_at, not later
     listed = "STILL WORKING:\n- the rule holds until 2026-10-27 06:32 UTC\n- waiting on the timer at 2026-10-21 23:17 UTC"
     assert omnigent_agent.wait_of(listed) == "until 2026-10-21T23:17Z"  # a line is a sentence
-    assert omnigent_agent.wait_of("At 2026-10-21 23:17 UTC. STILL WORKING on CI") == "CI"
+    assert omnigent_agent.wait_of("At 2026-10-21 23:17 UTC.\nSTILL WORKING on CI") == "CI"
     due = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(time.time() + due_in))
     registry = following(tmp_path)
     og = Lead(told("brief", 4000), ending(f"STILL WORKING: a timer wakes me until {due}", 3600))
