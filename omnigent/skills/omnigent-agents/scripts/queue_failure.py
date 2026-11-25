@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A Mergify queue failure, read from its status comment and its jobs' logs: shared by the supervisor
 (``omnigent_agent.py``, which sends it to the lead that owns the PR) and the ``queue-failure`` workflow (which
-writes it on the PR as a ``Queue failure`` record, so both teams of a project read the same evidence, #2497).
+writes it on the PR as a ``Queue failure`` record, so both agent trees of a project read the same evidence, #2497).
 
 Standard library only. Mergify queue only: ponytail: epic #2458 open question "does the queue story work with the
 GitHub merge queue as well as Mergify": no, this reads Mergify's status comment; GitHub's own merge queue is not

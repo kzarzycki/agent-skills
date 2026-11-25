@@ -1,6 +1,6 @@
 # Writes a `Queue failure` record on a PR Mergify drops over failing checks (#2497): the failing checks with their job
 # links, the failing tests read from those jobs' logs, and whether Mergify named the PR as the cause. Mergify's own
-# comment lists the checks and links but not the tests, so a team that does not own the PR guessed the cause from it
+# comment lists the checks and links but not the tests, so an agent tree that does not own the PR guessed the cause from it
 # (epic #2458). This job adds its own record beside Mergify's, which it cannot edit.
 #
 # Mergify's queue only. ponytail: epic #2458 open question "does the queue story work with the GitHub merge queue as
