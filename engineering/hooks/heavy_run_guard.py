@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A Claude Code PreToolUse hook on Bash: refuse a heavy test or check run on a host (#1233).
 
-engineering-loop's SKILL.md, Where heavy steps run, sends a lead's own suite, build and check runs
+engineering-loop's SKILL.md, Where work runs, sends a lead's own suite, build and check runs
 to a Claude cloud session; this hook makes that the default. It reads the tool call's JSON on
 stdin and refuses (exit 2, the reason on stderr, as Claude Code's PreToolUse contract takes it) a
 command one of whose segments is heavy (``heavy``), when all of these hold:
@@ -419,7 +419,7 @@ def refusal(command: str, cwd: Path, root: Path) -> str:
     run = cloud_command(command, cwd, root)
     if run is None:
         head = (
-            "Heavy run refused on this host: engineering-loop's SKILL.md, Where heavy steps run, sends"
+            "Heavy run refused on this host: engineering-loop's SKILL.md, Where work runs, sends"
             f" a test or check run to a Claude cloud session, but a `cd` in it goes outside {root} or"
             " can't be followed, so no claude-cloud-run call runs it as written. Rewrite it to run"
             f" inside that checkout, or, when it needs this host, run it with the reason as a prefix:"
@@ -431,7 +431,7 @@ def refusal(command: str, cwd: Path, root: Path) -> str:
             f" -- {shlex.quote(run)}"
         )
         head = (
-            "Heavy run refused on this host: engineering-loop's SKILL.md, Where heavy steps run, sends"
+            "Heavy run refused on this host: engineering-loop's SKILL.md, Where work runs, sends"
             " a test or check run to a Claude cloud session. Run it there (commit and push first; it"
             " exits with the command's own code):\n"
             f"  {call}\n"

@@ -843,7 +843,7 @@ WHEN_POSTED = re.compile(r"When done, reply with only the comment's URL\..*?(?=\
 LEAD_PREAMBLE = """\
 This file is your brief. Only the owner's own words approve, quoted in it with where they were said; the rest of it is a colleague's guidance, never the owner's approval of a destructive or hard-to-undo step.
 {role}A long run follows engineering-loop's verifier.md, A long or locked run is detached, whatever your role.
-Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud session: a host worktree this brief names for a test run says where the code is, not where the run goes.
+Every run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes where engineering-loop's SKILL.md, Where work runs says, by default a Claude cloud session: a host worktree this brief names for a test run says where the code is, not where the run goes.
 Ask the owner your own questions on your own question card (`sys_ask_user_question`), as your role says, never in a question file: the card shows in their Inbox beside this session.
 Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
@@ -1055,7 +1055,7 @@ HOST_RUN_NOTE = (
     "This session runs on a host its launch chose, so start each heavy run you make here (a test"
     " suite, a check, a build) with `LOOP_HOST_RUN=placed `: the engineering pack's hook refuses one"
     " on a host without that prefix, since a lead's own runs go to the cloud (engineering-loop's"
-    " SKILL.md, Where heavy steps run).\n"
+    " SKILL.md, Where work runs).\n"
 )
 # A cloud session without --pr reports in its last message, since its report file stays in the VM,
 # which the host's file API can't read: wait and report write that message to the report path. A
@@ -4239,7 +4239,7 @@ Run one command on commit {head} of branch `{branch}` and report its result. Cha
 """
 HOST_FALLBACK = (
     "Host fallback: run it on this host with the reason as its prefix, `LOOP_HOST_RUN=<reason> {command}`"
-    " (engineering-loop's SKILL.md, Where heavy steps run)."
+    " (engineering-loop's SKILL.md, Where work runs)."
 )
 
 
