@@ -11,6 +11,8 @@ on:
       - uv.lock
       - mise.toml
       - conftest.py
+      - tools/affected_tests.py
+      - gatekeeper/skills/gatekeeper/scripts/gatekeeper.py
 permissions:
   contents: read
 jobs:
