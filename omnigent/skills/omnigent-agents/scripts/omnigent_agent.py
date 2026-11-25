@@ -7399,6 +7399,161 @@ def reap(
     return lines, failed
 
 
+SWEEP_IDLE_SECONDS = 24 * 3600  # a session idle this long is swept, unless a hold stands
+# The owner-round label (set when a round needs the owner, cleared by nothing) and ``start --keep``'s: in a sweep
+# neither holds a session by itself, only the reason it was set for, while that still stands.
+KEEP_LABELS = (KEEP_LABEL, "omnigent.keep")
+STANDING_ROLES = {"cos", "pm"}  # managers live past every result: other sessions post to them
+SWEEP_CARD_MAX = 20  # sessions named on the owner card; the rest wait for the next sweep
+
+
+def keep_list(path: Path | None) -> dict[str, str]:
+    """The keep list at ``path``: a line per session, its id (or an id prefix) or its exact title, then optionally
+    ``  # why``; blank lines and lines opening ``#`` are skipped. A missing file is an empty list."""
+    kept: dict[str, str] = {}
+    try:
+        text = path.read_text() if path else ""
+    except FileNotFoundError:
+        return kept
+    for raw in text.splitlines():
+        entry, _, why = raw.partition("#")
+        if entry.strip():
+            kept[entry.strip()] = why.strip() or "on the keep list"
+    return kept
+
+
+def owner_talked(og: Omnigent, sid: str) -> bool:
+    """Whether the owner wrote to ``sid`` directly: a ``role: user`` message with a ``created_by``, no
+    ``sender_session_id`` (a send or relay from another session names one), not ``is_meta`` (a harness notice) and
+    opening as no agent's post (``agent_posted``; ``owner_said``'s test, over the whole history)."""
+    after = ""
+    while True:
+        page = og.older(sid, after)
+        data = page.get("data") or []
+        for i in data:
+            if (
+                from_user(i)
+                and i.get("created_by")
+                and not i.get("is_meta")
+                and not i.get("sender_session_id")
+                and not agent_posted(text_of(i))
+            ):
+                return True
+        if not data or not page.get("has_more"):
+            return False
+        after = str(page.get("last_id") or data[-1].get("id"))
+
+
+def sweep_card(og: Omnigent, rows: list[dict]) -> dict | None:
+    """The one owner card for the swept sessions the owner talked to (``rows``, each ``id`` and ``title``), as
+    ``sys_ask_user_question`` takes it: "Archive all" recommended first, then one option per session to keep, chosen
+    with multiSelect. None when there are none. Every session it names is a link."""
+    if not rows:
+        return None
+    shown = rows[:SWEEP_CARD_MAX]
+
+    def link(r: dict) -> str:
+        return f"[{r.get('title') or r['id']}]({og.base}/c/{r['id']})"
+
+    more = (
+        f"\n\n{len(rows) - len(shown)} more wait for the next sweep."
+        if len(rows) > len(shown)
+        else ""
+    )
+    return {
+        "questions": [
+            {
+                "header": "Idle sessions",
+                "question": "These sessions you talked to have been idle over a day; the daily sweep left them open."
+                " Archive them all, or pick the ones to keep (archiving keeps the transcript, and a message"
+                " unarchives it)?\n\n" + "\n".join(f"- {link(r)}" for r in shown) + more,
+                "multiSelect": True,
+                "options": [
+                    {
+                        "label": "Archive all (Recommended)",
+                        "description": "Archive every session listed, except any you also pick below.",
+                    },
+                    *(
+                        {"label": f"Keep {r.get('title') or r['id']}"[:120], "description": link(r)}
+                        for r in shown
+                    ),
+                ],
+            }
+        ]
+    }
+
+
+def sweep(
+    og: Omnigent,
+    kept: dict[str, str],
+    idle_seconds: float = SWEEP_IDLE_SECONDS,
+    dry_run: bool = False,
+) -> tuple[list[str], list[dict], bool]:
+    """Archive every unarchived session idle over ``idle_seconds`` through ``finish_delivered``, the finish the
+    ``DONE`` path uses, and return a line per session it looked at, the sessions the owner talked to (each ``id`` and
+    ``title``, for ``sweep_card``), and whether a finish failed.
+
+    Kept: this session itself, a manager (``STANDING_ROLES``), one on the keep list ``kept`` (by id, id prefix or
+    title), and whatever ``finish_delivered`` keeps (running, an open card, a prompt, background work, an open PR). A
+    failed, cancelled or errored session is finished like a done one. A keep label (``KEEP_LABELS``) holds only while
+    one of those reasons stands, since nothing clears it. A session the owner talked to (``owner_talked``) is never
+    archived here: it goes on the owner's card instead."""
+    me = own_id()
+    lines, owner, failed = [], [], False
+    now = time.time()
+    held: dict[tuple[str, int], str | None] = {}
+    cleared: set[tuple[str, int]] = set()
+    for s in og.call("GET", "/v1/sessions?kind=any&limit=1000").get("data") or []:
+        sid = str(s["id"])
+        if s.get("archived") or sid == me:
+            continue
+        idle = now - float(s.get("updated_at") or s.get("created_at") or now)
+        if idle < idle_seconds:
+            continue
+        name = f"{sid} {s.get('title') or ''}"
+        labels = s.get("labels") or {}
+        if why := next(
+            (w for k, w in kept.items() if sid.startswith(k) or k == s.get("title")), ""
+        ):
+            lines.append(f"{name}: kept (keep list: {why})")
+            continue
+        if labels.get("omni.role") in STANDING_ROLES:
+            lines.append(f"{name}: kept (manager)")
+            continue
+        info = og.info(sid)
+        if (
+            str(info.get("status")) in RUNNING
+            or cards_of(info)
+            or prompts_of(info)
+            or live_tasks(info)
+        ):
+            line, bad = finish_delivered(
+                og, sid, settled=False, held=held, cleared=cleared, named=True
+            )
+            lines.append(line)  # kept, for the reason that stands
+            failed |= bad
+            continue
+        if owner_talked(og, sid):
+            owner.append({"id": sid, "title": s.get("title") or ""})
+            lines.append(f"{name}: kept (the owner talked to it: on the owner card)")
+            continue
+        stale = next(
+            (k for k in KEEP_LABELS if labels.get(k) or (info.get("labels") or {}).get(k)), ""
+        )
+        note = f"; stale {stale} label" if stale else ""
+        if dry_run:
+            lines.append(f"{name}: would archive (idle {idle / 3600:.0f}h{note})")
+            continue
+        # named: a keep label that the checks above found no reason for holds nothing here
+        line, bad = finish_delivered(og, sid, settled=False, held=held, cleared=cleared, named=True)
+        first, _, rest = line.partition("\n")  # the children it finished follow on their own lines
+        lines.append(
+            first + (note if "archived (" in first else "") + (f"\n{rest}" if rest else "")
+        )
+        failed |= bad
+    return lines, owner, failed
+
+
 def agent_progress_at(items: list[dict]) -> float | None:
     """When the agent last wrote a history item, None when it wrote none (or none is dated). The
     one definition of progress, shared by ``stuck_minutes`` and the supervisor's progress deadline.
@@ -11900,6 +12055,22 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--pr", type=pr_ref, help="with --merged, only the workers of this PR (N or owner/repo#N)"
     )
+    p = sub.add_parser("sweep")
+    p.add_argument(
+        "--idle-hours",
+        type=float,
+        default=SWEEP_IDLE_SECONDS / 3600,
+        help="archive sessions idle this long (default 24)",
+    )
+    p.add_argument(
+        "--keep-list", type=Path, help="sessions never swept: an id, id prefix or title per line"
+    )
+    p.add_argument("--dry-run", action="store_true", help="say what would go, archive nothing")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="print {lines, owner, card}: the owner card as sys_ask_user_question takes it",
+    )
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -12426,6 +12597,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 og, args.sessions, args.children, args.registry, args.force, args.merged, args.pr
             )
             print("\n".join(lines))
+            return 1 if failed else 0
+        if args.cmd == "sweep":
+            lines, owner, failed = sweep(
+                og, keep_list(args.keep_list), args.idle_hours * 3600, args.dry_run
+            )
+            card = sweep_card(og, owner)
+            if args.json:
+                print(json.dumps({"lines": lines, "owner": owner, "card": card}))
+            else:
+                print("\n".join(lines + ([f"CARD: {json.dumps(card)}"] if card else [])))
             return 1 if failed else 0
         if args.cmd == "supervise":
             if args.registry:

@@ -22,7 +22,9 @@ with the last round:
 2. Settle the routine `ASK:` lines yourself (Settling what it kept). Leave the rest.
 3. When an `ASK:` line is left, run `~/.local/bin/agent-hygiene` once more: what you
    settled is gone, so it posts only the rest, each question once.
-4. Reply with the exit code of the last run and what changed since the last round:
+4. When the log holds a `CARD:` line (The session sweep), post its JSON as the owner's question
+   card (`sys_ask_user_question` takes it as it is), and act on the answer once it is read.
+5. Reply with the exit code of the last run and what changed since the last round:
    what you settled, a new finding, a finding gone. A finding the last round already
    reported is not reported again, since the chief of staff has it.
 
@@ -115,6 +117,33 @@ their app data too), staged ChatGPT updates (App Management blocks deleting them
 shell). A stale pack and drift are manager work: the message addresses the manager it goes to,
 who settles it and asks the owner only what only they can decide.
 
+## The session sweep
+
+Once a day, in the first round 20 hours after the last sweep (`~/.local/state/agent-hygiene/swept`;
+rounds are six hours apart, so no second timer), the run archives the account's sessions idle over a
+day with `omnigent_agent.py sweep` from the omnigent-agents skill in the home skill install, on the same
+one server. It finishes each through `finish_delivered`, the function a relayed `DONE` uses, so the
+sweep has no rule of its own for what stays open. A failed, cancelled or errored session counts as
+finished. Kept, with the reason in the log's `sweep:` line:
+
+- the round's own session, a manager (`omni.role` `cos` or `pm`), since other sessions post to it;
+- a session running, with an open question card, a pending prompt, background work, or an open PR;
+- a session on the keep list, `~/.config/agent-hygiene/keep-sessions`: a session id, an id prefix or
+  an exact title per line, optionally followed by `# why`; lines opening `#` are comments. It is
+  configuration on the account, not code, so a session is kept without a release.
+
+A keep label (`omnigent.keep`, set when a round needed the owner, or `start --keep`'s `omni.keep`) holds
+only while one of those reasons stands, since nothing clears it: once the card it stood for is answered,
+the session is swept and the line says the label was stale.
+
+A session the owner talked to directly (a message of theirs, not one another session sent or posted) is
+never archived by the sweep, since only they know whether they still need it. Those go on one card, which
+the run logs as a `CARD:` line holding `sys_ask_user_question`'s input, for the round to post; the script
+itself asks nothing. It is one multiSelect question: "Archive all" first and recommended, then a "Keep …"
+option per session, each session a link. On the answer, archive every listed session not picked to keep
+with `omnigent_agent.py reap <session>...`; "Archive all" with no keep picked archives them all. A sweep that
+fails (exit 1) is tried again next round. `--dry-run` sweeps nothing and says what would go.
+
 ## What it tells the chief of staff
 
 The run posts into the chief of staff's Omnigent session (the session labelled
@@ -178,7 +207,8 @@ One Omnigent scheduled task per account, on that account's host, four times a da
 (`FREQ=DAILY;BYHOUR=2,8,14,20;BYMINUTE=15`; stagger accounts that share a uv cache by 30
 minutes), with `reuse_conversation` on so every run continues one conversation, and
 `archive_when_done` on so a quiet round leaves the board (the next fire reopens it). The
-prompt names this file and asks for a round (A round); the session calls
+prompt names this file and asks for a round (A round); the session sweep runs in one of these rounds,
+at most once a day (The session sweep). The session calls
 `sys_session_keep` with a one-line reason when the round needs the owner.
 
 Each run logs to `~/.local/state/agent-hygiene/<UTC time>.log`, kept 30 days. Exit 0 is

@@ -1012,6 +1012,12 @@ worker is finished by `reap` or `land`, below); a session that asked a question 
 the answer goes to it. Finishing ends the session's agent process and keeps its transcript.
 It archives the session, a sub-agent too: Omnigent leaves the runner it shares with its parent up, on a build with
 kzarzycki/omnigent 4dd0af32; an older build stops that runner and the parent with it.
+`python3 scripts/omnigent_agent.py sweep [--idle-hours 24] [--keep-list <file>] [--dry-run] [--json]` finishes, through
+the same `finish_delivered`, every session idle over a day that nothing holds: not this session, a manager (`cos`,
+`pm`), one on the keep list (an id, id prefix or title per line), running, with a card, a prompt, background work or an
+open PR. A keep label (`omni.keep`, `omnigent.keep`) holds only while one of those stands. A session the owner talked
+to is never archived: it goes on one multiSelect owner card, printed as `sys_ask_user_question`'s input (a `CARD:`
+line, or `card` with `--json`) for the caller to post. A daily hygiene round runs it.
 `python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>]` finishes each
 session that is done (not running, no prompt or input waiting), printing `archived` for
 each and `already archived` for one finished before, and prints which it kept. It keeps an idle `--pr` worker, `--force` included, until its PR is merged or closed, saying why: `start --pr`

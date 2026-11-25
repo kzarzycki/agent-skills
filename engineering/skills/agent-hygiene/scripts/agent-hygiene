@@ -21,6 +21,10 @@ Steps, each skipped when in use:
                 `omnigent/terminals/program_status.py` wrappers whose --bridge-dir no longer exists get SIGTERM, then SIGKILL
                 (the wrapper ignores SIGTERM) on their process group; launchd reaps the zombies. Logs ptys and zombies before
                 and after, and warns above 80% of the pty limit
+  sessions      once a day, Omnigent sessions idle over a day, archived by omnigent-agents' `omnigent_agent.py sweep`
+                through finish_delivered; kept: running, an open card, background work, a manager, the keep list
+                (~/.config/agent-hygiene/keep-sessions); a session the owner talked to goes on one owner card, logged as
+                a CARD: line for the round to post
   caches        each tool's own command (uv, pnpm, npm, go, pre-commit, brew, and docker's
                 build cache unused for 24 h)
 
@@ -1015,6 +1019,51 @@ def drift(run, procs=None):
     return found
 
 
+CONFIG = HOME / '.config/agent-hygiene'  # the account's hygiene configuration
+KEEP_LIST = CONFIG / 'keep-sessions'  # sessions the sweep never archives: an id, id prefix or title per line
+SWEEP_EVERY = 20 * 3600  # the sweep runs in one round a day; rounds are six hours apart
+SWEEPER = 'omnigent-agents/scripts/omnigent_agent.py'  # its `sweep` archives through the finish the DONE path uses
+
+
+def sweeper():
+    """omnigent_agent.py in the home skill install, or None when the omnigent-agents skill isn't installed."""
+    return next((str(root / SWEEPER) for root in HOME_SKILLS if (root / SWEEPER).is_file()), None)
+
+
+def sweep(run, dry_run=False):
+    """Once a day, archive sessions idle over a day (omnigent_agent.py sweep), and return the owner card for those the
+    owner talked to (sys_ask_user_question's input, for the round to post), or None. The sweep keeps running sessions,
+    open cards, prompts, background work, open PRs, managers and the keep list; a keep label holds only while one of
+    those reasons stands."""
+    stamp = STATE / 'swept'
+    if stamp.exists() and stamp.stat().st_mtime > time.time() - SWEEP_EVERY:
+        return None
+    if not (script := sweeper()):
+        run.say('note: no omnigent-agents skill installed: the session sweep skipped')
+        return None
+    args = [sys.executable, script, '--server', configured_server(), 'sweep', '--json', '--keep-list', str(KEEP_LIST)]
+    try:
+        done = subprocess.run(args + (['--dry-run'] if dry_run else []), text=True, capture_output=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        run.failed = True
+        run.say(f'FAIL session sweep: {type(error).__name__}')
+        return None
+    try:
+        found = json.loads(done.stdout)
+    except ValueError:
+        run.failed = True
+        run.say(f'FAIL session sweep: exit {done.returncode}: {done.stderr.strip()[-300:]}')
+        return None
+    for line in found.get('lines') or []:
+        run.say(f'sweep: {line}')
+    if done.returncode:
+        run.failed = True
+        run.say(f'FAIL session sweep: exit {done.returncode}: {done.stderr.strip()[-300:]}')
+    elif not dry_run:
+        stamp.touch()
+    return found.get('card')
+
+
 def relaunch():
     """Run the new copy of this script in place of this one."""
     os.environ['AGENT_HYGIENE_RELAUNCHED'] = '1'  # a pin that still differs after one fast-forward reports instead of looping
@@ -1133,6 +1182,8 @@ def main():
             worktrees(run, found, args.dev.resolve(), procs, asks)
             environments(run, found, args.idle_days, procs)
     drifted = drift(run, procs)
+    if card := sweep(run, args.dry_run):  # the round's agent posts it: this script asks the owner nothing
+        run.say(f'CARD: {json.dumps(card)}')
     # Caches last: a pnpm node_modules is an APFS clone of the store, so removing one frees its
     # blocks only once `pnpm store prune` drops the store's copy.
     if procs is not None:
