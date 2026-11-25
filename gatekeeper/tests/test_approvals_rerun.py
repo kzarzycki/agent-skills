@@ -37,10 +37,19 @@ GATES = "risk:\n  verifier: true\nlevels:\n  high:\n    merge: gates\n"
 ASKED = "PR #7 is rated high, and `levels.high.rerun` asks an independent rerun of its selection on its head:"
 
 
+RERUN_FLOW = (
+    "on: pull_request\njobs:\n  rerun:\n    runs-on: ubuntu-latest\n    steps:\n"
+    "      - run: uv run scripts/approvals.py local-ci --record --rerun\n"
+)
+
+
 @pytest.fixture
-def forge(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+def forge(gating: Gate, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The real rerun check, on origin's rerun records (`records`, as reruns() lists them) and the forge's newest push
-    to each branch (`pushes`, by ref), the head's tree TREE."""
+    to each branch (`pushes`, by ref), the head's tree TREE. The repo has the workflow that pushes a rerun record
+    (#2473 names its absence: test_approvals_rerun_workflow.py)."""
+    Path(".github/workflows").mkdir(parents=True)
+    Path(".github/workflows/rerun.yml").write_text(RERUN_FLOW)
     state: dict[str, Any] = {"records": [], "pushes": {}}
     monkeypatch.setattr(approvals, "rerun_gap", REAL_GAP)
     monkeypatch.setattr(approvals, "tree_of", lambda _commit: TREE)

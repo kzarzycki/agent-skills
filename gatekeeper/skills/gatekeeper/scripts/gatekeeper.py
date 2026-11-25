@@ -2073,6 +2073,8 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
         if found
         else f"origin holds no rerun record on tree {held}"
     )
+    if missing := rerun_workflow_gap(toplevel(), loop, level):
+        return f"{asked} {said}; {missing}"
     return (
         f"{asked} {said}. Where the repo has CI, a CI run on the head runs `local-ci --record --rerun` and pushes its"
         f" record; with no CI, the verifier starts a fresh session that runs it on the head and names the record's"
@@ -6033,10 +6035,10 @@ def runs_task(text: str, task: str) -> bool:
     return bool(re.search(rf"mise run\b[^\n;&|]*[ '\"]{re.escape(task)}\b", text))
 
 
-def pack_tasks(root: Path) -> set[str]:
-    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does:
-    `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named by their path, `/` as `:`).
-    Needs tomllib (Python 3.11+), imported here so the other commands still start on the pack's 3.9."""
+def task_bodies(root: Path) -> dict[str, str]:
+    """Each mise task's command text by name: `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named
+    by their path, `/` as `:`). Needs tomllib (Python 3.11+), imported here so the other commands still start on the
+    pack's 3.9."""
     import tomllib
 
     bodies: dict[str, str] = {}
@@ -6052,15 +6054,59 @@ def pack_tasks(root: Path) -> set[str]:
             folder = next(d for d in MISE_TASK_DIRS if (root / d) in path.parents)
             task = ":".join(path.relative_to(root / folder).parts)
             bodies[task] = bodies.get(task, "") + read(path)
+    return bodies
+
+
+def tasks_matching(bodies: dict[str, str], found: Callable[[str], bool]) -> set[str]:
+    """The tasks whose text `found` accepts, directly or through `mise run <task>` of one that does."""
     named: set[str] = set()
     while grew := {
         task
         for task, body in bodies.items()
-        if task not in named
-        and (PACK_SCRIPT.search(body) or any(runs_task(body, other) for other in named))
+        if task not in named and (found(body) or any(runs_task(body, other) for other in named))
     }:
         named |= grew
     return named
+
+
+def pack_tasks(root: Path) -> set[str]:
+    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does."""
+    return tasks_matching(task_bodies(root), lambda body: bool(PACK_SCRIPT.search(body)))
+
+
+RERUN_STEP = re.compile(r"\blocal-ci\b[^\n;&|]*--rerun\b")
+
+
+def rerun_workflow_gap(root: Path, loop: str | None, level: str) -> str | None:
+    """A line, or None: `levels.<level>.rerun` is on, the repo has CI (`loop.ci` is not false), and no workflow under
+    .github/workflows runs `local-ci --record --rerun`, in a step or through a mise task a step runs, so the rerun
+    record `rerun_gap` waits on can never come: a setup problem, not a wait. ponytail: a text scan of the workflows and
+    of mise's tasks, as setup_problems reads them (#2473's open question); where mise's TOML can't be read (Python
+    before 3.11) the tasks are not scanned, so a rerun run only through a task reads as present, never as missing."""
+    if no_ci(loop) or not levels(loop)[level].get("rerun"):
+        return None
+    try:
+        tasks = tasks_matching(task_bodies(root), lambda body: bool(RERUN_STEP.search(body)))
+    except ImportError:
+        return None
+    for path in (root / ".github" / "workflows").glob("*.y*ml"):
+        try:
+            jobs = (yaml.safe_load(read(path)) or {}).get("jobs") or {}
+        except (yaml.YAMLError, AttributeError):
+            continue
+        for body in jobs.values():
+            runs = "\n".join(
+                str(step.get("run", ""))
+                for step in (body.get("steps") or [] if isinstance(body, dict) else [])
+                if isinstance(step, dict)
+            )
+            if RERUN_STEP.search(runs) or any(runs_task(runs, task) for task in tasks):
+                return None
+    return (
+        f"`levels.{level}.rerun` asks an independent rerun, but no workflow under .github/workflows runs"
+        " `local-ci --record --rerun` (directly or through a mise task), so the rerun record can't come: add a rerun"
+        f" workflow, or set `levels.{level}.rerun: false` in docs/agents/gatekeeper.md"
+    )
 
 
 def setup_problems(root: Path) -> list[str]:
@@ -6139,6 +6185,14 @@ def setup() -> int:
         print(line)
     if not problems:
         print("setup: the policy parses and the repo's loop steps run the pack's scripts with uv")
+    try:
+        loop = project()[1]
+        # a warning, not a problem: the exit stays as it was, and a repo learns it before its first high-rated PR
+        for level in levels(loop):
+            if line := rerun_workflow_gap(root, loop, level):
+                print(line)
+    except (Refused, OSError, subprocess.CalledProcessError):
+        pass  # the policy's own refusal is already listed above
     for line in session_notice():  # advice, never a problem: the field is optional
         print(line)
     return 1 if problems else 0
