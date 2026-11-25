@@ -5903,9 +5903,14 @@ def record_blocker(line: str, story: int) -> None:
     try:
         listed = json.loads(gh("api", base) or "[]")
     except (Fail, ValueError) as e:
+        advice = (
+            f"turn them on for the repo, or wait with a plain `pr {m[1]}`"
+            if isinstance(e, ValueError) or not_found(e)
+            else "GitHub could not be reached; try again"
+        )
         raise Fail(
             f"wait-on: cannot watch #{m[1]}: this repo's blocked-by links of #{story} are not "
-            f"readable ({e}); turn them on for the repo, or wait with a plain `pr {m[1]}`"
+            f"readable ({e}); {advice}"
         ) from e
     if any(i.get("number") == int(m[1]) for i in listed if isinstance(i, dict)):
         return
@@ -5913,15 +5918,27 @@ def record_blocker(line: str, story: int) -> None:
     gh("api", "-X", "POST", base, "-F", f"issue_id={blocker['id']}")
 
 
+def not_found(e: Exception) -> bool:
+    """Whether a read failed because the thing is not there (a 404), not because GitHub was out of
+    reach: a rate limit or a network error says nothing about the answer."""
+    return not isinstance(e, RateLimited) and ("404" in str(e) or "Not Found" in str(e))
+
+
 def blocks(repo: str, number: int) -> list[int]:
-    """The open issues GitHub's "blocked by" links name as blocked by ``number``; empty when none is
-    recorded or the link cannot be read, so a project without the feature sees no change."""
+    """The open issues GitHub's "blocked by" links name as blocked by ``number``, once ``number`` is
+    closed or merged; empty while it is open or when no link is recorded (a 404: the feature is
+    off), so a project without it sees no change. Raises ``Fail`` where the read failed for any
+    other reason (a rate limit, the network): the caller tries again, as the answer is unknown."""
+    path = f"repos/{repo or '{owner}/{repo}'}/issues/{number}"
     try:
-        listed = json.loads(
-            gh("api", f"repos/{repo or '{owner}/{repo}'}/issues/{number}/dependencies/blocking")
-            or "[]"
-        )
-    except (Fail, ValueError):
+        if json.loads(gh("api", path) or "{}").get("state") != "closed":
+            return []  # open, or green checks only: not yet what the story waits for
+        listed = json.loads(gh("api", f"{path}/dependencies/blocking") or "[]")
+    except Fail as e:
+        if not_found(e):
+            return []
+        raise
+    except ValueError:
         return []
     return [i["number"] for i in listed if isinstance(i, dict) and i.get("state") == "open"]
 
@@ -11061,7 +11078,14 @@ def supervise_registry(
                 else:
                     done.append(found[1])
                     ends.append(f"{found[1]}@{found[2] if len(found) > 2 else ''}")
-                    unblocks += blocks(wait_repo(sid, m[1] or ""), int(m[2]))
+                    told = lead.setdefault("blocks_read", {})  # per end: read once, not each round
+                    try:
+                        if (at := f"{m[1]}#{m[2]}@{ends[-1]}") not in told:
+                            told[at] = blocks(wait_repo(sid, m[1] or ""), int(m[2]))
+                        unblocks += told[at]
+                    except Fail as e:  # unknown: hold the one message until the link reads
+                        log(("pr", sid), f"{sid}: links of #{m[2]} not read: {reason(e)}")
+                        pending = True
             elif run := re.fullmatch(
                 r"https://github\.com/([\w.-]+/[\w.-]+)/actions/runs/(\d+)", item
             ):

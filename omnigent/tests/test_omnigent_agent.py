@@ -20,7 +20,7 @@ from datetime import datetime
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import Any, ClassVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
 from urllib.request import Request
@@ -13778,6 +13778,7 @@ def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "blocks", lambda repo, number: [])  # no GitHub here
     reads = []
     monkeypatch.setattr(
         omnigent_agent,
@@ -13797,6 +13798,7 @@ def test_a_waited_pr_that_ends_the_same_way_on_a_new_head_is_news_again(
     its checks pending; the same head after the lead's reply is not."""
     wait = "STILL WORKING: fix pushed\nWaits: #976"
     registry, og = manager(tmp_path, wait, m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "blocks", lambda repo, number: [])  # no GitHub here
     head = ["a1"]
     monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (*end, head[0]))
     told = lambda: [t for s, t in og.inbox if s == "m" and end[1] in t]
@@ -13878,6 +13880,7 @@ def test_a_waited_pr_that_merged_is_not_news_again_after_the_leads_next_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "blocks", lambda repo, number: [])  # no GitHub here
     monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
     told_m = lambda: [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names" in t]
     run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
@@ -14871,20 +14874,27 @@ def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
 
 
 def blocker_gh(
-    calls: list[tuple[str, ...]], blocking: str = "[]", blocked_by: str | None = "[]"
+    calls: list[tuple[str, ...]],
+    blocking: str = "[]",
+    blocked_by: str | None = "[]",
+    state: str = "closed",
+    fail: Exception | None = None,
 ) -> Callable[..., str]:
     """A ``gh`` double: ``blocking`` answers the blocker's list, ``blocked_by`` the story's (None:
-    the endpoint 404s, as where the feature is off)."""
+    the endpoint 404s, as where the feature is off), ``state`` the blocker's own, ``fail`` raised
+    by the blocking read while it is set."""
 
     def gh(*args: str, **_: object) -> str:
         calls.append(args)
+        if fail is not None and args[-1].endswith("/dependencies/blocking"):
+            raise fail
         if args[-1].endswith("/dependencies/blocking"):
             return blocking
         if args[-1].endswith("/dependencies/blocked_by"):
             if blocked_by is None:
                 raise omnigent_agent.Fail("gh api: Not Found (HTTP 404)")
             return blocked_by
-        return '{"id": 4242}'
+        return json.dumps({"id": 4242, "state": state})
 
     return gh
 
@@ -14905,6 +14915,103 @@ def test_a_lead_waiting_on_a_recorded_blocker_is_told_once_it_can_queue(
     assert "#7" not in told[0]  # a closed story is not queued
 
 
+BLOCKING = json.dumps([{"number": 2499, "state": "open"}])
+
+
+def told_of(og: Any) -> list[str]:
+    return [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
+
+
+def test_a_blocker_closed_without_merge_frees_the_story_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} closed"))
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh([], blocking=BLOCKING))
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told = told_of(og)
+    assert len(told) == 1 and told[0].endswith("#2499 is blocked by it: you can queue now")
+
+
+def test_an_open_pr_with_green_checks_does_not_free_the_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(
+        omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} checks green (3)")
+    )
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh([], blocking=BLOCKING, state="open"))
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told = told_of(og)
+    assert len(told) == 1 and "queue now" not in told[0]
+
+
+def test_a_rate_limited_link_read_holds_the_message_then_sends_it_once_with_the_clause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    limited = omnigent_agent.RateLimited("gh api: API rate limit exceeded", 60.0)
+    calls: list[tuple[str, ...]] = []
+    fails, ok = (
+        blocker_gh(calls, blocking=BLOCKING, fail=limited),
+        blocker_gh(calls, blocking=BLOCKING),
+    )
+    held: list[int] = []  # the messages sent so far, at each read that fails
+    step = [0]
+
+    def gh(*args: str, **kw: object) -> str:
+        step[0] += 1
+        if step[0] < 3:
+            held.append(len(told_of(og)))
+        return (fails if step[0] < 3 else ok)(*args, **kw)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    monkeypatch.setattr(omnigent_agent, "PR_POLL_SECONDS", 0)  # every poll is a news round
+    supervised(og, registry, monkeypatch, 4, notify=COS, console=True, fyi="post")
+    assert len([c for c in calls if c[-1].endswith("/dependencies/blocking")]) >= 2  # it retried
+    assert held and set(held) == {0}  # nothing went out while the read failed
+    told = told_of(og)
+    assert len(told) == 1 and told[0].endswith("#2499 is blocked by it: you can queue now")
+
+
+def test_a_finished_wait_reads_the_links_once_not_each_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls, blocking=BLOCKING))
+    monkeypatch.setattr(omnigent_agent, "PR_POLL_SECONDS", 0)  # every poll is a news round
+    supervised(og, registry, monkeypatch, 4, notify=COS, console=True, fyi="post")
+    assert len([c for c in calls if c[-1].endswith("/dependencies/blocking")]) == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "advice"),
+    [
+        (omnigent_agent.RateLimited("API rate limit exceeded", 60.0), "could not be reached"),
+        (omnigent_agent.Fail("gh api: Not Found (HTTP 404)"), "turn them on for the repo"),
+    ],
+)
+def test_wait_on_story_advises_by_why_the_read_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+    advice: str,
+) -> None:
+    def gh(*args: str, **_: object) -> str:
+        if args[-1].endswith("/blocked_by"):
+            raise error
+        return "{}"
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    assert omnigent_agent.main(["wait-on", "pr", "976", "--story", "2499"]) != 0
+    err = capsys.readouterr().err
+    assert advice in err
+    assert ("turn them on" in err) == ("turn them" in advice)
+
+
 @pytest.mark.parametrize("blocking", ["[]", None])
 def test_a_wait_with_no_recorded_blocker_is_told_as_before(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocking: str | None
@@ -14913,6 +15020,8 @@ def test_a_wait_with_no_recorded_blocker_is_told_as_before(
     monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
 
     def gh(*args: str, **_: object) -> str:
+        if not args[-1].endswith("/dependencies/blocking"):
+            return '{"state": "closed"}'
         if blocking is None:  # the feature is off for the repo
             raise omnigent_agent.Fail("gh api: Not Found (HTTP 404)")
         return blocking
