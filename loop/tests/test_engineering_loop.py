@@ -265,7 +265,7 @@ def test_no_loop_file_sorts_work_into_heavy_and_light_runs() -> None:
     # ponytail: the host gate slot ("heavy" step, approvals.py heavy) and heavy_run_guard.py
     # with its LOOP_HOST_RUN escape keep their names; only the "heavy run" definition goes.
     old_name = "Where heavy " + "steps run"
-    for path in sorted(LOOP.parents[2].rglob("*")):
+    for path in sorted(LOOP.parents[1].rglob("*")):
         if path.suffix not in (".md", ".py") or not path.is_file() or "CHANGELOG" in path.name:
             continue
         if path.name == "test_engineering_loop.py" or "changelog.d" in path.parts:
