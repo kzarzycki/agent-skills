@@ -441,6 +441,20 @@ buys nothing, but a lead missing from the board is one a successor never finds:
   state, since that is what the file saves; read one only when a lead's notice or the
   owner's question needs it.
 
+## Values file
+
+A setup's own settings (server, sessions, hosts, delegation, models, budgets, hygiene) live in one YAML file, `cos-values.yml`, in the setup's home folder: never in a
+project repo, which holds no coordinator instructions. It holds only what differs from the pack's
+defaults, and a setup with no file runs on them. `scripts/cos_values.py` is the one loader every
+pack script imports (`load()`, then `get(key)` or `require(key)`); `check` validates a file and
+names each unknown or mistyped key, `keys` lists every key with its default and meaning. The file is found by
+`--file`, else `$COS_VALUES`, else `cos-values.yml` in the home folder. Read
+`references/values-first-setup.yml` (a home of its own with project managers) or
+`references/values-second-setup.yml` (delegation, nightly jobs and a client-data rule) when writing a
+setup's file; both hold placeholder values only. A key the loader does not list is an error, never
+a default, so a typo is caught; a value that is a secret goes in the harness's credential store,
+never in this file.
+
 ## Memory
 
 `python3 <this skill's folder>/scripts/memory.py recall <query>` and `retain <text>`, the
