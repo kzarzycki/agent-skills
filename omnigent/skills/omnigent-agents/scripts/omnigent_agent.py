@@ -10573,6 +10573,18 @@ def supervise_registry(
                     )
                     entry["owner"] = ""
             owner = entry["owner"]
+            pushed = ((state["pr_stalls"].get(repo) or {}).get("prs") or {}).get(
+                str(entry["pr"])
+            ) or {}
+            if entry.get("queued_at") and pushed.get("seen_at", 0.0) > entry["queued_at"]:
+                # the head was pushed after this entry queued (seen_at is a lower bound on the push): a later head
+                # replaced the run that failed, so there is nothing to fix and nobody to tell
+                entry["told"] = True
+                print(
+                    stamp(f"{repo}#{entry['pr']} left the merge queue: its head has since changed"),
+                    flush=True,
+                )
+                continue
             if owner and not any(str(s.get("id")) == owner for s in sessions):
                 # ponytail (epic Q: unknown session): a record naming a session this server does not list belongs to
                 # another agent tree, so an info line and no event; a deleted session of this tree reads the same
@@ -10625,6 +10637,10 @@ def supervise_registry(
             return by_id.get(sid, {}).get("labels") or {}
 
         def is_lead(sid: str) -> bool:
+            """A followed session or an ``omni.role`` lead; never a verifier, which is read-only and can't act on a
+            dequeue, however its registry follows it (``reap`` reads its PR label the same way)."""
+            if labels(sid).get("omni.role") == "verifier":
+                return False
             return sid in followed or labels(sid).get("omni.role") == "lead"
 
         for sid in [*followed, *by_id]:

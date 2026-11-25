@@ -79,6 +79,9 @@ class GitHub:
             int, list[dict]
         ] = {}  # a PR's own comments, where its Owner record sits (#2496)
         self.calls: list[tuple[str, ...]] = []
+        self.pulls: list[
+            dict
+        ] = []  # open PRs the poll lists (a head to say the PR was pushed since)
         self.down = ""
         self.pulls_down = False
         self.log_limit = 0  # the next log reads refused for the rate limit
@@ -102,7 +105,7 @@ class GitHub:
             rows = self.pr_comments.get(int(own[1]), [])
             out = json.dumps(rows if "page=1" in path else [])
         elif path.startswith("repos/o/r/pulls?"):
-            out = "[]"
+            out = json.dumps(self.pulls if "page=1" in path else [])
         elif path.startswith("repos/o/r/issues/comments?"):
             since = unquote(re.search(r"since=([^&]+)", path)[1])
             shown = [c for c in self.comments if c["updated_at"] >= since]
@@ -763,3 +766,51 @@ def test_queue_events_route_by_rule(kind, session, action) -> None:
 
     event = {"kind": kind, "session": session, "last": "", "line": "x"}
     assert omnigent_agent.route(event, ask)[:2] == ("rule", action)
+
+
+def test_a_followed_verifier_is_no_lead_and_the_lead_gets_the_dequeue(
+    tmp_path, monkeypatch
+) -> None:
+    """The followed session ``a`` is the PR's verifier (read-only: it can't push or land) and carries the PR's label;
+    the lead ``L`` carries it too. The dequeue goes to ``L``, never ``a`` (#2614)."""
+    registry, og = fleet(tmp_path, L={"labels": {"omni.pr": "o/r#12", "omni.role": "lead"}})
+    og.snaps["a"] = {"labels": {"omni.pr": "o/r#12", "omni.role": "verifier"}}
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 2)
+    assert [s for s, _ in relays(og, 12)] == ["L"]
+
+
+def test_a_verifier_alone_leaves_the_dequeue_to_the_manager(tmp_path, monkeypatch) -> None:
+    registry, og = fleet(tmp_path)
+    og.snaps["a"] = {"labels": {"omni.pr": "o/r#12", "omni.role": "verifier"}}
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 2)
+    assert not relays(og, 12) or all(s != "a" for s, _ in relays(og, 12))
+
+
+def test_a_dequeue_for_a_head_since_replaced_goes_to_no_session(tmp_path, monkeypatch) -> None:
+    """The PR's head was first seen after the entry queued, so a later push replaced the run that failed: no
+    session is told (#2614)."""
+    registry, og = fleet(tmp_path)
+    og.snaps["a"] = {"labels": {"omni.pr": "o/r#12", "omni.role": "lead"}}
+    gh = GitHub(monkeypatch)
+    gh.pulls = [{"number": 12, "draft": False, "head": {"sha": "a" * 40}, "updated_at": iso(0)}]
+    monkeypatch.setattr(omnigent_agent, "loop_cards", lambda *a, **k: {})
+    monkeypatch.setattr(omnigent_agent, "pr_facts", lambda *a, **k: {})
+    monkeypatch.setattr(omnigent_agent, "pr_stall", lambda *a, **k: (time.time(), ""))
+    real = omnigent_agent.QUEUE_FAILURE.queue_comment
+    monkeypatch.setattr(
+        omnigent_agent,
+        "queue_comment",
+        lambda c: {**(real(c) or {}), "queued_at": time.time() - 3600} if real(c) else None,
+    )
+
+    def push_then_dequeue(p: int) -> None:
+        if p == 1:  # a push the sweep sees after the entry queued, then the old run's dequeue
+            gh.pulls[0] = {**gh.pulls[0], "head": {"sha": "b" * 40}, "updated_at": iso(0)}
+            gh.comments.append(comment(100, 12, jobs=(7,)))
+
+    run(og, registry, monkeypatch, 4, push_then_dequeue)
+    assert not relays(og, 12) and not acts(og, "o/r#12")

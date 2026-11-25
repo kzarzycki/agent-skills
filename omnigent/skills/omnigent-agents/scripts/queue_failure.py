@@ -75,6 +75,7 @@ def queue_comment(comment: dict) -> dict | None:
     return {
         "pr": int(pr[1]),
         "state": str(payload.get("state") or ""),
+        "queued_at": stamp(payload["queued_at"]) if payload.get("queued_at") else 0.0,
         "left_at": stamp(payload["left_at"]) if payload.get("left_at") else 0.0,
         "code": str(reason_.get("code") or "") if isinstance(reason_, dict) else "",
         "checks": checks,
