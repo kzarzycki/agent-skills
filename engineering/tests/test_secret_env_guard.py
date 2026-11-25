@@ -86,6 +86,81 @@ REFUSED = [
     "python3 -c \"import os; os.system('env')\"",
     "python3 -c \"import subprocess; print(subprocess.check_output('env'))\"",
 ]
+# #2429: forms the first guard let through, one rule per family
+REFUSED_2429 = [
+    # a bare `environ` after `from os import environ`, and os.environb
+    "python3 -c 'from os import environ; print(environ)'",
+    "python3 -c 'from os import path, environ; print(dict(environ))'",
+    "python3 -c \"from os import environ; print(environ['GH_TOKEN'])\"",
+    "python3 -c 'import os; print(os.environb)'",
+    "python3 -c \"import os; print(os.environb[b'GH_TOKEN'])\"",
+    # wrappers that run a bare dump
+    "find . -maxdepth 0 -exec env \\;",
+    "find . -maxdepth 0 -exec env {} +",
+    "find . -execdir printenv GH_TOKEN {} \\;",
+    "find . -name x | xargs env",
+    "echo x | xargs -n1 printenv",
+    # one step of variable indirection
+    "x=$GITHUB_TOKEN; echo $x",
+    'x="${GH_TOKEN}"; echo "$x"',
+    "x=$GITHUB_TOKEN\necho $x",
+    "x=$GITHUB_TOKEN; y=$x; printf '%s' \"$y\"",
+    "export x=$GITHUB_TOKEN; echo $x",
+    "x=$GITHUB_TOKEN; eval 'echo $x'",
+    "x=$GITHUB_TOKEN; cat <<< $x",
+    # curl prints the request headers in verbose and trace modes
+    'curl -v -H "Authorization: Bearer $GITHUB_TOKEN" https://example.invalid',
+    'curl --verbose -H "Authorization: Bearer $GITHUB_TOKEN" https://example.invalid',
+    'curl -sSv -H "Authorization: Bearer $GITHUB_TOKEN" https://example.invalid',
+    'curl --trace-ascii - -H "Authorization: Bearer $GITHUB_TOKEN" https://example.invalid',
+    'curl -v -u "me:$GH_TOKEN" https://example.invalid',
+    'x=$GH_TOKEN; curl -v -H "Authorization: Bearer $x" https://example.invalid',
+    # a one-liner that still dumps through a string starting with set/export/env
+    "python3 -c \"import os; os.system('env | sort')\"",
+    "python3 -c \"import os; os.system('export -p')\"",
+    "python3 -c \"import os; os.system('set')\"",
+    "python3 -c \"import subprocess; subprocess.run('env', shell=True)\"",
+    "python3 -c \"import subprocess; subprocess.run(['env'])\"",
+    "python3 -c \"import os; os.system('env > /dev/stdout')\"",
+    # review of #2441: a redirect with an fd, and `env` with options or assignments but no command
+    "python3 -c \"import subprocess; subprocess.run('env 2>&1', shell=True)\"",
+    "python3 -c \"import os; os.system('env 1>&2')\"",
+    "python3 -c \"import os; os.system('env -u HOME')\"",
+    "python3 -c \"import os; os.system('env FOO=1')\"",
+    "python3 -c \"import subprocess; subprocess.run(['env','--null'])\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', '-0'])\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', '-u', 'HOME'])\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', 'FOO=1'])\"",
+    "python3 -c \"import subprocess; subprocess.check_output(['printenv', 'GH_TOKEN'])\"",
+]
+PASSED_2429 = [
+    # a one-liner whose command string only starts with set, export or env
+    "python3 -c \"import subprocess; subprocess.run('set -e; make', shell=True)\"",
+    "python3 -c \"import os; os.system('export FOO=1; make')\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', 'FOO=1', 'ls'])\"",
+    "python3 -c \"import subprocess; subprocess.run(['env','FOO=1','ls'])\"",
+    "python3 -c \"import subprocess; subprocess.check_call('env FOO=1 make', shell=True)\"",
+    "python3 -c \"import os; os.system('env -u HOME make')\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', '-u', 'HOME', 'ls'])\"",
+    # the same names that are no dump
+    "python3 -c 'from os import environ; print(environ[\"HOME\"])'",
+    "python3 -c 'from os import environ; print(len(environ))'",
+    "python3 -c \"from os import environ; print(environ.get('HOME'))\"",
+    "python3 -c \"import os; print(os.environb[b'HOME'])\"",
+    "python3 -c 'print(environ)'",
+    "find . -name '*.py' -exec grep -l foo {} +",
+    "find . -exec env FOO=1 ls {} \\;",
+    "x=$HOME; echo $x",
+    "x=$GITHUB_TOKEN; echo $x | wc -c",
+    'x=$GITHUB_TOKEN; echo "${#x}"',
+    "x=1; echo $x",
+    "x=$GITHUB_TOKEN; x=1; echo $x",
+    "x=$GITHUB_TOKEN; unset x; echo $x",
+    "curl -v https://example.invalid",
+    'curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://example.invalid',
+    'curl --verbose -H "Accept: json" https://example.invalid',
+]
+REFUSED += REFUSED_2429
 PASSED = [
     "env FOO=1 cmd",
     "env -u HOME ls",
@@ -150,6 +225,7 @@ PASSED = [
     "eval echo hi",
     "",
 ]
+PASSED += PASSED_2429
 
 
 @pytest.mark.parametrize("command", REFUSED)
