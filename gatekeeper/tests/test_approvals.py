@@ -8887,6 +8887,48 @@ def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_c
     }
 
 
+def test_a_cloud_session_gate_run_records_and_pushes_its_pass_with_no_host_credential(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#2579: in a session where Claude Code sets CLAUDE_CODE_REMOTE and GitHub refuses the status write, a green
+    `local-ci --record` leaves the head's record in the clone and pushes it as a branch (a plain git push, no host
+    credential), which `gate-record` and another clone read."""
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    head = published_on_a_with(tmp_path, monkeypatch, no_status)
+    out = capsys.readouterr().out
+    assert approvals.in_cloud()
+    assert f"published in origin as the record branch {branch_of(head)}" in out
+    local = tmp_path / "a" / ".git" / "approvals" / "local-ci"
+    [record] = local.glob("*.json")
+    assert json.loads(record.read_text())["head"] == head
+    monkeypatch.chdir(tmp_path / "b")
+    assert approvals.main(["gate-record", head]) == 0
+
+
+def test_a_cloud_session_gate_run_that_fails_records_and_pushes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    real_refs(monkeypatch)
+    origin, a = tmp_path / "origin.git", tmp_path / "a"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    committed(a)
+    git_in(a, "remote", "add", "origin", str(origin))
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/main")
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(a)
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["false"])
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert "nothing recorded" in capsys.readouterr().out
+    assert not list((a / ".git" / "approvals" / "local-ci").glob("*.json"))
+    assert "loop-gate" not in git_in(origin, "for-each-ref", "--format=%(refname)")
+    assert approvals.main(["gate-record", git_in(a, "rev-parse", "HEAD").strip()]) == 1
+
+
 def test_gate_record_reuses_origins_record_only_for_the_same_tree_and_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
