@@ -3874,6 +3874,22 @@ def pre_land(lands: dict[str, Any], configured: bool = True) -> Path:
     return runs
 
 
+def test_a_host_that_forbids_the_pre_land_check_refuses_land_up_front(
+    lands: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = pre_land(lands)
+    policy = tmp_path / "host-commands"
+    policy.write_text("check.py  # the host takes no pre-land check\n")
+    monkeypatch.setenv("AGENT_HOST_COMMANDS", str(policy))
+    lands["open"](7, {"7.txt": "7\n"})
+    code, lines = lands["land"]()
+    # before any step: no check ran, nothing merged, and the reason is the place, not a machine fault
+    assert code == 1 and not runs.exists() and lands["merged"]() == []
+    said = "\n".join(lines)
+    assert "this host can't land: run land from a cloud session or a host that can take it" in said
+    assert "machine fault" not in said and "no gate record" not in said
+
+
 def test_a_pr_the_pre_land_check_refuses_is_left_out_with_one_comment_and_stays_ready(
     lands: dict[str, Any],
 ) -> None:
@@ -4965,7 +4981,7 @@ def test_a_batch_squash_lands_the_gated_tree_on_the_commit_before_it(
 OPTED = add(LOOP, "loop", "opt_out: true\n")
 OUTSIDE = (
     "PR #7 is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
-    " revert or bot exemption): its author merges it"
+    " revert or bot exemption): land refuses it, and its author merges it"
 )
 
 
@@ -5496,10 +5512,16 @@ def test_a_pr_with_no_loop_trail_is_outside_the_loop_where_opt_out_is_allowed(
     mine = landing["pull"]
     mine["reviews"]["nodes"] = []
     mine["closingIssuesReferences"]["nodes"] = [specced(1, "kind:bug")]
-    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
+    # land refuses this PR, so check merge exits 1 on the same line (#2576)
+    assert gate(capsys, "check", "merge", "7") == (1, [OUTSIDE])
     # risk rules hold no PR outside the loop: the project accepted that with the setting
     mine["labels"]["nodes"].append({"name": "risk:high"})
-    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
+    assert gate(capsys, "check", "merge", "7") == (1, [OUTSIDE])
+    # a verifier review on the head puts it back in the loop: check merge no longer says it is outside
+    mine["labels"]["nodes"].pop()
+    mine["reviews"]["nodes"] = [VERDICT]
+    assert OUTSIDE not in gate(capsys, "check", "merge", "7")[1]
+    mine["reviews"]["nodes"] = []
     # without the setting, the same PR fails the gate as before
     Path("docs/agents/loop.md").write_text(LOOP)
     code, lines = gate(capsys, "check", "merge", "7")

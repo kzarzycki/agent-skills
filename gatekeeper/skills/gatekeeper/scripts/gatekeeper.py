@@ -146,9 +146,8 @@ the branch's name starts a segment with (`loop/329-fix`), the same way, and clai
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in gatekeeper.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
-`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
-workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
-prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
+`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop, naming the proofs it lacks, and exits 1, as `land` does for the same PR (one rule, `outside`): `land`
+never takes it into a batch, and named, prints the same line and exits 1, so the loop never merges it and its author merges it their usual way. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
 repository's default branch, through one of three merge queues, picked by the base's rules (`required_checks`) and the
@@ -3926,7 +3925,7 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
             return None
     return (
         f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
-        " revert or bot exemption): its author merges it"
+        " revert or bot exemption): land refuses it, and its author merges it"
     )
 
 
@@ -6396,8 +6395,9 @@ def checked(point: str, pull: dict[str, Any]) -> int:
         )
         return 1 if found else 0
     if point == "merge" and (why := outside(pull, loop)):
+        # land refuses this PR on the same rule (proof_gaps), so the check says so now, never green (#2576)
         print(why)
-        return 0
+        return 1
     if point == "merge":
         base = pull["baseRefName"]
         judge_with_base(base, fetch=True)
@@ -7202,6 +7202,9 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         )
     with policy_from(base):
         tracker, loop = project()
+        host_takes_pre_land(
+            loop
+        )  # before any lock, draft or step: a host that can't run it refuses up front (#2577)
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
         watched["required"] = set(rules) - OWN
@@ -8539,6 +8542,20 @@ def pre_land_run(pull: dict[str, Any], work: Path, loop: str | None) -> PreLand 
     except OSError as exc:
         raise Refused(f"loop.md's `pre_land` {command!r} can't run: {exc}") from None
     return PreLand(command, tip, code, output or "")
+
+
+def host_takes_pre_land(loop: str | None) -> None:
+    """Refuse, before `land` starts any step, a loop.md `pre_land` this host's policy file forbids (host_forbids, the
+    check run_heavy makes at each step): the same rule, said up front as a land run in the wrong place, never as a step's
+    refusal midway or a machine fault (`machine_exit`)."""
+    if not (written := settings(loop).get("pre_land")):
+        return
+    command, words, _ = command_line(written, "pre_land")
+    if rule := host_forbids(words):
+        raise Refused(
+            f"land runs loop.md's `pre_land` {command!r}, which is on this host's {HOST_COMMANDS} ({rule!r}), so this"
+            " host can't land: run land from a cloud session or a host that can take it"
+        )
 
 
 def pre_landed(
