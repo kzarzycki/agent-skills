@@ -5,6 +5,15 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.10 - 2026-11-24
+
+- R5 and loop.md's settings name the `Test report:` line: a rerun whose report shows zero tests, where the red run had some, did not run (#2277).
+
+## 0.1.9 - 2026-11-24
+
+- loop: SKILL.md and worker.md say an affected-test selector that can't tell exactly which tests a change touches runs the narrowest set it can still name, never nothing: a coarser selection for a selector that can't run, the tests under a test-setup file's directory, the tests that read a file by path, a file's package or directory tests when no test names it, and the whole suite for a build input; zero only for a change of non-product paths, saying `0 selected: <layer>` (#2217).
+- loop: in a repo with no CI, `loop.py brief` tells the verifier to start a fresh session that reruns the head's selection with `local-ci --record --rerun` and to name its record on a `Rerun:` line, where gatekeeper.md's `levels` asks a rerun; engineering-loop's rule section points at the option (#2240).
+
 ## 0.1.8 - 2026-11-24
 
 - loop: `scripts/nightly.py moved push|schedule|tag` is the R7 check a project's CI calls to skip a tree a merge queue's batch run tested, or a head the last green nightly ran; `push` reads the batches of the policy's `land.queue` (`mergify` or `github`, whose batch runs are `merge_group` events), so a consumer no longer copies the script and `tag` skips the tag check's suites when a green nightly ran the tagged commit (#2261, #2264).

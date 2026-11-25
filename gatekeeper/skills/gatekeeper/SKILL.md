@@ -32,6 +32,17 @@ script's docstring is the manual: every proof each verb checks and every record 
 A PR carrying `needs-owner` or `loop:hold` is refused at merge, by `land` and `check merge` alike, with a line naming the
 label: `loop:hold` is a lead's hold, or another coordinator's claim, and its PR comment says who and why.
 
+The session that holds an issue: under Omnigent, `check build`'s claim adds `Session: <server>/c/<lead's session id>`
+to the issue's `Assigned:` record and sets the issue's `Session` issue field to the same link, so an issue, and a PR
+through the issue it closes, leads to its lead and the lead's children. The field is optional: the account's owner
+creates it once, as a text field, in the account's issue settings, since the loop's token can't. An account without
+it uses the gatekeeper unchanged: every command works, the record still carries the link, and the missing field costs
+one lookup and one informational line a run, never an error or a non-zero exit. Outside Omnigent neither is written.
+Where GitHub refuses GraphQL, REST checks the field exists and sets it, reading the field's id off an issue that
+already carries a value, since no REST route lists a personal account's fields: until one does, the run says so in its
+one line. `check setup` reports a missing field in one line, with the steps to create it on GitHub (Settings >
+Planning > Issue fields > New field, name `Session`, type Text), and exits as it would without it.
+
 ## Files
 
 - `scripts/gatekeeper.py`: the CLI, the policy reader and the gate.
@@ -96,9 +107,12 @@ shape (anything else in it is prose the review carries):
   up to the next heading outside a code fence. Any other `### ` heading is a sub-heading;
 - at the end, `Head: <sha>`, the full commit reviewed, then `VERDICT: <n> blocker, <n>
   major, <n> minor`, `SATISFIED: yes|no` and `Risk: low — <reason>` or `Risk: high —
-  <reason>`.
+  <reason>`;
+- where it started the independent rerun a high-risk head needs, after the `Head:` line, a line `Rerun: <commit>`, the
+  full commit of the record branch that rerun pushed ([policy.md](policy.md), Independent rerun), which the review
+  carries.
 
-It refuses a report without the `Head:`, `Verifier:` or `Risk:` line, a `### ` heading with a
+It refuses a report without the `Head:`, `Verifier:` or `Risk:` line, a `Rerun:` line naming no full commit, a `### ` heading with a
 `(<severity>)` it can't read, and finding headings that don't add up to the `VERDICT:`
 counts. A question for the owner goes in `<report>.question` beside it, which `report --json`
 prints.
