@@ -148,9 +148,16 @@ jobs:
           COVERAGE_FILE: .test-map/coverage
           # the tests it skips, which leave no coverage context (tools/test_map_plugin.py)
           TEST_MAP_SKIPPED: ${{ github.workspace }}/.test-map/skipped
+          # each test's time, across the run's pytest runs (tools/test_map_plugin.py), for the durations step below
+          TEST_DURATIONS: ${{ github.workspace }}/.test-map/durations.log
           GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
           PYTEST_ADDOPTS: -n 0 --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
+      # The nightly's per-test durations (#2445): the file `shards --durations` reads, kept beside the test map. Nothing in
+      # this repo's CI reads it yet: `affected-tests`' estimate reads it from GATE_DURATIONS where that verb runs, and this
+      # repo's selector (`Affected tests:`) lists no tests to estimate, so the fail-fast stays off here (#2445's open question).
+      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
+        run: python3 gatekeeper/skills/gatekeeper/scripts/gatekeeper.py durations --record .test-map/durations.log --out .test-map/durations.json
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.
       - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

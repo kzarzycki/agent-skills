@@ -27,7 +27,8 @@
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py queue-select [<base>]      # a merge queue's batch check (R6): one command per line to run on the batch, the select.unkeyed checks and `affected-tests --base <point>` for each PR with no record; exit 1 when that is nothing while a PR has no record
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
-    uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1 when .mergify.yml is out of step
+    uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1, one line each, when .mergify.yml, a marked workflow job's `timeout-minutes`, loop.md's `Wall-clock variable:`, a hand-set `land.wait` or the nightly's push paths (against `select.build_inputs`) is out of step
+    uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
@@ -1034,7 +1035,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
         unkeyed=list,
         # how many shards a whole-suite selection splits into (shard_selections), 1 or absent is one
         shards=int,
-        optional=("build_inputs", "checks", "unkeyed", "shards"),
+        # what the merge queue's selection does with a build input (#2445): `floor`, the default, the other changed
+        # files' tests plus a lockfile's importers; `full`, the whole suite
+        build_inputs_in_queue=Choice(("floor", "full")),
+        optional=("build_inputs", "checks", "unkeyed", "shards", "build_inputs_in_queue"),
     ),
     # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
     "timeouts": Table(test=str, run=str, optional=("test", "run")),
@@ -6474,6 +6478,81 @@ def tree_policy(root: Path) -> str | None:
     return chosen(*found)
 
 
+WORKFLOWS = Path(".github/workflows")
+# a job's `timeout-minutes` that follows `timeouts.run`, marked so the check knows which job is the selection's (#2445)
+JOB_MINUTES = re.compile(
+    r"^[ \t]*timeout-minutes:[ \t]*(\d+)[ \t]*#[ \t]*timeouts\.run\b", re.MULTILINE
+)
+# the workflow that is the project's nightly: one comment line says so, and its push paths must be `select.build_inputs`
+NIGHTLY_MARK = re.compile(r"^#[ \t]*timeouts:[ \t]*nightly\b", re.MULTILINE)
+# loop.md's line naming the variable a project's affected-tests wall-clock limit is set in, in seconds
+WALL_CLOCK = re.compile(r"^Wall-clock variable:[ \t]*`?([A-Za-z_]\w*)", re.MULTILINE)
+
+
+def push_paths(text: str) -> list[str]:
+    """The `paths:` of a workflow's `push:` trigger, in order; empty when it has none (a push of any path)."""
+    lines = text.splitlines()
+    for at, line in enumerate(lines):
+        if re.match(r"^[ \t]+push:[ \t]*$", line):
+            indent = len(line) - len(line.lstrip())
+            found: list[str] = []
+            listing = False
+            for row in lines[at + 1 :]:
+                if row.strip() and len(row) - len(row.lstrip()) <= indent:
+                    break
+                if re.match(r"^[ \t]+paths:[ \t]*$", row):
+                    listing = True
+                elif listing and (item := re.match(r"^[ \t]+-[ \t]*(.+?)[ \t]*$", row)):
+                    found.append(item.group(1).strip("\"'"))
+                elif listing and row.strip() and not row.lstrip().startswith("#"):
+                    listing = False
+            return found
+    return []
+
+
+def limit_drift(root: Path, loop: str | None) -> list[str]:
+    """One line for each limit out of step with `timeouts.run` (#2445), beside `.mergify.yml` (mergify_drift): a marked
+    workflow job's `timeout-minutes`, the variable loop.md's `Wall-clock variable:` names (in seconds), a `land.wait`
+    set by hand, and the nightly workflow's push paths against `select.build_inputs`. Each names the file and the
+    value the budget gives."""
+    out: list[str] = []
+    budget, minutes = timeouts(loop)["run"], job_minutes(loop)
+    flows = sorted((root / WORKFLOWS).glob("*.y*ml")) if (root / WORKFLOWS).is_dir() else []
+    loop_file = root / LOOP
+    named = WALL_CLOCK.search(read(loop_file)) if loop_file.exists() else None
+    select = settings(loop).get("select", {})
+    setting = re.compile(rf"\b{named[1]}\b[\"']?[ \t]*[:=][ \t]*[\"']?(\d+)") if named else None
+    files = [(f"{WORKFLOWS}/{flow.name}", read(flow)) for flow in flows]
+    if setting and (root / "mise.toml").exists():
+        files.append(("mise.toml", read(root / "mise.toml")))
+    for where, text in files:
+        out += [
+            f"{where}: `timeout-minutes` is {found[1]} but `timeouts.run` ({said_span(budget)}) makes it {minutes}"
+            for found in JOB_MINUTES.finditer(text)
+            if int(found[1]) != minutes
+        ]
+        if setting and (limit := setting.search(text)) and int(limit[1]) != budget:
+            out.append(
+                f"{where}: `{named[1]}` is {limit[1]} seconds but `timeouts.run` makes it {budget}"  # type: ignore[index]
+            )
+        if (
+            NIGHTLY_MARK.search(text)
+            and "build_inputs" in select
+            and sorted(push_paths(text)) != sorted(select["build_inputs"])
+        ):
+            out.append(
+                f"{where}: the nightly's push paths {push_paths(text)} differ from `select.build_inputs`"
+                f" {list(select['build_inputs'])}"
+            )
+    land = settings(loop).get("land", {}).get("wait")
+    if land is not None and (given := span(str(land))) and int(given.total_seconds()) != 2 * budget:
+        out.append(
+            f"{POLICY}: `land.wait` is {said_span(int(given.total_seconds()))} but `timeouts.run` makes it"
+            f" {said_span(2 * budget)}: drop `land.wait`"
+        )
+    return out
+
+
 def timeouts_verb(render: bool, check_only: bool, as_json: bool) -> int:
     """`timeouts`: every limit the working tree's policy derives from its `timeouts` block; `--mergify` prints the
     repo's `.mergify.yml` as rendered from it; `--check` exits 1 with one line where `.mergify.yml` is out of step."""
@@ -6483,10 +6562,12 @@ def timeouts_verb(render: bool, check_only: bool, as_json: bool) -> int:
         sys.stdout.write(mergify_rendered(loop))
         return 0
     if check_only:
-        if problem := mergify_drift(root, loop):
-            print(problem)
+        problems = [problem] if (problem := mergify_drift(root, loop)) else []
+        problems += limit_drift(root, loop)
+        if problems:
+            print("\n".join(problems))
             return 1
-        print(f"timeouts: {MERGIFY_FILE} is in step with the policy's `timeouts`")
+        print("timeouts: every limit is in step with the policy's `timeouts`")
         return 0
     limits = timeouts(loop)
     derived = {
@@ -10486,16 +10567,196 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
             env[variable] = base
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     budget = run_budget()
+    # ponytail: the pack sees the selection only where it makes it (the whole suite): a project's `Affected tests:`
+    # command picks its tests internally, so no list-only mode yet (#2445's open question) and no estimate for it
+    estimate: float | None = None
+    if written is None or FULL_GATE.search(text):
+        try:
+            shards = shard_count()
+        except Refused:
+            shards = 1
+        estimate, why = read_estimate(root, shards)
+        cause = (
+            "`Gate: full` selects the whole suite"
+            if FULL_GATE.search(text)
+            else "loop.md names no `Affected tests:` selector, so the whole suite"
+        )
+    else:
+        why = "the project's `Affected tests:` command picks its tests itself, so the pack has no list to estimate"
+    if estimate is None:
+        print(
+            f"affected-tests: no estimate available ({why}): `timeouts.run` ({said_span(budget)}) is the only limit",
+            file=sys.stderr,
+        )
+    elif estimate > FAIL_FAST_SHARE * budget:
+        print(
+            f"affected-tests: the estimate {said_span(int(estimate))} is over {FAIL_FAST_SHARE:.0%} of `timeouts.run`"
+            f" ({said_span(budget)}): {cause}; raise `timeouts.run`, shard it or narrow the run",
+            file=sys.stderr,
+        )
+        return TIMED_OUT
+    else:
+        print(
+            f"affected-tests: estimate {said_span(int(estimate))} of `timeouts.run` ({said_span(budget)})",
+            file=sys.stderr,
+        )
+    started = time.monotonic()
     try:
         with heavy_slot("affected-tests") as (slot, _):
+            started = time.monotonic()
             code, spent = run_heavy(
                 words, env=env | sets | {SLOT_HELD: slot}, budget=budget, cwd=root
             )
     except OSError as exc:
         raise Refused(f"`{words[0]}` can't run: {exc}") from None
+    if estimate is not None:  # no estimate, nothing to compare, and no file to dirty a checkout
+        note_run(root, estimate, time.monotonic() - started, code)
     if spent is SPENT:
         print(over_budget(budget, root, base if written is not None else None), file=sys.stderr)
     return code
+
+
+# the per-test durations the nightly records (`durations --record`), the file `shards --durations` reads, and the
+# estimate beside the actual time of each gate run (#2445); under the working tree's `.qualify/`, scratch the repos ignore
+DURATIONS_FILE = Path(".qualify/durations.json")
+GATE_RUNS_FILE = Path(".qualify/gate-runs.jsonl")
+SETUP_FILE = Path(".qualify/setup-seconds")
+FAIL_FAST_SHARE = (
+    0.8  # the share of `timeouts.run` an estimate may take: runner speed varies from run to run
+)
+DRIFT_SHARE = 0.25  # how far the actual time may be from its estimate before the nightly report flags it (a start)
+DURATION_LINE = re.compile(r"^\s*([\d.]+)s\s+(?:setup|call|teardown)\s+(\S+)", re.MULTILINE)
+
+
+def durations_path(root: Path) -> Path:
+    """The durations file of the project at `root`: `GATE_DURATIONS`, else `.qualify/durations.json`."""
+    return Path(os.environ.get("GATE_DURATIONS") or root / DURATIONS_FILE)
+
+
+def parse_durations(text: str) -> dict[str, float]:
+    """Seconds per test file from a JUnit XML (`testcase` times, by its `file`, else its classname's module) or from
+    `pytest --durations=0` output (setup, call and teardown lines, by the node id's file): the JSON `shards
+    --durations` reads."""
+    found: dict[str, float] = {}
+    if text.lstrip().startswith("<"):
+        for case in ET.fromstring(text).iter("testcase"):
+            file = case.get("file")
+            if not file:
+                parts = (case.get("classname") or "").split(".")
+                while parts and parts[-1][:1].isupper():
+                    parts.pop()  # a test class, not a module
+                file = "/".join(parts) + ".py" if parts else ""
+            if file:
+                found[file] = found.get(file, 0.0) + float(case.get("time") or 0)
+    else:
+        for seconds, node in DURATION_LINE.findall(text):
+            file = node.split("::")[0]
+            if not file:  # a nested pytest run's `::test` line: no file of this run
+                continue
+            found[file] = found.get(file, 0.0) + float(seconds)
+    return {file: round(seconds, 3) for file, seconds in found.items()}
+
+
+def estimate_seconds(
+    items: Sequence[str],
+    durations: dict[str, float],
+    workers: int = 1,
+    setup: float = 0.0,
+    shards: int = 1,
+) -> float | None:
+    """The expected run time of `items`: their recorded seconds (an unrecorded one at the mean of the recorded) over
+    `workers`, the longest shard's when `shards` splits them (shard_selections), plus the measured fixed `setup`
+    (install, collection). None with no recorded duration to go on."""
+    chosen = list(dict.fromkeys(items))
+    known = {item: durations[item] for item in chosen if item in durations}
+    if not known:
+        return None
+    mean = sum(known.values()) / len(known)
+    held = shard_selections(chosen, chosen, shards, known, whole=True) if shards > 1 else [chosen]
+    longest = max(sum(known.get(item, mean) for item in group) for group in held)
+    return longest / max(workers, 1) + setup
+
+
+def read_estimate(root: Path, shards: int) -> tuple[float | None, str]:
+    """The whole suite's estimate from the recorded durations, else None with why there is none."""
+    path = durations_path(root)
+    try:
+        durations = {k: float(v) for k, v in json.loads(path.read_text()).items()}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None, f"no recorded durations at {path.name}: the nightly has not recorded any"
+    try:
+        workers = int(os.environ.get("GATE_WORKERS", "1"))
+    except ValueError:
+        workers = 1
+    try:
+        setup = float(os.environ.get("GATE_SETUP_SECONDS") or (root / SETUP_FILE).read_text())
+    except (OSError, ValueError):
+        setup = 0.0
+    # a test file deleted since the nightly recorded it is no part of the run: a stale file must not over-estimate
+    durations = {
+        item: secs for item, secs in durations.items() if (root / item.split("::")[0]).exists()
+    }
+    found = estimate_seconds(list(durations), durations, workers, setup, shards)
+    return found, "no recorded durations" if found is None else ""
+
+
+def note_run(root: Path, estimate: float | None, actual: float, code: int) -> None:
+    """Append the gate run's estimate beside its actual time to `.qualify/gate-runs.jsonl`, for the nightly report."""
+    path = root / GATE_RUNS_FILE
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as out:
+            line = {
+                "at": int(time.time()),
+                "estimate": estimate,
+                "actual": round(actual, 2),
+                "exit": code,
+            }
+            out.write(json.dumps(line) + "\n")
+
+
+def drift_lines(root: Path, share: float = DRIFT_SHARE) -> list[str]:
+    """One line for each recorded gate run whose actual time is over `share` away from its estimate."""
+    try:
+        rows = [
+            json.loads(line) for line in (root / GATE_RUNS_FILE).read_text().splitlines() if line
+        ]
+    except (OSError, ValueError):
+        return []
+    return [
+        f"drift: a gate run at {row['at']} took {said_span(int(row['actual']))} against an estimate of"
+        f" {said_span(int(row['estimate']))} ({(row['actual'] - row['estimate']) / row['estimate']:+.0%}): the durations"
+        " file is stale or the setup figure is wrong"
+        for row in rows
+        if row.get("estimate") and abs(row["actual"] - row["estimate"]) / row["estimate"] > share
+    ]
+
+
+def durations_verb(record: str | None, out: str | None, setup: float | None, report: bool) -> int:
+    """`durations --record <junit.xml | durations.txt> [--out <file>] [--setup <seconds>]` turns one run's JUnit XML or
+    `--durations=0` output into the durations file `shards --durations` and `affected-tests` read; `--report` prints a
+    line for each recorded gate run whose time is far from its estimate (the nightly report)."""
+    root = toplevel()
+    if record:
+        found = parse_durations(Path(record).read_text())
+        if not found:
+            print(f"durations: no test times in {record}", file=sys.stderr)
+            return 1
+        target = Path(out) if out else durations_path(root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(found, indent=1, sort_keys=True) + "\n")
+        if setup is not None:
+            (root / SETUP_FILE).parent.mkdir(parents=True, exist_ok=True)
+            (root / SETUP_FILE).write_text(f"{setup}\n")
+        print(f"durations: {len(found)} test files, {sum(found.values()):.0f} seconds, in {target}")
+    if report or not record:
+        lines = drift_lines(root)
+        print(
+            "\n".join(lines)
+            if lines
+            else "durations: every recorded estimate is near its run's time"
+        )
+    return 0
 
 
 def run_budget() -> int:
@@ -13290,6 +13551,11 @@ def main(argv: list[str]) -> int:
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     # every limit the policy's `timeouts` derive; --mergify renders .mergify.yml, --check refuses one out of step
+    recording = commands.add_parser("durations")
+    recording.add_argument("--record", metavar="FILE")
+    recording.add_argument("--out", metavar="FILE")
+    recording.add_argument("--setup", type=float, metavar="SECONDS")
+    recording.add_argument("--report", action="store_true")
     timing = commands.add_parser("timeouts")
     timing_how = timing.add_mutually_exclusive_group()
     timing_how.add_argument("--mergify", action="store_true")
@@ -13340,6 +13606,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return 0
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)
+    if args.command == "durations":
+        return durations_verb(args.record, args.out, args.setup, args.report)
     if args.command == "timeouts":  # the working tree's files only: no forge, no remote
         return timeouts_verb(args.mergify, args.check, args.json)
     if args.command == "queue-select":
