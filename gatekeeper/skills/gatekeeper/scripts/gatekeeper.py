@@ -32,7 +32,7 @@
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
-    uv run scripts/approvals.py claim <issue> [--takeover|--release]  # under a `team` policy: an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
+    uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -2646,10 +2646,10 @@ def claim_holder(issue: dict[str, Any]) -> tuple[str, str] | None:
 
 def held_claims(issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """`check build`'s refusal, a line per issue another session holds an unreleased claim on, naming the holder.
-    ponytail: only under a policy with a `team` section and only for a run that names its own session, since
-    a project with one team must change nothing and without a link there is no one to tell apart."""
+    ponytail: only for a run that names its own session: a run with no session reads no claim and is not refused,
+    so a single-user project changes nothing, and without a link there is no one to tell apart."""
     link = session_link()
-    if settings(loop).get("team") is None or not link:
+    if not link:
         return []
     found = []
     for issue in issues:
@@ -2664,25 +2664,19 @@ def held_claims(issues: list[dict[str, Any]], loop: str | None) -> list[str]:
 def claim_verb(number: int, takeover: bool = False, release: bool = False) -> int:
     """`claim <issue>`: the early claim, a record on the issue before any PR exists, which `check build` reads
     (held_claims). `--takeover` takes one another session holds, with a `Handover:` record naming the session it came
-    from; `--release` ends this session's claim. Under a policy with no `team` section it writes nothing."""
-    _, loop = project()
-    team = settings(loop).get("team")
-    if team is None:
-        print(f"#{number}: the policy has no `team` section: claims are off, nothing written")
-        return 0
+    from; `--release` ends this session's claim.
+    ponytail: a run with no session to name (session_link()) writes no claim and is not refused, so a project with
+    no session changes nothing."""
     link = session_link()
     if not link:
-        raise Refused(
-            f"#{number}: this run names no Omnigent session (RUNNER_SERVER_URL and OMNIGENT_RUNNER_PRIMARY_SESSION_ID"
-            " are unset), so a claim has no holder to name"
-        )
+        print(f"#{number}: this run names no session, so a claim has no holder to name: nothing written")
+        return 0
     issue = issue_node(number)
     holder = claim_holder(issue)
     login = approver(issue) or viewer()
     if not login:
         raise Refused(f"#{number}: no one to record the claim for: the forge names no account")
-    name = str(team.get("name") or viewer() or "").strip()
-    details = "By: claim" + (f"\nTeam: {name}" if name else "")
+    details = "By: claim"
     mine = holder is not None and holder[1] == link
     if release:
         if holder is None:

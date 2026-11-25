@@ -1,6 +1,6 @@
 """`claim <issue>` leaves an early claim as a record on the issue, `--takeover` a `Handover:` record, and `check build`
-refuses an issue another session holds an unreleased claim on (#2498). Both are kept only where the policy has a `team`
-section."""
+refuses an issue another session holds an unreleased claim on (#2498). Both apply whenever the run has a session to
+name, with no policy section; a run with no session writes and reads no claim."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from test_approvals import TRACKER, in_project, loop_md
 
 SERVER, LEAD, OTHER = "https://example.test", "lead-session", "other-session"
 LINK, THEIRS = f"{SERVER}/c/{LEAD}", f"{SERVER}/c/{OTHER}"
-TEAM = loop_md("team:\n  name: alpha\n")
+LOOP = loop_md()
 
 
 def held(session: str, head: str = "Assigned: @owner") -> str:
@@ -69,10 +69,10 @@ def records(posted: list[tuple[int, str]], first: str) -> list[str]:
 def test_claim_writes_an_assigned_record_naming_the_session(
     monkeypatch: pytest.MonkeyPatch, posted: list[tuple[int, str]]
 ) -> None:
-    claim_args(monkeypatch, TEAM)
+    claim_args(monkeypatch, LOOP)
     assert approvals.main(["claim", "1"]) == 0
     assert records(posted, "Assigned: @owner") == [
-        f"Assigned: @owner\nBy: claim\nTeam: alpha\nSession: {LINK}\n"
+        f"Assigned: @owner\nBy: claim\nSession: {LINK}\n"
     ]
 
 
@@ -82,7 +82,7 @@ def test_a_second_session_is_refused_naming_the_holder(
     posted: list[tuple[int, str]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    claim_args(monkeypatch, TEAM, held(THEIRS))
+    claim_args(monkeypatch, LOOP, held(THEIRS))
     assert approvals.main(["claim", "1"]) == 1
     said = capsys.readouterr().out
     assert f"claimed by @owner (session {THEIRS})" in said
@@ -95,7 +95,7 @@ def test_check_build_exits_1_naming_the_holder_and_claims_nothing(
     posted: list[tuple[int, str]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    assert build(monkeypatch, TEAM, held(THEIRS)) == 1
+    assert build(monkeypatch, LOOP, held(THEIRS)) == 1
     assert f"#1: claimed by @owner (session {THEIRS})" in capsys.readouterr().out
     assert [b for _n, b in posted if b.startswith("Assigned: ")] == []
 
@@ -104,7 +104,7 @@ def test_check_build_exits_1_naming_the_holder_and_claims_nothing(
 def test_check_build_passes_for_the_session_that_holds_the_claim(
     monkeypatch: pytest.MonkeyPatch, posted: list[tuple[int, str]]
 ) -> None:
-    assert build(monkeypatch, TEAM, held(LINK)) == 0
+    assert build(monkeypatch, LOOP, held(LINK)) == 0
 
 
 @pytest.mark.usefixtures("omnigent")
@@ -112,48 +112,48 @@ def test_a_released_claim_no_longer_blocks(
     monkeypatch: pytest.MonkeyPatch, posted: list[tuple[int, str]]
 ) -> None:
     released = approvals.fold("Released: @owner", details="By: claim")
-    assert build(monkeypatch, TEAM, held(THEIRS), released) == 0
+    assert build(monkeypatch, LOOP, held(THEIRS), released) == 0
 
 
 @pytest.mark.usefixtures("omnigent")
 def test_takeover_writes_a_handover_record(
     monkeypatch: pytest.MonkeyPatch, posted: list[tuple[int, str]]
 ) -> None:
-    claim_args(monkeypatch, TEAM, held(THEIRS))
+    claim_args(monkeypatch, LOOP, held(THEIRS))
     assert approvals.main(["claim", "1", "--takeover"]) == 0
     assert records(posted, "Handover: @owner") == [
-        f"Handover: @owner\nBy: claim\nTeam: alpha\nFrom: {THEIRS}\nSession: {LINK}\n"
+        f"Handover: @owner\nBy: claim\nFrom: {THEIRS}\nSession: {LINK}\n"
     ]
     # the handover is now the claim: this session holds it, the other no longer does
     after = approvals.fold(
         "Handover: @owner", details=f"By: claim\nFrom: {THEIRS}\nSession: {LINK}"
     )
-    assert build(monkeypatch, TEAM, held(THEIRS), after) == 0
+    assert build(monkeypatch, LOOP, held(THEIRS), after) == 0
 
 
 @pytest.mark.usefixtures("omnigent")
 def test_release_ends_only_this_sessions_claim(
     monkeypatch: pytest.MonkeyPatch, posted: list[tuple[int, str]]
 ) -> None:
-    claim_args(monkeypatch, TEAM, held(THEIRS))
+    claim_args(monkeypatch, LOOP, held(THEIRS))
     assert approvals.main(["claim", "1", "--release"]) == 1
-    claim_args(monkeypatch, TEAM, held(LINK))
+    claim_args(monkeypatch, LOOP, held(LINK))
     assert approvals.main(["claim", "1", "--release"]) == 0
     assert [b.split("\n")[0] for _n, b in posted] == ["Released: @owner"]
 
 
-def test_a_policy_without_a_team_section_changes_nothing(
+def test_a_run_with_no_session_writes_reads_and_refuses_nothing(
     monkeypatch: pytest.MonkeyPatch,
     posted: list[tuple[int, str]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.delenv("RUNNER_SERVER_URL", raising=False)
     monkeypatch.delenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", raising=False)
-    assert build(monkeypatch, loop_md(), held(THEIRS)) == 0
-    claim_args(monkeypatch, loop_md(), held(THEIRS))
+    assert build(monkeypatch, LOOP, held(THEIRS)) == 0
+    claim_args(monkeypatch, LOOP, held(THEIRS))
     assert approvals.main(["claim", "1"]) == 0
     assert approvals.main(["claim", "1", "--takeover"]) == 0
-    assert "claims are off" in capsys.readouterr().out
+    assert "names no session" in capsys.readouterr().out
     assert [b for _n, b in posted if b.startswith(("Handover", "Released"))] == []
     # only check build's own claim, the record it wrote before this story
     assert [b for _n, b in posted if "By: claim" in b] == []
@@ -163,9 +163,9 @@ def test_a_policy_without_a_team_section_changes_nothing(
 def test_the_records_name_no_session_id_but_the_server_relative_link(
     monkeypatch: pytest.MonkeyPatch, posted: list[tuple[int, str]]
 ) -> None:
-    claim_args(monkeypatch, TEAM)
+    claim_args(monkeypatch, LOOP)
     assert approvals.main(["claim", "1"]) == 0
-    claim_args(monkeypatch, TEAM, held(THEIRS))
+    claim_args(monkeypatch, LOOP, held(THEIRS))
     assert approvals.main(["claim", "1", "--takeover"]) == 0
     assert "worker-session" not in repr(posted)
     assert LINK in repr(posted)
