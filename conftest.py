@@ -35,12 +35,12 @@ from approvals_harness import (  # noqa: F401
     graphql_answers,
     hub,
     merging,
-    reran,
     others_open,
     pushed,
     refs,
     repo_template,
     required,
+    reran,
     session_fields,
 )
 
@@ -106,6 +106,14 @@ def no_origin(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
     """A test that mocks the rerun's execv leaves the wait's place in the environment; the next land would resume it."""
     monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _not_in_the_merge_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The merge queue's batch run sets GITHUB_HEAD_REF to `mergify/merge-queue/...`, which makes the test selector read
+    its queue policy (tools/affected_tests.py, #2445): a test of the selector sees the queue only when it sets it."""
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    monkeypatch.delenv("GATE_IN_QUEUE", raising=False)
 
 
 _Environ = type(os.environ)
