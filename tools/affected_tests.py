@@ -12,6 +12,10 @@ from the test map the nightly builds (below), else every test file that names it
 its file name); a file no test names runs its package's tests, else the tests of its nearest directory that has some
 (home_tests). A skill's prose, which the repo-wide checks `tests/test_skill_*.py` read, runs those. Zero tests run only
 when every changed path is non-product (NON_PRODUCT) and no test reads it, and the run says `0 selected: non-product`.
+In the merge queue (`GITHUB_HEAD_REF` under `mergify/merge-queue/`, or `GATE_IN_QUEUE=1`) a build input selects the whole
+suite only under `select.build_inputs_in_queue: full` in docs/agents/gatekeeper.md; under `floor`, the default there,
+it selects the other changed files' tests, and for a changed `uv.lock` the tests that import a package whose version
+changed (#2445). The nightly and a push to main, which touch a build input, run the whole suite after the merge.
 A selection of over half the test files runs as picked (#1872): only the nightly runs the whole suite.
 
 The test map is `.test-map/` (env `TEST_MAP`): `coverage`, the nightly suite's coverage data with one context per test
@@ -30,10 +34,12 @@ map without one, every such file that can skip. A line no test ran selects nothi
 from __future__ import annotations
 
 import fnmatch
+import importlib.metadata
 import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ALL = [
@@ -76,6 +82,65 @@ def changed(base: str) -> list[str] | None:
         check=False,
     )
     return done.stdout.split() if done.returncode == 0 else None
+
+
+def queue_build_inputs() -> str:
+    """`floor` or `full`: what a build input selects here. Outside the merge queue it is `full`, as ever; inside it is
+    gatekeeper.md's `select.build_inputs_in_queue`, `floor` when unset."""
+    head = os.environ.get("GITHUB_HEAD_REF", "")
+    if not (head.startswith("mergify/merge-queue/") or os.environ.get("GATE_IN_QUEUE") == "1"):
+        return "full"
+    try:
+        text = Path("docs/agents/gatekeeper.md").read_text()
+    except OSError:
+        return "floor"
+    found = re.search(r"^[ \t]+build_inputs_in_queue:[ \t]*(floor|full)\b", text, re.MULTILINE)
+    return found[1] if found else "floor"
+
+
+def locked(base: str | None, ref: str) -> dict[str, str]:
+    """The package versions of `uv.lock` at `ref` (`HEAD` or the base), empty when there is none."""
+    done = subprocess.run(
+        ["git", "show", f"{ref}:uv.lock"], capture_output=True, text=True, check=False
+    )
+    if done.returncode:
+        return {}
+    try:
+        data = tomllib.loads(done.stdout)
+    except tomllib.TOMLDecodeError:
+        return {}
+    return {p["name"]: p.get("version", "") for p in data.get("package", []) if "name" in p}
+
+
+def import_names(package: str) -> set[str]:
+    """The names a package is imported by, from the top-level modules its installed distribution provides (`pyyaml` is
+    imported as `yaml`), read from the distributions' files, not a `top_level.txt` a wheel may lack. Empty when no
+    installed distribution provides one: the name is not known."""
+    wanted = re.sub(r"[-_.]+", "-", package).lower()
+    return {
+        module
+        for module, dists in importlib.metadata.packages_distributions().items()
+        if any(re.sub(r"[-_.]+", "-", dist).lower() == wanted for dist in dists)
+    }
+
+
+def lock_floor(base: str | None, tests: list[Path], sources: dict[Path, str]) -> set[str] | None:
+    """The test files that import a package `uv.lock` adds, removes or moves to another version since `base`; None
+    when a moved package maps to no import name (not installed here), since the floor can't tell what imports it."""
+    before, after = locked(base, base or "HEAD"), locked(base, "HEAD")
+    said = sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
+    picked: set[str] = set()
+    for package in said:
+        if not (names := import_names(package)):
+            say(f"uv.lock: {package} maps to no import name: the whole suite")
+            return None
+        for name in names:
+            use = re.compile(rf"^\s*(?:import|from)\s+{re.escape(name)}\b", re.MULTILINE)
+            picked |= {str(t) for t in tests if use.search(sources[t])}
+    say(f"uv.lock moved {len(said)} packages: {len(picked)} test files import them")
+    return picked
 
 
 def default_base() -> str | None:
@@ -276,11 +341,19 @@ def non_product(path: str) -> bool:
     )
 
 
-def targets(files: list[str], base: str | None = None) -> list[str]:
-    """The pytest targets for the change `files` since `base`: the narrowest set the rules above can name."""
-    if inputs := [f for f in files if f in BUILD_INPUTS]:
+def targets(
+    files: list[str], base: str | None = None, build_inputs: str | None = None
+) -> list[str]:
+    """The pytest targets for the change `files` since `base`: the narrowest set the rules above can name.
+    `build_inputs` is `floor` or `full` (queue_build_inputs when None): under `full` a build input selects the whole
+    suite; under `floor` it adds nothing, but a changed `uv.lock` adds the tests importing a moved package."""
+    mode = build_inputs or queue_build_inputs()
+    inputs = [f for f in files if f in BUILD_INPUTS]
+    if inputs and mode == "full":
         say(f"{inputs[0]}: a build input, which every test reads: the whole suite")
         return list(ALL)
+    lock_moved = "uv.lock" in inputs
+    files = [f for f in files if f not in inputs]
     tests = [
         p for r in ALL for p in sorted(Path(r).rglob("test_*.py")) if "/e2e/" not in p.as_posix()
     ]
@@ -293,6 +366,13 @@ def targets(files: list[str], base: str | None = None) -> list[str]:
         if mapped
         else f"no map at {MAP}: a script runs every test that names it"
     )
+    if inputs:
+        product = True
+        if lock_moved:
+            if (found := lock_floor(base, tests, sources)) is None:
+                return list(ALL)
+            picked |= found
+        say(f"{inputs[0]}: a build input: the floor, the whole suite runs after the merge")
     ran: set[str] = set()
     moved = moved_since(mapped[0], base) if mapped else set()
     skips = skipped() if mapped else None
