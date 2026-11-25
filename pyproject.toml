@@ -19,10 +19,10 @@ pythonpath = ["."]
 # tools/test_map_plugin.py: a nested pytest never inherits this run's PYTEST_ADDOPTS, and a subprocess runs under its test's context
 # -n auto --dist loadfile: every run is parallel by default, so a bare `pytest` costs what `mise run test` does (#1610);
 # the gate's worker count is tools/gate_workers.py (`-p`), and a serial run (the coverage nightly) passes `-n 0`.
-addopts = "-p tools.test_map_plugin -p tools.gate_workers -n auto --dist loadfile"
-# A test that outlives 60 s fails with every thread's traceback instead of holding the landing lock for the queue;
-# a test that needs longer carries @pytest.mark.timeout(N). QUALIFY_TIMEOUT does not cover pytest.
-timeout = 60
+addopts = "-p tools.test_map_plugin -p tools.gate_workers -p tools.timeouts_plugin -n auto --dist loadfile"
+# A test that outlives gatekeeper.md's `timeouts.test` fails with every thread's traceback instead of holding the landing
+# lock for the queue (tools/timeouts_plugin.py sets the limit: one block holds every limit); a test that needs longer
+# carries @pytest.mark.timeout(N). QUALIFY_TIMEOUT does not cover pytest.
 timeout_method = "signal"
 markers = [
   "live_agent: tests that require a live agent runtime",
