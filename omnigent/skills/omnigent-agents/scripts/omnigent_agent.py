@@ -6635,19 +6635,19 @@ def queue_alarms(repo: str, memo: dict, now: float | None = None) -> list[tuple[
     return said
 
 
-# the lead's session link folded under a PR's `Owner: <team>` record, which gatekeeper's `check build` writes (#2494)
-OWNER_SESSION = re.compile(r"^Session: \S*/c/([\w-]+)[ \t]*$", re.MULTILINE)
+# a PR's `Owner: <the lead's session link>` record, which gatekeeper's `check build` writes (#2494)
+OWNER_LINK = re.compile(r"^Owner: \S*/c/([\w-]+)[ \t]*$")
 
 
-def owner_record(comments: list) -> list[str] | None:
-    """The PR's last ``Owner: <team>`` comment as ``[team, session id]`` (the id empty when it names none), else None.
+def owner_record(comments: list) -> str | None:
+    """The session id in the PR's last ``Owner: <session link>`` comment (empty when it names none), else None.
     ponytail: a small copy of the gatekeeper's record format, not a shared module: the two plugins stay independent,
-    and the record is two lines."""
+    and the record is one line."""
     for c in reversed(comments):
         body = str((c or {}).get("body") or "").lstrip()
         if body.startswith("Owner: "):
-            found = OWNER_SESSION.search(body)
-            return [body.split("\n", 1)[0][len("Owner: ") :].strip(), found[1] if found else ""]
+            found = OWNER_LINK.match(body.split("\n", 1)[0].rstrip())
+            return found[1] if found else ""
     return None
 
 
@@ -10448,7 +10448,7 @@ def supervise_registry(
                 try:
                     entry["owner"] = (
                         owner_record(rest_pages(f"repos/{repo}/issues/{entry['pr']}/comments"))
-                        or []
+                        or ""
                     )
                 except RateLimited as e:
                     limited[0] = time.monotonic() + e.jittered()
@@ -10462,16 +10462,14 @@ def supervise_registry(
                         ("queue-owner", repo),
                         f"{repo}#{entry['pr']}: Owner record not read: {reason(e)}",
                     )
-                    entry["owner"] = []
-            team, owner = (entry["owner"] + ["", ""])[:2]
+                    entry["owner"] = ""
+            owner = entry["owner"]
             if owner and not any(str(s.get("id")) == owner for s in sessions):
-                # ponytail (epic Q: unknown session): a record naming a session this server does not list is the other
-                # team's PR, so an info line and no event; a deleted session of this team reads the same
+                # ponytail (epic Q: unknown session): a record naming a session this server does not list belongs to
+                # another agent tree, so an info line and no event; a deleted session of this tree reads the same
                 entry["told"] = True
                 print(
-                    stamp(
-                        f"{repo}#{entry['pr']} left the merge queue: owned elsewhere (Owner: {team})"
-                    ),
+                    stamp(f"{repo}#{entry['pr']} left the merge queue: owned elsewhere"),
                     flush=True,
                 )
                 continue

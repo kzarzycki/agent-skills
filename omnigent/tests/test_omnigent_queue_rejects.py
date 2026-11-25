@@ -418,16 +418,16 @@ def test_a_followed_lead_whose_wait_names_the_pr_owns_it(tmp_path, monkeypatch) 
     assert [s for s, _ in relays(og, 12)] == ["a"]
 
 
-def owner_comment(team: str, session: str) -> dict:
-    """The record gatekeeper's `check build` leaves on a PR: `Owner: <team>`, the session link folded under it."""
-    body = f"Owner: {team}\n\n<details><summary>Details</summary>\n\nSession: https://x.test/c/{session}\n\n</details>\n"
+def owner_comment(session: str) -> dict:
+    """The record gatekeeper's `check build` leaves on a PR: `Owner: <the lead's session link>`, one line."""
+    body = f"Owner: https://x.test/c/{session}\n"
     return {"id": 1, "body": body, "user": {"login": "ci-account"}}
 
 
 def test_a_record_naming_an_unknown_session_is_owned_elsewhere_and_raises_no_event(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    """The other team's PR: its Owner record names a session this server does not list. One info line, no relay and
+    """Another agent tree's PR: its Owner record names a session this server does not list. One info line, no relay and
     no manager event, however many polls (#2496)."""
     registry, og = fleet(tmp_path)
     og.snaps["a"] = {
@@ -435,14 +435,11 @@ def test_a_record_naming_an_unknown_session_is_owned_elsewhere_and_raises_no_eve
     }  # even a label would not make it ours
     gh = GitHub(monkeypatch)
     gh.comments.append(comment(100, 12, jobs=(7,)))
-    gh.pr_comments[12] = [owner_comment("beta", "gone-session")]
+    gh.pr_comments[12] = [owner_comment("gone-session")]
     run(og, registry, monkeypatch, 3)
     assert not relays(og, 12) and not acts(og, "o/r#12")
     assert not [e for e in events_of(registry) if e["kind"] == "dequeued"]
-    assert (
-        capsys.readouterr().out.count("o/r#12 left the merge queue: owned elsewhere (Owner: beta)")
-        == 1
-    )
+    assert capsys.readouterr().out.count("o/r#12 left the merge queue: owned elsewhere") == 1
 
 
 def test_a_record_naming_a_known_session_relays_to_that_lead(tmp_path, monkeypatch) -> None:
@@ -451,8 +448,8 @@ def test_a_record_naming_a_known_session_relays_to_that_lead(tmp_path, monkeypat
     gh = GitHub(monkeypatch)
     gh.comments.append(comment(100, 12, jobs=(7,)))
     gh.pr_comments[12] = [
-        owner_comment("alpha", "old"),
-        owner_comment("alpha", "k"),
+        owner_comment("old"),
+        owner_comment("k"),
     ]  # the last record counts
     run(og, registry, monkeypatch, 3)
     assert [s for s, _ in relays(og, 12)] == ["k"]
@@ -461,15 +458,13 @@ def test_a_record_naming_a_known_session_relays_to_that_lead(tmp_path, monkeypat
     assert len([a for c in gh.calls for a in c if "issues/12/comments" in a]) == 1
 
 
-def test_owner_record_reads_a_folded_or_plain_record() -> None:
-    folded = owner_comment("alpha", "s1")
-    plain = {"body": "Owner: alpha\nSession: https://x.test/c/s2\n"}
-    assert omnigent_agent.owner_record([folded]) == ["alpha", "s1"]
-    assert omnigent_agent.owner_record([folded, plain]) == ["alpha", "s2"]
-    assert omnigent_agent.owner_record([{"body": "Assigned: @x"}, {"body": "Owner: alpha\n"}]) == [
-        "alpha",
-        "",
-    ]
+def test_owner_record_reads_the_session_in_the_last_record() -> None:
+    assert omnigent_agent.owner_record([owner_comment("s1")]) == "s1"
+    assert omnigent_agent.owner_record([owner_comment("s1"), owner_comment("s2")]) == "s2"
+    assert (
+        omnigent_agent.owner_record([{"body": "Assigned: @x"}, {"body": "Owner: elsewhere\n"}])
+        == ""
+    )
     assert omnigent_agent.owner_record([{"body": "no record"}]) is None
 
 
