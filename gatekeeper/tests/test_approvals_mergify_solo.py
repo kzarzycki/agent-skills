@@ -17,7 +17,9 @@ from approvals_harness import (
     LOOP,
     add,
     approvals,
+    git_in,
     lands,  # noqa: F401
+    verdict_on,
 )
 from test_approvals_github_queue import labels_of, queue  # noqa: F401
 from test_approvals_mergify_queue import land_statuses, mergify  # noqa: F401
@@ -58,10 +60,18 @@ def test_a_stale_solo_label_comes_off_when_the_selection_narrows(mergify: dict[s
     mergify["opened"](7)
     assert mergify["land"]("7")[0] == 0
     assert "loop:solo" in labels_of(mergify, 7)
-    # the selection is now affected tests, and the PR is handed over again at a new head
+    # the project now names a selector, and the PR is pushed again: the new head is handed over anew
     loop_with(mergify, "Affected tests: ./select.sh")
-    pull = {"headRefOid": "x", "baseRefName": "main"}
-    assert approvals.whole_suite(pull) is None
+    work = mergify["work"]
+    (work / "7.txt").write_text("7 again\n")
+    git_in(work, "commit", "-q", "-am", "PR 7 again")
+    second = git_in(work, "rev-parse", "HEAD").strip()
+    git_in(work, "push", "-q", "origin", f"{second}:refs/heads/pr7", f"{second}:refs/pull/7/head")
+    mergify["pulls"][7].update(headRefOid=second, reviews={"nodes": [verdict_on(second)]})
+    code, lines = mergify["land"]("7")
+    assert code == 0, lines
+    labels = labels_of(mergify, 7)
+    assert "loop:queued" in labels and "loop:solo" not in labels
 
 
 def test_a_build_input_is_the_whole_suite_only_under_full(
