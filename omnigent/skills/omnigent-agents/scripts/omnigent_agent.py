@@ -993,6 +993,26 @@ def lead_delegation(og: Omnigent | None, workspace: str | None, host_id: str = "
         return ""
 
 
+def queue_duty_held() -> bool:
+    """Whether this supervisor's team holds queue duty, read from the base policy of the checkout it runs in by
+    gatekeeper's ``queue_duty_held``: True with no ``queue_duty`` setting (one team, today's behaviour), else only for
+    the team the setting names, so two supervisors that read one queue comment raise its project-wide events once.
+    ponytail (epic #2458 story 7): a gatekeeper that is absent or a policy that can't be read keeps today's behaviour
+    (raise), with one stderr line, since a silent queue is the worse failure."""
+    gk = _load_gatekeeper()
+    if gk is None:
+        return True
+    here = os.getcwd()
+    try:
+        base = gk.default_base(str(gk.toplevel())) or "main"
+        return bool(gk.queue_duty_held(gk.base_policy(base, None)))
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - unreadable here: raise as before
+        print(f"queue duty: its policy is not read: {reason(e)}", file=sys.stderr)
+        return True
+    finally:
+        os.chdir(here)
+
+
 # Every acp:claude-cloud session's preamble, lead or worker, with or without --pr (#706): a fresh
 # clone lacks the host's .git/info/exclude, and a write under .git/ asks the cloud permission
 # policy, which nobody answers.
@@ -10426,8 +10446,12 @@ def supervise_registry(
                 for i in state["intents"]
             ):  # its lead's host is offline: next poll again
                 entry.update(told=False, tries=tries + 1)
-        for eid, kind, line in queue_alarms(repo, memo):
-            say(line, sid, eid, kind)
+        # ponytail (epic #2458 story 7): a flake or a run of rejections is not one PR's fault, so only the team that holds
+        # queue duty raises it; each dequeue above still goes to its own PR's lead
+        alarms = queue_alarms(repo, memo)
+        if alarms and queue_duty_held():
+            for eid, kind, line in alarms:
+                say(line, sid, eid, kind)
 
     def every_session() -> list[dict]:
         """Every session the supervisor sees, archived ones included, each with its labels and parent."""

@@ -1052,6 +1052,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "timeouts": Table(test=str, run=str, optional=("test", "run")),
     # the team this project's PRs belong to (owner_record, #2494); a policy without the section keeps no Owner record
     "team": Table(name=str, optional=("name",)),
+    # the team that holds queue duty (queue_duty_held, #2500): the one whose supervisor raises the merge queue's
+    # failures that are not one PR's fault
+    "queue_duty": Table(team=str),
     # the break-glass land's proof windows (breakglass_settings); every key is optional
     "breakglass": Table(
         max_age=str,
@@ -1332,6 +1335,21 @@ def delegation(loop: str | None) -> str:
     """loop.md's `delegate`: `all` when the delegated approver's go on a head covers a PR into the default branch
     too, else `feature`, today's rule, where only the owner's does."""
     return str(settings(loop).get("delegate", "feature"))
+
+
+def queue_duty_held(loop: str | None) -> bool:
+    """Whether this team holds queue duty: raises the merge queue's failures that are not one PR's fault (a known
+    flake, a run of rejections). True with no `queue_duty` section, so a project with one team changes nothing; else
+    true only when its `team` (the policy's `team.name`, else the account running this) is the section's `team`.
+    ponytail (epic #2458 open question, where the setting lives): a PROPOSAL the owner confirms, kept in this policy
+    as its own `queue_duty` section rather than in the project's loop settings; moving it is a rename of one key.
+    ponytail: a section naming a team while this one has no name (no `team` section, no account) holds no duty, so
+    the duty is never raised twice."""
+    data = settings(loop)
+    if (section := data.get("queue_duty")) is None:
+        return True
+    name = str((data.get("team") or {}).get("name") or viewer() or "").strip()
+    return bool(name) and name == str(section["team"]).strip()
 
 
 def delegate_spec(loop: str | None) -> bool:
