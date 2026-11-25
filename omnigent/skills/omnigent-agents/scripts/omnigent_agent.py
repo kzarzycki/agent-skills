@@ -20,6 +20,7 @@
     python3 scripts/omnigent_agent.py report <session> [<path>] [--registry <file>]
     python3 scripts/omnigent_agent.py watch [<session>...] [--children <parent>]
     python3 scripts/omnigent_agent.py reap [<session>...] [--children <parent>] [--registry <file>] [--force] [--merged [--pr N]]
+    python3 scripts/omnigent_agent.py sweep [--idle-hours H] [--keep-file FILE] [--dry-run]
     python3 scripts/omnigent_agent.py direct <session> [--off] [--registry <file>]
     python3 scripts/omnigent_agent.py supervise <session>=<report>... [--silent-seconds N]
     python3 scripts/omnigent_agent.py supervise --registry <file> [--notify <session>] [--console [--fyi skip|post] [--decisions FILE]] [<session>=<report>...]
@@ -7349,6 +7350,166 @@ def finish_delivered(
     return "\n".join(lines), bad
 
 
+SWEEP_IDLE_SECONDS = (
+    86400  # a session idle this long is swept: archived unless a keep rule holds it
+)
+MANAGER_ROLES = (
+    "cos",
+    "pm",
+)  # a standing manager (the chief of staff, a project's manager): told by the round, never swept
+
+
+def keep_list(path: Path | None) -> set[str]:
+    """The sweep's keep list (agent-hygiene's ``~/.config/agent-hygiene/keep``): a session id or exact title per line,
+    ``#`` starting a comment. A missing file keeps nothing."""
+    if not path or not path.is_file():
+        return set()
+    return {line.split("#", 1)[0].strip() for line in path.read_text().splitlines()} - {""}
+
+
+def owner_talked(og: Omnigent, sid: str) -> bool:
+    """Whether the owner typed a message in ``sid``, anywhere in its history (paged back): a ``role: user`` message with
+    a ``created_by``, not ``is_meta``, with no ``sender_session_id`` and opening as no agent's post (``agent_posted``),
+    the rule ``owner_said`` reads typed words by. A brief, a relay or a supervisor's post is no talk."""
+    after = ""
+    while True:
+        page = og.older(sid, after)
+        data = page.get("data") or []
+        for i in data:
+            if (
+                from_user(i)
+                and i.get("created_by")
+                and not i.get("is_meta")
+                and not i.get("sender_session_id")
+                and not agent_posted(text_of(i))
+            ):
+                return True
+        if not data or not page.get("has_more"):
+            return False
+        after = str(page.get("last_id") or data[-1].get("id"))
+
+
+def hold_of(info: dict) -> str:
+    """Why a session is held open now, else ``""``: running, an open question card, a pending prompt, background work or
+    input pending. A label is no hold here: a stale ``omnigent.keep`` stands only for the card it was set for."""
+    status = str(info.get("status"))
+    if status in RUNNING:
+        return status
+    if cards := cards_of(info):
+        return f"card open: {'; '.join(cards)}"
+    if prompts_of(info):
+        return "blocked on a prompt"
+    if live_tasks(info):
+        return "background work"
+    if info.get("pending_inputs"):
+        return "input pending"
+    return ""
+
+
+def sweep(
+    og: Omnigent,
+    *,
+    idle_seconds: float = SWEEP_IDLE_SECONDS,
+    keep: set[str] | frozenset[str] = frozenset(),
+    now: float | None = None,
+    dry_run: bool = False,
+) -> tuple[list[str], list[dict], bool]:
+    """The daily sweep (#1580): archive each unarchived session idle over ``idle_seconds`` through ``finish_delivered``,
+    the DONE path's finish, so its rules hold here too (a failed, cancelled or errored session is finished; a stale
+    ``omnigent.keep`` label holds nothing; ``omni.keep`` and an open PR hold). Kept besides: this session, a session on
+    ``keep`` (by id or title), a standing manager (``MANAGER_ROLES``) and anything ``hold_of`` names. A session the owner
+    talked to (``owner_talked``) is never archived here: it is returned for the one owner card (``sweep_card``).
+
+    Sub-agents go first, and the sessions spared (keep list, owner-talked) are never finished as a parent's children.
+    Returns a line per idle session, the owner-talked ones (``{"id", "title"}``) and whether a read or finish failed."""
+    now = time.time() if now is None else now
+    me = own_id()
+    rows = [
+        r
+        for r in og.listing()
+        if not r.get("archived")
+        and str(r.get("id")) != me
+        and 0 < float(r.get("updated_at") or 0) <= now - idle_seconds
+    ]
+    rows.sort(key=lambda r: not r.get("parent_session_id"))  # children before their parents
+    lines: list[str] = []
+    talked: list[dict] = []
+    spared: set[str] = set()
+    failed = False
+    for row in rows:
+        sid, title = str(row["id"]), str(row.get("title") or "")
+        name = f"{sid} {title}"
+        if sid in keep or (title and title in keep):
+            spared.add(sid)
+            lines.append(f"{name}: kept (keep list)")
+            continue
+        try:
+            info = og.info(sid)
+        except Fail as e:
+            failed = True
+            lines.append(f"{name}: unreadable: {e}")
+            continue
+        if info.get("archived"):  # a parent's finish took it in this sweep
+            continue
+        if (info.get("labels") or {}).get("omni.role") in MANAGER_ROLES:
+            lines.append(f"{name}: kept (a standing manager)")
+            continue
+        if why := hold_of(info):
+            lines.append(f"{name}: kept ({why})")
+            continue
+        if owner_talked(og, sid):
+            spared.add(sid)
+            talked.append({"id": sid, "title": title})
+            lines.append(f"{name}: kept (the owner talked to it: on the owner card)")
+            continue
+        if dry_run:
+            hours = (now - float(row["updated_at"])) / 3600
+            lines.append(f"{name}: would archive (idle {hours:.0f} h)")
+            continue
+        line, bad = finish_delivered(og, sid, settled=False, seen=set(spared))
+        lines.append(line)
+        failed |= bad
+    return lines, talked, failed
+
+
+def sweep_card(base: str, talked: list[dict]) -> dict | None:
+    """The one owner card for the sessions the owner talked to, as ``sys_ask_user_question``'s input: one multiSelect
+    question listing them as links, "Archive all" first and recommended, then a "Keep" option per session for the
+    exceptions. None when there are none. Whoever posts it archives the rest with ``reap <id>...``."""
+    if not talked:
+        return None
+
+    def link(t: dict) -> str:
+        return f"[{t['title'] or t['id']}]({base}/c/{t['id']})"
+
+    listed = "\n".join(f"- {link(t)}" for t in talked)
+    return {
+        "questions": [
+            {
+                "header": "Idle sessions",
+                "multiSelect": True,
+                "question": (
+                    f"The daily sweep left {len(talked)} session(s) idle over a day open, since you talked to each:\n\n"
+                    f"{listed}\n\nArchive them all, or pick the ones to keep?"
+                ),
+                "options": [
+                    {
+                        "label": "Archive all (Recommended)",
+                        "description": "Archive every session listed; each transcript stays, and an unarchive brings one back.",
+                    }
+                ]
+                + [
+                    {
+                        "label": f"Keep {t['title'] or t['id']} ({t['id']})",
+                        "description": f"Keep {link(t)} open; the others are archived.",
+                    }
+                    for t in talked
+                ],
+            }
+        ]
+    }
+
+
 def reap(
     og: Omnigent,
     sessions: list[str],
@@ -11900,6 +12061,15 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--pr", type=pr_ref, help="with --merged, only the workers of this PR (N or owner/repo#N)"
     )
+    p = sub.add_parser(
+        "sweep",
+        description="archive the sessions idle over a day that no keep rule holds; print the owner card for those the owner talked to",
+    )
+    p.add_argument("--idle-hours", type=float, default=SWEEP_IDLE_SECONDS / 3600)
+    p.add_argument("--keep-file", type=Path, help="the keep list: a session id or title per line")
+    p.add_argument(
+        "--dry-run", action="store_true", help="say what would be archived, archive nothing"
+    )
     p = sub.add_parser("supervise")
     p.add_argument(
         "owed", nargs="*", metavar="SESSION=REPORT", help="a session and the report it owes"
@@ -12426,6 +12596,17 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 og, args.sessions, args.children, args.registry, args.force, args.merged, args.pr
             )
             print("\n".join(lines))
+            return 1 if failed else 0
+        if args.cmd == "sweep":
+            lines, talked, failed = sweep(
+                og,
+                idle_seconds=args.idle_hours * 3600,
+                keep=keep_list(args.keep_file),
+                dry_run=args.dry_run,
+            )
+            print("\n".join(lines))
+            if card := sweep_card(og.base, talked):
+                print("CARD: " + json.dumps(card))
             return 1 if failed else 0
         if args.cmd == "supervise":
             if args.registry:
