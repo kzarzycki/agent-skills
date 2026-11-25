@@ -1,5 +1,5 @@
-"""`record waiting` leaves a `Waiting on:` record, with a deadline, on a PR that waits on another team's go, and clears
-it; the supervisor of the owning team reads it (#2501)."""
+"""`record waiting` leaves a `Waiting on:` record, with a deadline, on a PR that waits on another agent tree's go, and clears
+it; the supervisor of the owning agent tree reads it (#2501)."""
 
 from __future__ import annotations
 
@@ -29,9 +29,9 @@ def deadline_of(body: str) -> datetime:
 
 
 def test_a_wait_is_recorded_with_the_default_deadline(monkeypatch, posted) -> None:
-    assert record(monkeypatch, argv=("--on", "the other team's go")) == 0
+    assert record(monkeypatch, argv=("--on", "the other agent tree's go")) == 0
     [(number, body)] = posted
-    assert number == 7 and body.startswith("Waiting on: the other team's go\n")
+    assert number == 7 and body.startswith("Waiting on: the other agent tree's go\n")
     span = deadline_of(body) - datetime.now(UTC)
     assert timedelta(hours=23, minutes=58) < span <= timedelta(hours=24)
 

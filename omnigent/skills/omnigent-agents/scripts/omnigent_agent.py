@@ -9121,7 +9121,7 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return (
             "rule",
             "tell",
-            "its PR waits on another team past its deadline: ask for the go, or clear the record",
+            "its PR waits on another agent tree past its deadline: ask for the go, or clear the record",
         )
     if kind == "queue-rejects":
         return (
@@ -10555,7 +10555,7 @@ def supervise_registry(
         """Raise, once, each ``Waiting on:`` record of ``repo``'s PRs (``wait_note``) whose deadline has passed: the
         PR's comments are read for its newest record and its ``Owner:`` record, and if no clearing record has come
         and the owner is a session this server lists, one ``wait-due`` event goes to it (the lead found by label when
-        no record names one, ``pr_lead``); a PR owned by a session this server does not list is the other team's, so
+        no record names one, ``pr_lead``); a PR owned by a session this server does not list is the other agent tree's, so
         its supervisor raises it and this prints one line. A rate limit or failed read keeps the record for the next
         poll. ponytail (#2501): only a PR with an owner is raised, on this server's own session, never the manager."""
         waits = memo.get("waits") or {}
@@ -10588,11 +10588,11 @@ def supervise_registry(
                         f"{repo}: sessions not read, waits stay: {reason(e)}",
                     )
                     return
-            team, owner = owner_record(comments) or ["", ""]
+            owner = owner_record(comments) or ""
             if owner and not any(str(s.get("id")) == owner for s in sessions):
                 wait["told"] = True
                 print(
-                    stamp(f"{repo}#{pr} waits past its deadline: owned elsewhere (Owner: {team})"),
+                    stamp(f"{repo}#{pr} waits past its deadline: owned elsewhere"),
                     flush=True,
                 )
                 continue

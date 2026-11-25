@@ -1,5 +1,5 @@
-"""A PR waiting on another team's go carries a ``Waiting on:`` record with a deadline; past it, the supervisor of the
-team that owns the PR raises one event to its owner (#2501).
+"""A PR waiting on another agent tree's go carries a ``Waiting on:`` record with a deadline; past it, the supervisor of the
+agent tree that owns the PR raises one event to its owner (#2501).
 
 The seam is the one of the queue tests: ``gh`` faked to serve repo o/r's issue comments and a PR's own comments, the
 Omnigent server faked as a fleet of sessions."""
@@ -12,7 +12,9 @@ from test_omnigent_queue_rejects import GitHub, acts, fleet, iso, owner_comment,
 HOUR = 3600.0
 
 
-def waiting_comment(cid: int, pr: int, due_in: float, what: str = "the other team's go") -> dict:
+def waiting_comment(
+    cid: int, pr: int, due_in: float, what: str = "the other agent tree's go"
+) -> dict:
     """The record gatekeeper's ``record waiting`` writes: ``Waiting on: <what>``, its deadline folded under it."""
     deadline = iso(-due_in).replace("+00:00", "Z")[:19] + "Z"
     body = f"Waiting on: {what}\n\n<details><summary>Details</summary>\n\nDeadline: {deadline}\n\n</details>\n"
@@ -42,10 +44,10 @@ def test_a_record_past_its_deadline_raises_one_event_to_its_owner(tmp_path, monk
     gh = GitHub(monkeypatch)
     record = waiting_comment(5, 12, due_in=-2 * HOUR)
     gh.comments.append(record)
-    gh.pr_comments[12] = [owner_comment("alpha", "a"), record]
+    gh.pr_comments[12] = [owner_comment("a"), record]
     run(og, registry, monkeypatch, 5)
     [text] = raised(og)
-    assert "o/r#12 has waited on the other team's go past its deadline" in text
+    assert "o/r#12 has waited on the other agent tree's go past its deadline" in text
     assert [e["session"] for e in events_of(registry) if e["kind"] == "wait-due"] == ["a"]
 
 
@@ -58,16 +60,16 @@ def test_a_cleared_record_raises_nothing(tmp_path, monkeypatch) -> None:
         waiting_comment(5, 12, due_in=-2 * HOUR),
         clearing_comment(6, 12, due_in=-2 * HOUR),
     ]
-    gh.pr_comments[12] = [owner_comment("alpha", "a"), *gh.comments]
+    gh.pr_comments[12] = [owner_comment("a"), *gh.comments]
     gh.comments.append(waiting_comment(7, 13, due_in=-2 * HOUR))
     gh.pr_comments[13] = [
-        owner_comment("alpha", "a"),
+        owner_comment("a"),
         waiting_comment(7, 13, due_in=-2 * HOUR),
         clearing_comment(8, 13, due_in=-2 * HOUR),
     ]
     # a control that is still waiting, so the test fails where nothing is ever raised
     gh.comments.append(waiting_comment(9, 14, due_in=-2 * HOUR))
-    gh.pr_comments[14] = [owner_comment("alpha", "a"), gh.comments[-1]]
+    gh.pr_comments[14] = [owner_comment("a"), gh.comments[-1]]
     run(og, registry, monkeypatch, 4)
     [text] = raised(og)
     assert "o/r#14 has waited" in text
@@ -78,31 +80,26 @@ def test_a_record_not_yet_due_raises_nothing(tmp_path, monkeypatch) -> None:
     registry, og = fleet(tmp_path)
     gh = GitHub(monkeypatch)
     gh.comments.append(waiting_comment(5, 12, due_in=HOUR))
-    gh.pr_comments[12] = [owner_comment("alpha", "a"), gh.comments[0]]
+    gh.pr_comments[12] = [owner_comment("a"), gh.comments[0]]
     run(og, registry, monkeypatch, 3)
     assert not raised(og) and not [c for c in gh.calls if "issues/12/comments" in " ".join(c)]
 
 
-def test_the_other_teams_pr_raises_no_event_here(tmp_path, monkeypatch, capsys) -> None:
+def test_the_other_agent_trees_pr_raises_no_event_here(tmp_path, monkeypatch, capsys) -> None:
     """Its Owner record names a session this server does not list: its own supervisor raises it, this one says so once."""
     registry, og = fleet(tmp_path)
     gh = GitHub(monkeypatch)
     gh.comments.append(waiting_comment(5, 12, due_in=-2 * HOUR))
-    gh.pr_comments[12] = [owner_comment("beta", "gone-session"), gh.comments[0]]
+    gh.pr_comments[12] = [owner_comment("gone-session"), gh.comments[0]]
     run(og, registry, monkeypatch, 4)
     assert not raised(og) and not acts(og, "o/r#12")
-    assert (
-        capsys.readouterr().out.count(
-            "o/r#12 waits past its deadline: owned elsewhere (Owner: beta)"
-        )
-        == 1
-    )
+    assert capsys.readouterr().out.count("o/r#12 waits past its deadline: owned elsewhere") == 1
 
 
 def test_a_project_with_no_waiting_record_reads_and_raises_nothing_more(
     tmp_path, monkeypatch
 ) -> None:
-    """One team, no records: the supervisor makes no call about PR comments and raises no event."""
+    """One agent tree, no records: the supervisor makes no call about PR comments and raises no event."""
     registry, og = fleet(tmp_path)
     gh = GitHub(monkeypatch)
     run(og, registry, monkeypatch, 3)
@@ -118,7 +115,7 @@ def test_the_event_names_no_session_host_or_link(tmp_path, monkeypatch) -> None:
     registry, og = fleet(tmp_path)
     gh = GitHub(monkeypatch)
     gh.comments.append(waiting_comment(5, 12, due_in=-2 * HOUR))
-    gh.pr_comments[12] = [owner_comment("alpha", "a"), gh.comments[0]]
+    gh.pr_comments[12] = [owner_comment("a"), gh.comments[0]]
     run(og, registry, monkeypatch, 2)
     [text] = raised(og)
     assert "/c/" not in text and "http" not in text

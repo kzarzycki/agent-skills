@@ -43,7 +43,7 @@ unchanged. Its own names for three of them, and one verb more:
     uv run scripts/gatekeeper.py record approval <spec|plan|merge> <n> --by ...  # `approve`, the same arguments
     uv run scripts/gatekeeper.py record verdict <pr> <report>   # `verdict`
     uv run scripts/gatekeeper.py record checks [<pr>] [--record|--run|--status <head>|--head-proof]  # `local-ci`
-    uv run scripts/gatekeeper.py record waiting <pr> --on <what> [--within 4h|2d]  # a PR waiting on another team's go: `Waiting on:` and its `Deadline:` (default 24h); `--clear` ends it (#2501)
+    uv run scripts/gatekeeper.py record waiting <pr> --on <what> [--within 4h|2d]  # a PR waiting on another agent tree's go: `Waiting on:` and its `Deadline:` (default 24h); `--clear` ends it (#2501)
     uv run scripts/gatekeeper.py report --json <report>   # the report's facts as JSON: verifier, head, verdict, ...
 
 The policy reaches the tracker, the forge and the evidence only through their ports (PORTS), each run by the adapter
@@ -2599,17 +2599,17 @@ def owner_record(pull: dict[str, Any]) -> list[str]:
     return []
 
 
-# the first line of the record a PR waiting on another team's go carries: `Waiting on: <what>`, its `Deadline:` (ISO
+# the first line of the record a PR waiting on another agent tree's go carries: `Waiting on: <what>`, its `Deadline:` (ISO
 # 8601, UTC) folded under it; the clearing record repeats the line and adds `Cleared:`. The last one on the PR decides.
 WAIT_RECORD = "Waiting on: "
-# how long a wait may last before the waiting team's supervisor raises it to the PR's owner, when `--within` is absent
+# how long a wait may last before the waiting agent tree's supervisor raises it to the PR's owner, when `--within` is absent
 WAIT_SPAN = "24h"
 
 
 def wait_on(number: int, what: str | None, within: str | None, clear: bool) -> int:
     """`record waiting <pr> --on <what> [--within <span>]` posts the PR's `Waiting on:` record with its deadline (now
     plus the span, default WAIT_SPAN); `--clear` posts the one that ends the wait, naming what the PR last waited on.
-    The omnigent-agents supervisor of the team that owns the PR (its `Owner:` record) raises one event to that owner
+    The omnigent-agents supervisor of the agent tree that owns the PR (its `Owner:` record) raises one event to that owner
     once the deadline passes with no clearing record. Refused: no `--on` (or `--clear`), both, a span it cannot read, a
     `--clear` with nothing to clear. ponytail (#2501): the record is written on request, never by `check build`, and
     the deadline is the writer's span, not a policy setting: the epic names nothing to configure."""
@@ -5576,7 +5576,7 @@ github = sibling("github_adapter")
 # every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
 folding = sibling("folding")
 fold, machine = folding.fold, folding.machine
-# the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
+# the adapters a policy's `adapters` section may name, by name; another agent tree's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
 # each port's adapter while main() runs, read from the policy at the first call (port); GitHub's outside main()
 using: dict[str, Any] | None = None
@@ -13868,7 +13868,7 @@ def main(argv: list[str]) -> int:
     waiting_on = records.add_parser("waiting")
     waiting_on.add_argument("pr", type=int)
     waiting_on.add_argument(
-        "--on", metavar="WHAT", help="what the PR waits on, e.g. another team's go"
+        "--on", metavar="WHAT", help="what the PR waits on, e.g. another agent tree's go"
     )
     waiting_on.add_argument(
         "--within", metavar="SPAN", help=f"the deadline, as `4h`, `2d`: default {WAIT_SPAN}"
