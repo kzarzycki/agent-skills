@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -11,8 +12,10 @@ from approvals_harness import (  # noqa: F401
     TREE,
     approvals,
     gating,
+    git_in,
     judged_pr,
     judging,
+    loop_md,
 )
 from test_approvals import gatekeeper_md, github, reviewing  # noqa: F401
 from test_approvals_rerun import ASKED, GATES, check_merge, forge, policy  # noqa: F401
@@ -124,3 +127,62 @@ def test_check_setup_warns_for_each_level_with_rerun_on(
     (repo / POLICY).write_text(gatekeeper_md(off))
     code, out = run_setup(capsys)
     assert code == 0 and "can't come" not in out, out
+
+
+ON = loop_md("levels:\n  high:\n    rerun: true\n")
+
+
+def origin_with(tmp_path: Path, files: dict[str, str]) -> Path:
+    """A bare origin whose main holds `files`."""
+    seed = tmp_path / "seed"
+    seed.mkdir(parents=True)
+    git_in(seed, "init", "-q", "-b", "main")
+    for name, text in files.items():
+        write_in(seed, name, text)
+    git_in(seed, "add", "-A")
+    git_in(seed, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "seed")
+    bare = tmp_path / "origin.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(seed), str(bare)], check=True)
+    return bare
+
+
+def write_in(root: Path, name: str, text: str) -> None:
+    (root / name).parent.mkdir(parents=True, exist_ok=True)
+    (root / name).write_text(text)
+
+
+def test_a_clone_with_no_working_tree_reads_the_workflows_of_the_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The policy is read from origin's base, so the scan reads the base's files too: a `--no-checkout` clone, where
+    land and check merge run, has no files of its own and must not read the workflow as missing."""
+    bare = origin_with(tmp_path, {RERUN_FLOW: DIRECT, "mise.toml": TASK})
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--no-checkout", str(bare), str(clone)], check=True)
+    monkeypatch.chdir(clone)
+    tree = approvals.policy_tree(clone)
+    assert tree is not None
+    assert approvals.rerun_workflow_gap(clone, ON, "high", tree) is None
+    other = origin_with(tmp_path / "other", {".github/workflows/ci.yml": OTHER_FLOW})
+    bare_clone = tmp_path / "other-clone"
+    subprocess.run(["git", "clone", "-q", "--no-checkout", str(other), str(bare_clone)], check=True)
+    monkeypatch.chdir(bare_clone)
+    line = approvals.rerun_workflow_gap(bare_clone, ON, "high", approvals.policy_tree(bare_clone))
+    assert line is not None and "can't come" in line
+
+
+def test_a_checkout_behind_its_base_reads_the_workflow_the_base_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a working tree the scan reads origin/<base>, as the policy does, not whatever is checked out."""
+    bare = origin_with(tmp_path, {RERUN_FLOW: DIRECT})
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(clone)], check=True)
+    (clone / RERUN_FLOW).unlink()  # the checkout lacks what the base has
+    monkeypatch.chdir(clone)
+    tree = approvals.policy_tree(clone)
+    assert tree is not None
+    assert approvals.rerun_workflow_gap(clone, ON, "high", tree) is None
+    assert (
+        approvals.rerun_workflow_gap(clone, ON, "high") is not None
+    )  # the working tree's own scan (check setup)

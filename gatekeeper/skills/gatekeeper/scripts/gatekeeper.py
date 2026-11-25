@@ -2073,7 +2073,7 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
         if found
         else f"origin holds no rerun record on tree {held}"
     )
-    if missing := rerun_workflow_gap(toplevel(), loop, level):
+    if missing := rerun_workflow_gap(toplevel(), loop, level, policy_tree(toplevel())):
         return f"{asked} {said}; {missing}"
     return (
         f"{asked} {said}. Where the repo has CI, a CI run on the head runs `local-ci --record --rerun` and pushes its"
@@ -5637,6 +5637,16 @@ def shown_at(root: Path, ref: str, path: Path) -> bytes | None:
     return found.stdout if found.returncode == 0 else None
 
 
+def policy_tree(root: Path) -> str | None:
+    """The ref whose files the policy is read from (policy_file): origin's default branch in a clone with no working
+    tree (policy_ref), else `origin/<base>` of the PR the run acts on (policy_from); None where the policy is the
+    working tree's, which has no such ref."""
+    if (ref := policy_ref(root)) is not None:
+        return ref
+    found = policy_base(str(root), POLICY_BASE.get())
+    return found[1] if found else None
+
+
 def policy_bytes(root: Path, path: Path) -> bytes | None:
     """A policy file's bytes as this run reads it (policy_ref): the working tree's, else origin's default branch's."""
     if (ref := policy_ref(root)) is not None:
@@ -6016,8 +6026,38 @@ MISE_CONFIGS = (
 MISE_TASK_DIRS = ("mise-tasks", ".mise-tasks", ".mise/tasks", ".config/mise/tasks", "mise/tasks")
 
 
-def mise_files(root: Path) -> list[Path]:
-    """The mise configs and file tasks of the repo, in every place mise reads them."""
+def tree_names(root: Path, ref: str) -> list[str]:
+    """Every file path `ref` holds, relative to the repo root; none where git can't list it."""
+    found = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return found.stdout.splitlines() if found.returncode == 0 else []
+
+
+def text_at(root: Path, ref: str | None, path: Path) -> str:
+    """`path`'s text in the working tree, or at `ref` (empty where the ref holds no such file)."""
+    if ref is None:
+        return read(path)
+    return (shown_at(root, ref, path.relative_to(root)) or b"").decode(errors="replace")
+
+
+def mise_files(root: Path, ref: str | None = None) -> list[Path]:
+    """The mise configs and file tasks of the repo, in every place mise reads them: the working tree's, or those `ref`
+    holds."""
+    if ref is not None:
+        names = tree_names(root, ref)
+        return sorted(
+            root / name
+            for name in names
+            if any(
+                fnmatch.fnmatchcase(name, pattern) and name.count("/") == pattern.count("/")
+                for pattern in MISE_CONFIGS
+            )
+            or any(name.startswith(f"{folder}/") for folder in MISE_TASK_DIRS)
+        )
     configs = {path for pattern in MISE_CONFIGS for path in root.glob(pattern) if path.is_file()}
     tasks = {path for name in MISE_TASK_DIRS for path in (root / name).rglob("*") if path.is_file()}
     return sorted(configs | tasks)
@@ -6035,17 +6075,17 @@ def runs_task(text: str, task: str) -> bool:
     return bool(re.search(rf"mise run\b[^\n;&|]*[ '\"]{re.escape(task)}\b", text))
 
 
-def task_bodies(root: Path) -> dict[str, str]:
+def task_bodies(root: Path, ref: str | None = None) -> dict[str, str]:
     """Each mise task's command text by name: `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named
     by their path, `/` as `:`). Needs tomllib (Python 3.11+), imported here so the other commands still start on the
     pack's 3.9."""
     import tomllib
 
     bodies: dict[str, str] = {}
-    for path in mise_files(root):
+    for path in mise_files(root, ref):
         if path.suffix == ".toml":
             try:
-                tasks = tomllib.loads(read(path)).get("tasks") or {}
+                tasks = tomllib.loads(text_at(root, ref, path)).get("tasks") or {}
             except tomllib.TOMLDecodeError:
                 continue
             for task, body in tasks.items():
@@ -6053,7 +6093,7 @@ def task_bodies(root: Path) -> dict[str, str]:
         else:
             folder = next(d for d in MISE_TASK_DIRS if (root / d) in path.parents)
             task = ":".join(path.relative_to(root / folder).parts)
-            bodies[task] = bodies.get(task, "") + read(path)
+            bodies[task] = bodies.get(task, "") + text_at(root, ref, path)
     return bodies
 
 
@@ -6077,21 +6117,35 @@ def pack_tasks(root: Path) -> set[str]:
 RERUN_STEP = re.compile(r"\blocal-ci\b[^\n;&|]*--rerun\b")
 
 
-def rerun_workflow_gap(root: Path, loop: str | None, level: str) -> str | None:
+def rerun_workflow_gap(
+    root: Path, loop: str | None, level: str, ref: str | None = None
+) -> str | None:
     """A line, or None: `levels.<level>.rerun` is on, the repo has CI (`loop.ci` is not false), and no workflow under
     .github/workflows runs `local-ci --record --rerun`, in a step or through a mise task a step runs, so the rerun
     record `rerun_gap` waits on can never come: a setup problem, not a wait. ponytail: a text scan of the workflows and
     of mise's tasks, as setup_problems reads them (#2473's open question); where mise's TOML can't be read (Python
-    before 3.11) the tasks are not scanned, so a rerun run only through a task reads as present, never as missing."""
+    before 3.11) the tasks are not scanned, so a rerun run only through a task reads as present, never as missing.
+    With `ref` the files are read from that ref, as the policy is (policy_tree), so a clone with no working tree sees
+    the base's workflows; a ref git can't list reads as present too, since nothing then shows one missing."""
     if no_ci(loop) or not levels(loop)[level].get("rerun"):
         return None
+    flows = sorted((root / ".github" / "workflows").glob("*.y*ml")) if ref is None else []
+    if ref is not None:
+        names = tree_names(root, ref)
+        if not names:
+            return None
+        flows = [
+            root / name
+            for name in names
+            if fnmatch.fnmatchcase(name, ".github/workflows/*.y*ml") and name.count("/") == 2
+        ]
     try:
-        tasks = tasks_matching(task_bodies(root), lambda body: bool(RERUN_STEP.search(body)))
+        tasks = tasks_matching(task_bodies(root, ref), lambda body: bool(RERUN_STEP.search(body)))
     except ImportError:
         return None
-    for path in (root / ".github" / "workflows").glob("*.y*ml"):
+    for path in flows:
         try:
-            jobs = (yaml.safe_load(read(path)) or {}).get("jobs") or {}
+            jobs = (yaml.safe_load(text_at(root, ref, path)) or {}).get("jobs") or {}
         except (yaml.YAMLError, AttributeError):
             continue
         for body in jobs.values():
