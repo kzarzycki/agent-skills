@@ -32,8 +32,6 @@ budget:
   weekly_limit: 100
   until: 2030-01-31
 parked: [{item: repo-b-cleanup, until: 2030-01-31}]
-lead:
-  context_limit: 200000
 memory: [bank-root, bank-repo-a]
 permissions:
   coordinator_mode: acceptEdits
@@ -46,7 +44,3 @@ decisions:
 hygiene:
   repos: [owner-a/repo-a, owner-a/repo-b]
   our_authors: [author-a]
-  board_max_kb: 6
-bridge:
-  peer_server: https://peer.example.invalid
-  peer_session: session-cos-2
