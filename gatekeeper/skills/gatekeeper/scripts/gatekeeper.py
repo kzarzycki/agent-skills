@@ -4149,34 +4149,44 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
     return found
 
 
+def pipeline_down(run: int) -> bool:
+    """Whether a job of Actions run `run` shows CI down: cancelled, timed out, never started, or with no steps, so no test
+    ran (breakglass_verify's `infra`, and red_base's refusal)."""
+    broken = {"cancelled", "timed_out", "startup_failure"}
+    return any(job.get("conclusion") in broken or not job.get("steps") for job in run_jobs(run))
+
+
 def red_base(base: str, loop: str | None = None) -> tuple[list[str], list[str]]:
     """What `base`'s latest push run, the checks on its tip, tells a lander (#2565): (advice, refusals). A required check
     that failed is advice, with the run's link, since the lander can stop or fix before stacking more onto a red base and
-    a flaky test must not block every landing. It is a refusal when that run failed before any test ran: it published
-    no `breakglass.artifact` of failed test ids (run_artifact), so the pipeline is broken, which a lander can't read
-    from a red test. A forge read that fails is one advice line saying so, never silence and never a refusal."""
+    a flaky test must not block every landing. It is a refusal when the run's own jobs show the pipeline down, as
+    breakglass_verify reads them: a job cancelled, timed out or never started, or one with no steps, so no test ran. A
+    forge read that fails is one advice line saying so, never silence and never a refusal, and it leaves the refusals
+    already found."""
+    advice: list[str] = []
+    refusals: list[str] = []
     try:
         checks = commit_checks(base)
         wanted = required_checks(base) - OWN
-        artifact = breakglass_settings(loop)["artifact"]
-        advice: list[str] = []
-        refusals: list[str] = []
-        for name, run in sorted(checks.items()):
-            if run["conclusion"] not in RED or name in OWN or (wanted and name not in wanted):
-                continue
-            where = f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}"
-            number = re.search(r"/actions/runs/(\d+)", run["url"])
-            if number and run_artifact(int(number[1]), artifact) is None:
-                refusals.append(
-                    f"{where}; it failed before any test ran (no `{artifact}` artifact)"
-                )
-            else:
-                advice.append(f"{where}; fix it or stop before landing more onto it")
-        return advice, refusals
     except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
         return [
             f"{base}'s latest push run could not be read from the forge ({err}): check it before landing"
         ], []
+    for name, run in sorted(checks.items()):
+        if run["conclusion"] not in RED or name in OWN or (wanted and name not in wanted):
+            continue
+        where = f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}"
+        number = re.search(r"/actions/runs/(\d+)", run["url"])
+        try:
+            down = number is not None and pipeline_down(int(number[1]))
+        except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+            advice.append(f"{where}; its jobs could not be read ({err})")
+            continue
+        if down:
+            refusals.append(f"{where}; its jobs show the pipeline down, so no test ran")
+        else:
+            advice.append(f"{where}; fix it or stop before landing more onto it")
+    return advice, refusals
 
 
 def unforced(pull: dict[str, Any]) -> str | None:
@@ -4981,11 +4991,7 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
                 f" ({', '.join(sorted(required))})"
             )
         got = tests(failed["id"])
-        broken = {"cancelled", "timed_out", "startup_failure"}
-        down = any(
-            job.get("conclusion") in broken or not job.get("steps")
-            for job in run_jobs(failed["id"])
-        )
+        down = pipeline_down(failed["id"])
         if got is None and not down:
             why.append(
                 f"{where}: run {failed['id']} published no `{cfg['artifact']}` artifact and no job shows CI down:"

@@ -24,8 +24,12 @@ def checks(conclusion: str) -> dict[str, dict[str, str]]:
 def forge(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals, "red_base", REAL)
     monkeypatch.setattr(approvals, "required_checks", lambda base: {"test", "loop:approvals"})
-    # the run published its failed test ids unless a test says otherwise
-    monkeypatch.setattr(approvals, "run_artifact", lambda run, name: {"failed": ["t::x"]})
+    # the run's job ran its steps unless a test says otherwise
+    monkeypatch.setattr(
+        approvals,
+        "run_jobs",
+        lambda run: [{"conclusion": "failure", "steps": [{"name": "pytest"}]}],
+    )
 
 
 def test_a_red_latest_push_run_is_named_with_its_link(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -44,9 +48,11 @@ def test_a_run_that_failed_before_any_test_ran_is_a_refusal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(approvals, "commit_checks", lambda ref: checks("FAILURE"))
-    monkeypatch.setattr(approvals, "run_artifact", lambda run, name: None)
+    monkeypatch.setattr(
+        approvals, "run_jobs", lambda run: [{"conclusion": "cancelled", "steps": []}]
+    )
     advice, refusals = approvals.red_base("main")
-    assert advice == [] and "before any test ran" in refusals[0]
+    assert advice == [] and "no test ran" in refusals[0]
 
 
 def test_an_unreadable_forge_is_said_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,9 +87,11 @@ def test_check_merge_refuses_a_base_that_failed_before_any_test(
 ) -> None:
     merge_ready(monkeypatch)
     monkeypatch.setattr(approvals, "commit_checks", lambda ref: checks("FAILURE"))
-    monkeypatch.setattr(approvals, "run_artifact", lambda run, name: None)
+    monkeypatch.setattr(
+        approvals, "run_jobs", lambda run: [{"conclusion": "cancelled", "steps": []}]
+    )
     assert approvals.main(["check", "merge", "7"]) == 1
-    assert "before any test ran" in capsys.readouterr().out
+    assert "no test ran" in capsys.readouterr().out
 
 
 def test_land_prints_a_red_base_and_refuses_one_that_failed_before_any_test(
@@ -98,6 +106,28 @@ def test_land_prints_a_red_base_and_refuses_one_that_failed_before_any_test(
     with pytest.raises(RuntimeError, match="past the red-base read"):
         approvals.landing_here([], "main", 0, TRACKER, LOOP, rules={"test"}, ready=False)
     assert "main is red" in capsys.readouterr().out
-    monkeypatch.setattr(approvals, "run_artifact", lambda run, name: None)
-    with pytest.raises(approvals.Refused, match="before any test ran"):
+    monkeypatch.setattr(
+        approvals, "run_jobs", lambda run: [{"conclusion": "cancelled", "steps": []}]
+    )
+    with pytest.raises(approvals.Refused, match="no test ran"):
         approvals.landing_here([], "main", 0, TRACKER, LOOP, rules={"test"}, ready=False)
+
+
+def test_a_failed_jobs_read_keeps_the_refusals_already_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    both = {
+        "lint": {"conclusion": "FAILURE", "url": "https://github.com/o/r/actions/runs/8/job/1"},
+        "test": {"conclusion": "FAILURE", "url": URL},
+    }
+    monkeypatch.setattr(approvals, "commit_checks", lambda ref: both)
+    monkeypatch.setattr(approvals, "required_checks", lambda base: set())
+
+    def jobs(run: int) -> list[dict[str, object]]:
+        if run == 9:
+            raise subprocess.CalledProcessError(1, "gh")
+        return [{"conclusion": "cancelled", "steps": []}]
+
+    monkeypatch.setattr(approvals, "run_jobs", jobs)
+    advice, refusals = approvals.red_base("main")
+    assert "no test ran" in refusals[0] and "could not be read" in advice[0]
