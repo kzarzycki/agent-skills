@@ -7360,7 +7360,7 @@ MANAGER_ROLES = (
 
 
 def keep_list(path: Path | None) -> set[str]:
-    """The sweep's keep list (agent-hygiene's ``~/.config/agent-hygiene/keep``): a session id or exact title per line,
+    """The sweep's keep list (the file a caller names with ``--keep-file``): a session id or exact title per line,
     ``#`` starting a comment; an entry matches a whole id or a whole title, never a prefix. A missing file keeps nothing.
     A path that is there but can't be read as a file (a directory, no permission, not UTF-8) is a ``Fail``: the sweep
     then archives nothing, since it can't know what the list keeps."""
