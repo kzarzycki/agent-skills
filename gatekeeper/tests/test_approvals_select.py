@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,10 @@ SELECTOR = """import pathlib, sys
 """
 
 # a `checks` command: it logs its name, and exits with the code its second argument gives
-CHECK = """import pathlib, sys
+CHECK = """import pathlib, sys, time
 (pathlib.Path(__file__).parent / "ran.log").open("a").write(sys.argv[1] + "\\n")
+if sys.argv[1] == "hang":
+    time.sleep(30)
 sys.exit(int(sys.argv[2]) if len(sys.argv) > 2 else 0)
 """
 
@@ -112,6 +115,32 @@ def test_a_pack_bump_runs_only_its_check(worker: dict[str, Any]) -> None:
     )
     assert approvals.main(["affected-tests"]) == 0
     assert worker["ran"]() == ["agent-sync"]
+
+
+HANGING = """select:
+  build_inputs:
+    - src/*
+  checks:
+    - paths: [apm.yml]
+      command: {check} hang
+"""
+
+
+def test_a_check_still_running_at_timeouts_run_is_stopped_and_exits_124(
+    worker: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    """#2346: a `select.checks` command is held to `timeouts.run` like the `Affected tests:` run: killed with its
+    process group, exit 124, one line naming the budget."""
+    worker["start"](HANGING)
+    worker["commit"]("apm.yml")
+    monkeypatch.setitem(approvals.TIMEOUTS, "run", "1s")
+    started = time.monotonic()
+    assert approvals.main(["affected-tests"]) == approvals.TIMED_OUT == 124
+    assert time.monotonic() - started < 20
+    lines = [line for line in capsys.readouterr().err.splitlines() if "timed out" in line]
+    assert len(lines) == 1 and "`timeouts.run` (1 second)" in lines[0] and "hang" in lines[0]
 
 
 def test_a_failing_check_fails_the_run(worker: dict[str, Any]) -> None:
