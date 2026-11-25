@@ -1039,6 +1039,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
     # the narrowed gate's first cut (classify): the project's build inputs, and the checks a non-product path still gets
     "select": Table(
         build_inputs=list,
+        # globs of config the project says no build or test reads (#2511): non-product, as `docs/*` is, so a docs and
+        # config diff selects no suite; a build input or a check's `paths` still wins
+        non_product=list,
         checks=Rows(paths=list, command=str, unique=("command",)),
         # the checks whose pass is never reused (#2183): each a gate step's name or command, or `gate`'s command
         unkeyed=list,
@@ -1047,7 +1050,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
         # what the merge queue's selection does with a build input (#2445): `floor`, the default, the other changed
         # files' tests plus a lockfile's importers; `full`, the whole suite
         build_inputs_in_queue=Choice(("floor", "full")),
-        optional=("build_inputs", "checks", "unkeyed", "shards", "build_inputs_in_queue"),
+        optional=(
+            "build_inputs",
+            "non_product",
+            "checks",
+            "unkeyed",
+            "shards",
+            "build_inputs_in_queue",
+        ),
     ),
     # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
     "timeouts": Table(test=str, run=str, optional=("test", "run")),
@@ -10507,13 +10517,15 @@ SELECTION_FILES = (str(POLICY), str(LOOP))
 def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[str]]:
     """The narrowed gate's first cut, by gatekeeper.md's `select`: the changed `files` that are build inputs, and the
     `checks` commands the rest touch. A file is a build input when it matches `build_inputs`, is the selection's own
-    policy (SELECTION_FILES), or matches neither NON_PRODUCT nor a check's `paths`: a path whose effect on the build
-    is unclear tests. Without `select` every file is one, as before the setting."""
+    policy (SELECTION_FILES), or matches none of NON_PRODUCT, the project's `non_product` globs (#2511) and a check's
+    `paths`: a path whose effect on the build is unclear tests. A path in `non_product` is no build input, so a docs and
+    config diff selects only the checks its files can fail; a path in `build_inputs` or a check's `paths` still counts. Without `select` every file is one, as before the setting."""
     if "build_inputs" not in (
         select or {}
     ):  # no declaration: every file tests, as before the setting
         return list(files), []
     checks = select.get("checks", [])
+    quiet = (*NON_PRODUCT, *select.get("non_product", []))
     inputs, commands = [], []
     for path in files:
         hit = [
@@ -10524,7 +10536,7 @@ def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[
         if (
             path in SELECTION_FILES
             or any(fnmatch.fnmatch(path, glob) for glob in select["build_inputs"])
-            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in NON_PRODUCT))
+            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in quiet))
         ):
             inputs.append(path)
         commands += [command for command in hit if command not in commands]

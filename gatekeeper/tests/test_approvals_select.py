@@ -570,3 +570,60 @@ def test_a_base_git_cant_resolve_cuts_the_change_since_the_merge_base(
     assert worker["ran"]() == []
     said = capsys.readouterr().err
     assert "it selects against the merge base" in said and "0 selected: non-product" in said
+
+
+# --- select.non_product: config no build or test reads (#2511)
+
+DOCKER_SELECT = """select:
+  build_inputs:
+    - src/*
+    - Dockerfile
+  non_product:
+    - .editorconfig
+    - .gitignore
+  checks:
+    - paths: [docker/*, Dockerfile.check]
+      command: {check} docker
+"""
+
+
+def test_markdown_plus_an_unrelated_config_file_selects_neither_docker_nor_the_suite(
+    worker: dict[str, Any], capsys: Any
+) -> None:
+    """#2511: a docs and config diff with a config the project lists `non_product` runs no suite and no check."""
+    worker["start"](DOCKER_SELECT)
+    worker["commit"]("docs/guide.md", "README.md", ".editorconfig")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == []
+    assert "affected-tests: 0 selected: non-product" in capsys.readouterr().err
+    assert approvals.classify(
+        ["docs/a.md", ".editorconfig"],
+        {"build_inputs": ["src/*"], "non_product": [".editorconfig"], "checks": []},
+    ) == ([], [])
+
+
+def test_without_non_product_an_unrelated_config_file_still_tests() -> None:
+    """The default is unchanged: a path whose effect is unclear tests."""
+    assert approvals.classify(["docs/a.md", ".editorconfig"], {"build_inputs": ["src/*"]}) == (
+        [".editorconfig"],
+        [],
+    )
+
+
+def test_a_diff_touching_a_checks_own_config_still_selects_that_check(
+    worker: dict[str, Any],
+) -> None:
+    """A check's `paths` win over `non_product`, and a build input wins over both."""
+    select = {"build_inputs": ["src/*", "Dockerfile"], "non_product": ["docker/*", "Dockerfile"]}
+    checks = [{"paths": ["docker/*"], "command": "docker"}]
+    assert approvals.classify(
+        ["docs/a.md", "docker/compose.yml"], {**select, "checks": checks}
+    ) == (
+        [],
+        ["docker"],
+    )
+    assert approvals.classify(["Dockerfile"], {**select, "checks": checks}) == (["Dockerfile"], [])
+    worker["start"](DOCKER_SELECT)
+    worker["commit"]("docs/guide.md", ".gitignore", "docker/compose.yml")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["docker"]
