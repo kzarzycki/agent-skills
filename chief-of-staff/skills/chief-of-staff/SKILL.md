@@ -446,6 +446,10 @@ buys nothing, but a lead missing from the board is one a successor never finds:
   state, since that is what the file saves; read one only when a lead's notice or the
   owner's question needs it.
 
+## Hygiene scan
+
+`scripts/hygiene.py` is the nightly scan, run as the account that owns the setup and reading `hygiene.repos`, the registries and the board through the values file. It reports the board when it is over 4 KB (never rewriting it, since the board is the owner's), archives a report older than 14 days that no registry or state file names (a live lead's report is never moved), names a `budget`, `parked` or `models.tiers` entry past its end date or with none, names each host whose installed package is behind the pack's latest release, and names a setup file that copies a pack sentence. It ends with the hosts and repos it did not reach, because a skipped one looks the same as a clean one. Read it when setting up or reading the nightly run; its header holds the options.
+
 ## Values file
 
 A setup's own settings (server, sessions, hosts, delegation, models, budgets, hygiene) live in one YAML file, `cos-values.yml`, in the setup's home folder: never in a
