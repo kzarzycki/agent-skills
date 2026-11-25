@@ -6643,6 +6643,22 @@ def queue_alarms(repo: str, memo: dict, now: float | None = None) -> list[tuple[
     return said
 
 
+# a PR's `Owner: <the lead's session link>` record, which gatekeeper's `check build` writes (#2494)
+OWNER_LINK = re.compile(r"^Owner: \S*/c/([\w-]+)[ \t]*$")
+
+
+def owner_record(comments: list) -> str | None:
+    """The session id in the PR's last ``Owner: <session link>`` comment (empty when it names none), else None.
+    ponytail: a small copy of the gatekeeper's record format, not a shared module: the two plugins stay independent,
+    and the record is one line."""
+    for c in reversed(comments):
+        body = str((c or {}).get("body") or "").lstrip()
+        if body.startswith("Owner: "):
+            found = OWNER_LINK.match(body.split("\n", 1)[0].rstrip())
+            return found[1] if found else ""
+    return None
+
+
 def dequeue_message(repo: str, entry: dict, flakes: dict) -> str:
     """What a dequeue tells the lead that owns its PR: the PR, the code, each failing check with its job URL, the
     failing tests with the known flakes among them named, Mergify's fault line, and the step to take."""
@@ -10505,7 +10521,39 @@ def supervise_registry(
                     return
                 log(("queue-sessions", repo), None)
             ties.pop((repo, entry["pr"]), None)
-            lead = pr_lead(repo, entry["pr"], sessions)
+            if (
+                "owner" not in entry
+            ):  # read once per entry: a retry after an offline lead reads nothing
+                try:
+                    entry["owner"] = (
+                        owner_record(rest_pages(f"repos/{repo}/issues/{entry['pr']}/comments"))
+                        or ""
+                    )
+                except RateLimited as e:
+                    limited[0] = time.monotonic() + e.jittered()
+                    log(
+                        ("queue", repo),
+                        f"GitHub rate limit: {repo}#{entry['pr']}'s Owner record not read",
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001 - no record read: the PR is found as before
+                    log(
+                        ("queue-owner", repo),
+                        f"{repo}#{entry['pr']}: Owner record not read: {reason(e)}",
+                    )
+                    entry["owner"] = ""
+            owner = entry["owner"]
+            if owner and not any(str(s.get("id")) == owner for s in sessions):
+                # ponytail (epic Q: unknown session): a record naming a session this server does not list belongs to
+                # another agent tree, so an info line and no event; a deleted session of this tree reads the same
+                entry["told"] = True
+                print(
+                    stamp(f"{repo}#{entry['pr']} left the merge queue: owned elsewhere"),
+                    flush=True,
+                )
+                continue
+            # ponytail (epic Q: a worker's link): the record's session is the one told, not a lead up its parents
+            lead = owner or pr_lead(repo, entry["pr"], sessions)
             entry["told"] = True  # on disk with the event it raises: each comment is sent once
             tries = entry.get(
                 "tries", 0
