@@ -1,6 +1,7 @@
 """A cloud session's run must finish inside its turn (#1002): its VM may not outlive the turn."""
 
 import subprocess
+from pathlib import Path
 
 import pytest
 from test_omnigent_agent import (
@@ -29,13 +30,18 @@ def test_a_cloud_brief_carries_the_in_turn_rule_and_not_the_detach_line(
         og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, top_level=top_level, pr=pr
     )
     brief = omnigent_agent.text_of(og.sessions[sid][1])
-    assert IN_TURN in brief and "end a turn only on that tracked wait, naming its task id" in brief
+    assert IN_TURN in brief
     # one wake per run (finding 1 of the waste audit): one tracked wait as long as the run, no poll loop
-    assert "--pid <pid> --budget <the run's expected length>` started as a background call" in brief
-    assert "run_in_background" in brief and "never a short `wait-for`" in brief
-    assert "--budget 480" not in brief and "calling it again" not in brief
-    assert "Monitor" not in brief and "in the foreground" not in brief
-    assert "`STILL WORKING` that names only your own detached run is not a valid ending" in brief
+    # a claude-cloud session is not woken by a finished background task (#2593): it waits in the foreground
+    assert "wait-for --log <log> --pid <pid> --budget 570" in brief and "in the foreground" in brief
+    assert (
+        "is not woken by a finished background task" in brief
+        and "never a short `wait-for`" in brief
+    )
+    assert (
+        "your harness tracks" not in brief and "end a turn only on that tracked wait" not in brief
+    )
+    assert "`STILL WORKING` that names only your own run is not a valid ending" in brief
     assert DETACH_LINE not in brief
 
 
@@ -123,16 +129,16 @@ def test_wait_for_prints_the_last_log_lines_with_still_running(tmp_path, capsys)
 
 def test_no_nudge_or_help_teaches_a_loop_of_short_waits() -> None:
     """Every text the tool sends or prints names one tracked wait as long as the run (waste audit, finding 1)."""
-    from pathlib import Path
-
     texts = {
         name: getattr(omnigent_agent, name)
         for name in ("CLOUD_RUN_NUDGE", "LEAD_NUDGE_CLOUD", "LEAD_UNTRACKED", "CLOUD_RUN_LINE")
     }
     for name, text in texts.items():
-        assert "looping on" not in text and "called again" not in text, name
+        assert "looping on" not in text, name
+        # a cloud text names one foreground wait at the tool's limit (#2593); the host's, one as long as the run
         assert (
-            "--budget <its expected length>" in text
+            "--budget 570" in text
+            or "--budget <its expected length>" in text
             or "--budget <the run's expected length>" in text
         ), name
     usage = subprocess.run(
@@ -144,5 +150,20 @@ def test_no_nudge_or_help_teaches_a_loop_of_short_waits() -> None:
     assert "the run's expected length for a background call" in " ".join(usage.split())
     skill = " ".join((Path(omnigent_agent.__file__).parents[1] / "SKILL.md").read_text().split())
     assert (
-        "pass the run's expected length when the harness tracks the call in the background" in skill
+        "pass the run's expected length only where a finished background call wakes the session"
+        in skill
     )
+
+
+def test_no_pack_text_tells_a_cloud_session_a_background_task_wakes_it() -> None:
+    """The wording #2593 removed: a harness-tracked wait promised to a claude-cloud session, which no finished
+    background task wakes."""
+    root = Path(omnigent_agent.__file__).parents[4]
+    for path in (
+        *(root / "loop").rglob("*.md"),
+        *(root / "omnigent/skills").rglob("*.md"),
+        Path(omnigent_agent.__file__),
+    ):
+        if "changelog" in path.name.lower() or "CHANGELOG" in str(path):
+            continue
+        assert "harness tracks" not in " ".join(path.read_text().split()), path

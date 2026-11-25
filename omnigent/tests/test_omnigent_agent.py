@@ -3863,7 +3863,7 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert "detached" in omnigent_agent.NUDGE and "foreground" not in omnigent_agent.NUDGE
     assert (
         "restart it only if it did not" in omnigent_agent.PR_NUDGE
-        and "foreground" not in omnigent_agent.PR_NUDGE
+        and "foreground" in omnigent_agent.PR_NUDGE
     )
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
@@ -11079,9 +11079,9 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
     # the rule the pointer names is there, with both variant conditions
     rule = long_run_rule()
     assert "since macOS has no `setsid` command" in rule
-    assert "Where a foreground command stops at 10 minutes" in rule
-    assert "the run is waited on within the same turn" in rule
-    assert "stops at 10 minutes" in rule
+    assert "is not woken by a finished background task" in rule
+    assert "wait in the same turn with" in " ".join(rule.split())
+    assert "10-minute tool limit" in rule
     assert (
         "Never end a turn saying you wait on a detached run alone, since its end never wakes you"
         in rule
@@ -11491,7 +11491,7 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     flat = " ".join(rule.split())  # the relocated clauses, each the only copy now
     # one wake per run: one tracked wait as long as the run, never a poll loop (waste audit, finding 1)
     assert (
-        "--budget <the run's expected length>` started as a background call your harness tracks"
+        "--budget <the run's expected length>` started as a background call whose exit wakes the session"
         in flat
     )
     assert "Never a short `wait-for`, an `until grep` or a `sleep` loop" in flat
@@ -11501,7 +11501,7 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     )
     assert "starts detached (in its own session)" in flat
     assert (
-        "Where the harness tracks no background call, each foreground `wait-for` blocks close to the tool's limit"
+        "A claude-cloud session (Claude Code in a hosted VM) is not woken by a finished background task"
         in flat
     )
     assert "a gate your role file says to run bare" in flat

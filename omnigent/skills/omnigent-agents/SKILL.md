@@ -306,8 +306,7 @@ its starter, so the path rides in the brief.
 
 **Waiting on a run or a PR.** `python3 scripts/omnigent_agent.py wait-for --log <log> [--pid
 <n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed|gate|verdict]` blocks up to `--budget`
-seconds (default 570, under a 10-minute tool call; pass the run's expected length when the harness tracks the call
-in the background, so it wakes you once, never a loop of short calls), printing nothing until it ends: on the log's
+seconds (default 570, under a 10-minute tool call; pass the run's expected length only where a finished background call wakes the session (a host's Claude Code or Codex), so it wakes you once, never a loop of short calls; a claude-cloud session is not woken by a finished background task, so it waits in the foreground, each call under 10 minutes, and never ends a turn on one), printing nothing until it ends: on the log's
 `exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
 only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
 first, since a reused log path still holds the previous run's line; a log alone is trusted as

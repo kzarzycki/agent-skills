@@ -488,14 +488,14 @@ timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per ch
 Your own long runs (a build, a test, a gate, a land, a live check) end in something that wakes you, since a harness
 re-invokes a session only for its own tracked background tasks and a detached pid is none
 (orchestrating-agents, A wait wakes you, or you stay in the turn): a harness-tracked background task, a
-detached run with `LOOP_NOTIFY` set, or one tracked background `wait-for --budget <its expected length>`; never a turn ended on "waiting on pid N",
+detached run with `LOOP_NOTIFY` set, or one tracked background `wait-for --budget <its expected length>` (not in a claude-cloud session, which is not woken by a finished background task and waits in the foreground, each call under 10 minutes); never a turn ended on "waiting on pid N",
 a log or, in a cloud session, a subagent of yours, which the supervisor nudges. Detached, they start the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (omnigent-agents'
 SKILL.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you
 how it ended and you end your turn meanwhile; else wait on one with one wake, never a loop of short calls:
 `omnigent_agent.py wait-for --log <log> --pid <pid> --budget <its expected length>`, or `wait-for --pr <n>` for a PR's checks,
-as a background call your harness tracks. Start each with `exec`, or in its own process group under
+as a background call whose exit wakes the session (in a claude-cloud session, a foreground call in the same turn, each under 10 minutes). Start each with `exec`, or in its own process group under
 `trap 'kill 0' EXIT`, since stopping a wrapper shell leaves its command running, gating a target
 you have moved past; count runs with a pattern anchored at the interpreter
 (`pgrep -f '^python3 <script> run'`), since one the wrapper's own command line holds never drops.
