@@ -8002,6 +8002,52 @@ def offline(og: Omnigent, sid: str, path: Path) -> Fail:
     )
 
 
+RECORD_BLOCKED = "record verdict BLOCKED:"
+
+
+def record_verdict(pr: int, report: Path, repo: str = "") -> None:
+    """Record a verifier's ``report`` on PR ``pr`` through the installed gatekeeper's ``record verdict``, the one path
+    every route's verdict takes (Codex, Claude, Gemini, a fallback): a review on the head the report names. When it
+    can't be recorded the report gets a ``record verdict BLOCKED: <reason>`` line and a ``Fail`` carries the same line
+    to the caller, so no route ends on a verdict nothing read (#2575)."""
+    folder = installed("gatekeeper")
+    why = ""
+    if folder is None:
+        why = "the gatekeeper is not installed beside this skill"
+    elif not report.is_file():
+        why = f"{report} is not on this host: copy it here (`wait --verdict` does) and run `approvals.py verdict {pr} <report>`"
+    else:
+        cmd = ["uv", "run", "-q", "--script", str(folder / "gatekeeper.py"), "record", "verdict"]
+        try:
+            done = subprocess.run(
+                [*cmd, str(pr), str(report)],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=300,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            why = f"record verdict did not run: {e}"
+        else:
+            if done.returncode:
+                tail = (done.stderr or done.stdout).strip().splitlines()
+                why = f"exit {done.returncode}: {tail[-1] if tail else 'no output'}"
+    if not why:
+        return
+    line = f"{RECORD_BLOCKED} {why}"
+    if report.is_file():
+        with report.open("a") as out:
+            out.write(f"\n{line}\n")
+    raise Fail(line)
+
+
+def record_collected(og: Omnigent, sid: str, report: Path, pr: int, far: bool) -> None:
+    """Record a collected verifier ``report`` on PR ``pr``, the one step ``run`` and ``wait`` share: a report on
+    another host (``far``, a path there) is copied here first, as ``approvals.py verdict`` reads a local file."""
+    record_verdict(pr, bring_home(og, sid, report, keep=True) if far else report)
+
+
 def apply_route(args: argparse.Namespace) -> None:
     """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
     agy needs to run unattended) and `claude` a fresh Claude session of any model, the author's own included, marked
@@ -12352,6 +12398,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 action="store_true",
                 help="a verifier's report: done only once it has a SATISFIED: line",
             )
+        if p.prog.split()[-1] == "wait":
+            p.add_argument(
+                "--record-pr",
+                type=int,
+                help="with --verdict: record the report as PR N's verifier review (`record verdict`), as run does",
+            )
         if p.prog.split()[-1] not in (
             "start",
             "reap",
@@ -12763,6 +12815,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # the caller has the result: the supervisor's line for it would be a second wake
             arm_quietly(registry, args.session)
             finish_delivered(og, args.session, keep=keeps(args, args.verdict), hold_pr=False)
+            if args.verdict and args.record_pr:
+                record_collected(og, args.session, report, args.record_pr, far)
             return 0
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
@@ -13139,6 +13193,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             report_cold_start(og, sid)
             arm_quietly(registry, sid)
             finish_delivered(og, sid, keep=keeps(args, verifier), hold_pr=False)
+            if verifier and verifies:
+                record_collected(og, sid, report, verifies, not here)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
         return 0
