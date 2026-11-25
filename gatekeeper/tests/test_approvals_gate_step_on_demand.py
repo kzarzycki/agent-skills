@@ -107,6 +107,7 @@ def test_the_gate_skips_an_on_demand_step_and_says_so(
         )
     ]
     assert "Local check passed on" in out
+    assert "no pass on the whole gate" not in out  # skipped is not left: the gate passed whole
     commands = demand["commands"]
     pushed = {one["command"] for one in refs.values()}
     assert pushed == {commands["lint"], commands["unit"]}
@@ -253,3 +254,22 @@ def test_status_passes_a_named_run_reused_by_its_inputs(demand: dict[str, Any]) 
     approvals.run_files(head)[2].write_text("0\n")
     approvals.ran_command_file(head).write_text(approvals.RAN["command"] + "\n")
     assert approvals.local_ci_status(head) == 0
+
+
+def test_a_named_run_writes_no_gate_event_and_the_gate_does(
+    demand: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The branch's `gate` event (events.md) is the gate's: a `--step` run, pass or fail, writes none."""
+    events: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        approvals.loop_events,
+        "emit",
+        lambda kind, branch, state, **_k: events.append((kind, state)),
+    )
+    assert approvals.main(["local-ci", "--record", "--step", "reference"]) == 0
+    demand["fail"]("reference")
+    demand["commit"]({"ref/run.py": "budget = 3\n"})
+    assert approvals.main(["local-ci", "--record", "--step", "reference"]) == 1
+    assert events == []
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert events[-1] == ("gate", "ok")
