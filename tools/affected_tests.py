@@ -66,7 +66,10 @@ NON_PRODUCT = (
 )
 MAP = Path(os.environ.get("TEST_MAP", ".test-map"))
 SKIPS = re.compile(r"needs_tool|skipif|pytest\.skip|importorskip")
-CHEAP = sorted(str(p) for p in Path("tests").glob("test_skill_*.py"))
+# repo-wide sweeps that name no script, so the name match never picks them: every skill folder's files, run on any
+# change (#2372). test_one_package_per_skill_name.py rejects a file a batch adds to a skill folder.
+SWEEPS = ("tests/test_one_package_per_skill_name.py",)
+CHEAP = sorted([*(str(p) for p in Path("tests").glob("test_skill_*.py")), *SWEEPS])
 # docs a test holds byte for byte against a copy, which no name match finds: a change to one runs that test
 DOC_TESTS = {
     "loop/skills/engineering-loop/": "tests/test_old_paths.py",

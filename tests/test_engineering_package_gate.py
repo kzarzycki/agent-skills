@@ -113,5 +113,5 @@ def test_the_affected_tests_line_runs_the_selected_tests() -> None:
     tasks = tomllib.loads((REPOSITORY / "mise.toml").read_text())["tasks"]
     assert tasks["check-affected"]["run"].splitlines() == [
         "mise run check-fast",
-        "mise run test-batch",
+        "GATE_IN_QUEUE=1 mise run test-batch",
     ]

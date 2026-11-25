@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,10 @@ SELECTOR = """import pathlib, sys
 """
 
 # a `checks` command: it logs its name, and exits with the code its second argument gives
-CHECK = """import pathlib, sys
+CHECK = """import pathlib, sys, time
 (pathlib.Path(__file__).parent / "ran.log").open("a").write(sys.argv[1] + "\\n")
+if sys.argv[1] == "hang":
+    time.sleep(30)
 sys.exit(int(sys.argv[2]) if len(sys.argv) > 2 else 0)
 """
 
@@ -112,6 +115,32 @@ def test_a_pack_bump_runs_only_its_check(worker: dict[str, Any]) -> None:
     )
     assert approvals.main(["affected-tests"]) == 0
     assert worker["ran"]() == ["agent-sync"]
+
+
+HANGING = """select:
+  build_inputs:
+    - src/*
+  checks:
+    - paths: [apm.yml]
+      command: {check} hang
+"""
+
+
+def test_a_check_still_running_at_timeouts_run_is_stopped_and_exits_124(
+    worker: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    """#2346: a `select.checks` command is held to `timeouts.run` like the `Affected tests:` run: killed with its
+    process group, exit 124, one line naming the budget."""
+    worker["start"](HANGING)
+    worker["commit"]("apm.yml")
+    monkeypatch.setitem(approvals.TIMEOUTS, "run", "1s")
+    started = time.monotonic()
+    assert approvals.main(["affected-tests"]) == approvals.TIMED_OUT == 124
+    assert time.monotonic() - started < 20
+    lines = [line for line in capsys.readouterr().err.splitlines() if "timed out" in line]
+    assert len(lines) == 1 and "`timeouts.run` (1 second)" in lines[0] and "hang" in lines[0]
 
 
 def test_a_failing_check_fails_the_run(worker: dict[str, Any]) -> None:
@@ -570,3 +599,60 @@ def test_a_base_git_cant_resolve_cuts_the_change_since_the_merge_base(
     assert worker["ran"]() == []
     said = capsys.readouterr().err
     assert "it selects against the merge base" in said and "0 selected: non-product" in said
+
+
+# --- select.non_product: config no build or test reads (#2511)
+
+DOCKER_SELECT = """select:
+  build_inputs:
+    - src/*
+    - Dockerfile
+  non_product:
+    - .editorconfig
+    - .gitignore
+  checks:
+    - paths: [docker/*, Dockerfile.check]
+      command: {check} docker
+"""
+
+
+def test_markdown_plus_an_unrelated_config_file_selects_neither_docker_nor_the_suite(
+    worker: dict[str, Any], capsys: Any
+) -> None:
+    """#2511: a docs and config diff with a config the project lists `non_product` runs no suite and no check."""
+    worker["start"](DOCKER_SELECT)
+    worker["commit"]("docs/guide.md", "README.md", ".editorconfig")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == []
+    assert "affected-tests: 0 selected: non-product" in capsys.readouterr().err
+    assert approvals.classify(
+        ["docs/a.md", ".editorconfig"],
+        {"build_inputs": ["src/*"], "non_product": [".editorconfig"], "checks": []},
+    ) == ([], [])
+
+
+def test_without_non_product_an_unrelated_config_file_still_tests() -> None:
+    """The default is unchanged: a path whose effect is unclear tests."""
+    assert approvals.classify(["docs/a.md", ".editorconfig"], {"build_inputs": ["src/*"]}) == (
+        [".editorconfig"],
+        [],
+    )
+
+
+def test_a_diff_touching_a_checks_own_config_still_selects_that_check(
+    worker: dict[str, Any],
+) -> None:
+    """A check's `paths` win over `non_product`, and a build input wins over both."""
+    select = {"build_inputs": ["src/*", "Dockerfile"], "non_product": ["docker/*", "Dockerfile"]}
+    checks = [{"paths": ["docker/*"], "command": "docker"}]
+    assert approvals.classify(
+        ["docs/a.md", "docker/compose.yml"], {**select, "checks": checks}
+    ) == (
+        [],
+        ["docker"],
+    )
+    assert approvals.classify(["Dockerfile"], {**select, "checks": checks}) == (["Dockerfile"], [])
+    worker["start"](DOCKER_SELECT)
+    worker["commit"]("docs/guide.md", ".gitignore", "docker/compose.yml")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["docker"]

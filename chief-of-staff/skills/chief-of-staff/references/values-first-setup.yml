@@ -1,0 +1,46 @@
+# Sample values file for a setup with a home folder of its own and a tree of project managers.
+# Placeholder values only; it holds just what differs from the pack defaults (scripts/cos_values.py keys).
+server: https://agents.example.invalid
+cos_session: session-cos-1
+board: boards/root.md
+registry: boards/leads.registry
+reports_dir: reports
+hosts:
+  table:
+    repo-a: [host-1, host-2]
+    repo-b: [host-2]
+  owner_requested_only: [host-2]
+  no_local_loop: [host-1]
+  cloud_bridge: [host-2]
+  orchestration: host-1
+  memory_floor: 8
+managers:
+  - scope: [repo-a]
+    registry: repo-a-leads.registry
+    board: projects/repo-a/board.md
+planning:
+  backlog: backlog/ideas.md
+delegation:
+  on: true
+owner_only: [publish-release]
+models:
+  tiers:
+    lead: model-large
+    worker: {model: model-small, until: 2030-01-31}
+  cap: model-large
+budget:
+  weekly_limit: 100
+  until: 2030-01-31
+parked: [{item: repo-b-cleanup, until: 2030-01-31}]
+memory: [bank-root, bank-repo-a]
+permissions:
+  coordinator_mode: acceptEdits
+owner:
+  language: en
+  reply_format: bullets
+decisions:
+  file: log/decisions.md
+  cos_line: "Chief of staff session: session-cos-1"
+hygiene:
+  repos: [owner-a/repo-a, owner-a/repo-b]
+  our_authors: [author-a]
