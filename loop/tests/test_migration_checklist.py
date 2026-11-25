@@ -55,7 +55,19 @@ def test_step_two_names_each_key_a_repo_states() -> None:
         assert line in text
 
 
-def test_step_three_names_each_kind_of_copy_with_what_replaces_it() -> None:
+def test_step_three_names_what_replaces_each_kind_of_copy() -> None:
+    text = section()
+    start = text.index("| Kind |")
+    cells = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in text[start:].splitlines()[2:]
+        if line.strip().startswith("|")
+    ]
+    assert len(cells) == 10
+    assert all(len(row) == 3 and all(row) for row in cells)
+
+
+def test_step_three_names_each_kind_of_copy() -> None:
     kinds = rows(section(), "| Kind |")
     assert kinds == [
         "Selector",

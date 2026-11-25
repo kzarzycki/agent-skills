@@ -157,8 +157,8 @@ release tag, the config block and one row per deleted file with its kind from st
    | `select.layers` | which paths are docs, agent config, CI config, infra; which checks each reaches | R2 |
    | `select.build_inputs` | lock files, toolchain pins, test-runner config, and the affected-test selector's own code and map: a change to the selector can't be judged by the selector it changes, so it runs the whole suite | R3 |
    | `select.unkeyed` | checks every PR head runs | R1 |
-   | `select.shards` | optional, only where runners allow | R6 |
-   | `timeouts` | `test` and `run` | R6 |
+   | `select.shards` | optional, only where runners allow | R3 |
+   | `timeouts` | `test` and `run` | every run's limit |
 
    `docs/agents/loop.md` names the selector, `Affected tests: <command>` (R3), and, where the project has
    acceptance checks, `Acceptance tests: <command>` and `Acceptance budget: <spec minutes>, <nightly minutes>`.
