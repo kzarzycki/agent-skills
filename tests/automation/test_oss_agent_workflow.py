@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -15,7 +17,7 @@ FILES = ("oss-agent.yml", "oss-agent-selftest.yml")
 MODEL_KEY = "NVIDIA_NIM_API_KEY"
 # the steps that may hold the job token: the push probe and the draft PR
 TOKEN_STEPS = {"The job token cannot push", "Open the draft PR"}
-PUBLISH_COMMANDS = {"git"}
+PUBLISH_COMMANDS = {"git", "if", "then", "fi", "exit"}
 PUBLISH_SUBSTITUTIONS = {"gh", "git", "head", "printf"}
 
 
@@ -199,6 +201,51 @@ def test_publish_job_runs_nothing_from_the_patch() -> None:
     assert patch_lines == ['git am "$RUNNER_TEMP/patch/agent.patch"']
     # nothing executes from the checkout: no interpreter, build tool or path
     assert not re.search(r"\b(bash|sh|source|make|npm|npx|uv|python3?|node)\b|\./", runs)
+
+
+def _run_push_step(tmp_path: Path, push_output: str) -> subprocess.CompletedProcess:
+    """Run the `Apply and push` script with a git whose push fails with `push_output`."""
+    step = next(s for s in PUBLISH["steps"] if s.get("name") == "Apply and push")
+    fake = tmp_path / "bin" / "git"
+    fake.parent.mkdir()
+    fake.write_text(f'#!/bin/bash\n[ "$1" = push ] || exit 0\necho "{push_output}" >&2\nexit 1\n')
+    fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake.parent}:{os.environ['PATH']}",
+        "BRANCH": "oss-agent/run-1-1",
+    }
+    env["RUNNER_TEMP"] = str(tmp_path)
+    return subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_header_names_the_branch_creation_requirement() -> None:
+    header = _text("oss-agent.yml").split("name: OSS agent")[0]
+    assert "refs/heads/oss-agent/**" in header
+    assert "restricts branch creation" in header
+
+
+def test_a_gh013_push_names_the_ruleset_requirement(tmp_path: Path) -> None:
+    out = _run_push_step(
+        tmp_path, "remote: error: GH013: Cannot create ref due to creations being restricted."
+    )
+    assert out.returncode != 0
+    assert "GH013: Cannot create ref" in out.stdout  # the raw push output stays
+    assert "refs/heads/oss-agent/**" in out.stdout
+    assert "oss-agent/run-1-1" in out.stdout
+
+
+def test_another_push_failure_keeps_its_own_output(tmp_path: Path) -> None:
+    out = _run_push_step(tmp_path, "fatal: unable to access: 403")
+    assert out.returncode != 0
+    assert "fatal: unable to access: 403" in out.stdout
+    assert "GH013" not in out.stdout
 
 
 def test_selftest_runs_the_dry_run_only() -> None:

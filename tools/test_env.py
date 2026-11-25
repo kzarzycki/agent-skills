@@ -22,6 +22,7 @@ RUNNER = (
     "GITHUB_SHA",
     "GITHUB_TOKEN",
     "GITHUB_WORKFLOW_REF",
+    "GITHUB_WORKSPACE",
 )
 
 # Which agent session the run is in: an Omnigent session, a cloud VM's marker, the host's model and effort defaults.
@@ -39,6 +40,8 @@ SESSION_PREFIXES = ("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_")
 # depends on one sets it itself.
 HOST_NEUTRAL = (
     "AGENT_HOST_COMMANDS",
+    # the root conftest.py sets it to 1 for the whole run, as the pack's own tests need; clearing it would undo that
+    "AGENT_SKILLS_CHECKOUT",
     "CDP_URL",
     "CLAUDE_CDP_PORT",
     "CLAUDE_CLOUD_API_BASE",
@@ -72,6 +75,7 @@ HOST_NEUTRAL = (
     "OMNIGENT_VERIFIER_ROUTE",
     "PATH",
     "PYTEST_ADDOPTS",
+    "PYTEST_TIMEOUT",
     "RUNNER_SERVER_URL",
     "TEST_MAP",
     "USER",

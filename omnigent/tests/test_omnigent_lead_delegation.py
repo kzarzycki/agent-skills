@@ -425,3 +425,16 @@ def test_brief_prints_a_top_level_leads_delegation_as_start_sends_it(
     assert omnigent_agent.main(["brief", "do X", str(report), "--top-level"]) == 0
     printed = capsys.readouterr().out
     assert printed == sent and omnigent_agent.DELEGATION.strip() in printed
+
+
+def test_a_cloud_lead_brief_says_its_manager_runs_the_verifier_and_a_host_lead_brief_does_not() -> (
+    None
+):
+    def brief(cloud: bool, top_level: bool = True) -> str:
+        return omnigent_agent.first_message(cloud, top_level, None, "r.md", None, "do X")
+
+    line = omnigent_agent.CLOUD_LEAD_VERIFIER
+    assert "READY FOR VERIFIER: PR #<n> head <sha>" in line
+    assert brief(True).count(line) == 1
+    assert line not in brief(False)  # a host lead starts its own verifier
+    assert line not in brief(True, top_level=False)  # a cloud worker is no lead
