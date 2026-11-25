@@ -8975,6 +8975,34 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
     return tracker, loop, rules - OWN, queue
 
 
+# the label `land` puts on a PR whose test selection is the whole suite, before QUEUED: `.mergify.yml`'s `solo` queue
+# rule (batch_size 1) takes a PR with it, and the `default` rule one without it, so a slow run never holds or fails a
+# batch of quick PRs while the queue keeps one ordering (#2553)
+SOLO = "loop:solo"
+
+
+def whole_suite(pull: dict[str, Any]) -> str | None:
+    """Why the project's own selection makes this PR's test run the whole suite, None when it is an affected-tests
+    run: loop.md's opt-out `Gate: full`, a loop.md with no `Affected tests:` selector, or a changed build input under
+    gatekeeper.md's `select.build_inputs_in_queue: full`. Only the project's settings decide, never a path or name
+    the pack knows."""
+    text = loop_md()
+    if FULL_GATE.search(text):
+        return "loop.md's `Gate: full`"
+    if narrowing(text) is None:
+        return "loop.md names no `Affected tests:` selector"
+    select = None
+    with contextlib.suppress(Refused):
+        select = settings(project()[1]).get("select")
+    if select and "build_inputs" in select and select.get("build_inputs_in_queue") == "full":
+        head = pull["headRefOid"]
+        point = merge_base_of(pull["baseRefName"], head)
+        cut = selected(point, head) if point else None
+        if cut and cut[0]:
+            return f"build input {cut[0][0]} under `select.build_inputs_in_queue: full`"
+    return None
+
+
 def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1), unless its queue check
@@ -9050,6 +9078,16 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
             label(number, DEQUEUED, add=False)
         queued = QUEUED in labels and ours
         if not queued:
+            # the solo label first: the queue rule that matches QUEUED must already see which rule is the PR's
+            alone = whole_suite(pull)
+            if alone and SOLO not in labels:
+                label(number, SOLO, add=True)
+            elif not alone and SOLO in labels:
+                label(number, SOLO, add=False)
+            if alone:
+                print(
+                    f"{where}: its selection is the whole suite ({alone}): queued in a batch of its own"
+                )
             refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
             if QUEUED not in labels:
                 label(number, QUEUED, add=True)
@@ -12744,8 +12782,13 @@ def mergify_rendered(policy: str | None) -> str:
         ("checks_timeout", said_span(timeouts(policy)["run"])),
     ):
         if value is not None:
+            # the default rule is the first; `checks_timeout` is every queue rule's (the solo one too)
             text, found = re.subn(
-                rf"^(\s+{key}:) .*$", rf"\g<1> {value}", text, count=1, flags=re.MULTILINE
+                rf"^(\s+{key}:) .*$",
+                rf"\g<1> {value}",
+                text,
+                count=0 if key == "checks_timeout" else 1,
+                flags=re.MULTILINE,
             )
             if not found:
                 raise Refused(f"{MERGIFY_TEMPLATE} has no `{key}` line to render")
