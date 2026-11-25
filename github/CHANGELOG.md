@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.4 - 2026-11-25
+
+- github-tracker: github.md, Assignee says the claim's record also names the lead's Omnigent session and sets the issue's optional `Session` field (#2324).
+
 ## 0.1.3 - 2026-11-24
 
 - github-tracker: `labels.py` knows `loop:hold`, so label sync creates it and no longer deletes it when nothing carries it (#2162).
