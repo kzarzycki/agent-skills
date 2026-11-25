@@ -54,11 +54,13 @@ exit 3 prints that path. Answer from the spec and the owner's stated intent, or 
 owner only when neither settles it, then run
 `python3 scripts/omnigent_agent.py send <session> <answer-file> <report>` in the
 background (a bare `&` is not woken by its exit: set `LOOP_NOTIFY` and add `--notify`, or use the
-harness's own background-run support). It continues the same session while its cache is warm and waits as `run`
-does; add `--verdict` when the child is a verifier, because `send` and `wait` are not
-given the role. A child still in a turn gets the answer at its next tool boundary; until
-then `send` reports it queued and waits, and a rerun of the same `send` waits for the
-first copy instead of delivering a second. A report left from the earlier turn does not
+harness's own background-run support). It continues the same session while its cache is warm. `send`
+returns as soon as the message is accepted, with a delivery line and exit 0, and does not wait for
+the report: `wait <session> <report>` does, or add `--wait` to `send` to wait as `run` does (`--notify`
+and `--verdict` imply it; add `--verdict` when the child is a verifier, because `send` and `wait` are not
+given the role). A child still in a turn gets the answer at its next tool boundary; until
+then `send` reports it queued, and a rerun of the same `send` finds the first copy instead of
+delivering a second. With `--wait`, a report left from the earlier turn does not
 end the wait: only one written after the send counts. A session whose runner Omnigent
 reaped (idle over an hour) is revived in place first (`retry_session`, operating-omnigent
 skill), keeping its conversation. Exit 4 means the revive failed or the answer did not
@@ -202,11 +204,11 @@ repository's counts for nothing. The nudge asks for the comment, and a second tu
 without one fails. `run` and `wait` with `--pr` keep the worker once its report is in (`--no-keep` finishes it;
 `--keep` is still accepted), and `reap` finishes it once its PR is merged or closed (Finished sessions): a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
 past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
-round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). A cloud
+round goes to it with `send --pr <n> --wait`, else to a fresh `run --pr` (Follow-ups). A cloud
 child that fails in setup, before its first turn (`cloud session setup failed` and no assistant
 message), `run` starts once more in a fresh session with the same brief, and one that stalls
 (`made no progress`, the bridge's `CLAUDE_CLOUD_STALL_TIMEOUT_S`) `wait` sends one continue
-message; each is named on stderr, and a second of either fails, naming both. `send --pr <n>`
+message; each is named on stderr, and a second of either fails, naming both. `send --pr <n> --wait`
 reaches a worker still open (kept, or one whose turn ended without a report), wherever its
 workspace is, since the report is the file `wait` writes here (for a path on another host, `tmp/loop/<its name>`, as `wait --pr` writes it), and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
@@ -535,7 +537,7 @@ foreground command) is exit 0 too: the line says `queued until the session's cur
 ends` and it lands then, with no further call, and a rerun sends no second copy. Exit 5: queued
 behind an approval prompt it prints, until a person answers it; it lands then. Exit 4: not deliverable, and why (archived, a revive that failed, or
 neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). Exit 8: `HOST_OFFLINE`, the lead's host is offline and cannot be woken, so nothing was sent and Omnigent keeps nothing for it; relay again once the host is back (`host_online` in its info). A reaped runner is
-revived in place first, as `send` does. `--unarchive` unarchives an archived lead first, so it resumes with its history (Claude's same transcript, Codex's same thread, a cloud session's same claude.ai session); without it an archived lead is exit 4. `send` does the same for an archived session the supervisor registry (`--registry`, else `$OMNIGENT_SUPERVISE_REGISTRY`) still lists, then waits for the report; for one it does not list, `send` is exit 4 unless you pass `send --unarchive`. A question card (`sys_ask_user_question`)
+revived in place first, as `send` does. `--unarchive` unarchives an archived lead first, so it resumes with its history (Claude's same transcript, Codex's same thread, a cloud session's same claude.ai session); without it an archived lead is exit 4. `send` does the same for an archived session the supervisor registry (`--registry`, else `$OMNIGENT_SUPERVISE_REGISTRY`) still lists, then delivers (with `--wait`, waits for the report); for one it does not list, `send` is exit 4 unless you pass `send --unarchive`. A question card (`sys_ask_user_question`)
 leaves the lead free: a plain `relay` is delivered beside it (exit 0), its line names the card
 still open (`send` prints the same line before it waits), and the message never answers it. A message with a line that is a question for the owner (opening `USER NEEDED:`, `needs owner:` or `question for the owner:`; quoted and bullet lines, a bare mention, `--answer` and `--from` never count) is refused with exit 1: the owner's question is a card, never a relayed line, so post it with `sys_ask_user_question` and relay only the fact and the action wanted.
 **Settle it, withdraw the card.** Whoever settles a question a lead put on a card (a manager answering it, a decision made elsewhere) withdraws the card, so the owner never answers a moot one later: `python3 scripts/omnigent_agent.py withdraw <session> [<question id>]` cancels the session's open cards (or that one). The supervisor does not forward a turn end that waits on an open card (`USER NEEDED`, `needs owner`, `waiting on a card`), nor an end the lead's history already holds an item after that names the child, nor the end of an archived session, nor a failure of a worker a newer worker of its PR replaced; `reap --force` finishes such a replaced worker while its PR is open.
