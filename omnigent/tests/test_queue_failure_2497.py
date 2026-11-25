@@ -163,3 +163,29 @@ def test_the_record_names_nothing_private(pr: str) -> None:
     hosts = set(re.findall(r"https?://([^/\s)]+)", body))
     assert hosts <= {"github.com"}
     assert not re.search(r"(?i)session|/home/|/Users/|token|secret", body)
+
+
+def test_a_test_name_from_a_log_cannot_close_its_code_span() -> None:
+    entry = {
+        "pr": 7,
+        "code": "CHECKS_FAILED",
+        "checks": [("check", "https://x/1", "1")],
+        "tests": ["t`[x](https://e)@bot"],
+    }
+    body = QF.record(entry, "9")
+    assert "- `t'[x](https://e)@bot`" in body
+    assert body.count("`") % 2 == 0
+
+
+def test_a_noisy_log_still_leaves_a_record_under_the_size_limit() -> None:
+    tests = [f"tests/test_{i}.py::test_{'x' * 400}_{i}" for i in range(5000)]
+    entry = {
+        "pr": 7,
+        "code": "CHECKS_FAILED",
+        "checks": [("check", "https://x/1", "1")],
+        "tests": tests,
+    }
+    body = QF.record(entry, "9")
+    assert len(body) < 65536
+    assert "- and 4950 more in the failing jobs' logs" in body
+    assert QF.reported([body], "9")  # the once-per-comment marker survives the cut

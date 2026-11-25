@@ -104,6 +104,18 @@ def failure_lines(entry: dict, flakes: dict | None = None) -> list[str]:
     return lines
 
 
+# the most failing tests one record lists, each cut to 300 characters by span(): GitHub refuses a comment over
+# 65,536 characters, and a record lost to a noisy log would be lost in the case with the most failures
+MAX_TESTS = 50
+
+
+def span(text: str) -> str:
+    """``text`` as one inline code span: a test name or a check name comes from a PR's own log, so a backtick or a
+    line break in it must not close the span and post the rest as live markdown."""
+    clean = re.sub(r"[`\r\n]+", "'", text)
+    return f"`{clean[:300]}`"
+
+
 def record(
     entry: dict, comment_id: str, comment_url: str = "", unread: tuple[str, ...] = ()
 ) -> str:
@@ -125,12 +137,16 @@ def record(
         "",
         "Failing checks:",
     ]
-    lines += [f"- [`{name}`]({url})" for name, url, _ in entry["checks"]] or ["- none listed"]
+    lines += [f"- [{span(name)}]({url})" for name, url, _ in entry["checks"]] or ["- none listed"]
     lines += ["", "Failing tests:"]
     tests = entry.get("tests") or []
-    lines += [f"- `{t}`" for t in tests] or ["- none found in the failing jobs' logs"]
+    lines += [f"- {span(t)}" for t in tests[:MAX_TESTS]] or [
+        "- none found in the failing jobs' logs"
+    ]
+    if len(tests) > MAX_TESTS:
+        lines.append(f"- and {len(tests) - MAX_TESTS} more in the failing jobs' logs")
     if unread:
-        lines += ["", "Log not read for: " + ", ".join(f"`{u}`" for u in unread)]
+        lines += ["", "Log not read for: " + ", ".join(span(u) for u in unread)]
     lines += ["", "<details><summary>Details</summary>", ""]
     if comment_url:
         lines.append(f"Mergify's comment: {comment_url}")
