@@ -265,8 +265,12 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    fixed after a satisfied verdict among them, gets a short delta pass: the verifier reviews
    only the change since the last verdict's head. Instructions are code: a skill, a role
    file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt,
-   and anything a tool parses each need the full verifier pass (tests, proof and repros),
-   still reviewing only the change since the last verdict's head.
+   and anything a tool parses each need the full verifier pass, still reviewing only the change
+   since the last verdict's head. Its "tests" are the checks that change's layer reaches
+   (SKILL.md, A check runs only if it can fail because of the change, R2): the `checks` entries
+   of gatekeeper.md's `select` whose `paths` the diff touches, and the product's affected tests
+   only when a file is a build input, which includes a file `select` doesn't classify. The
+   verifier's own review, repros and mutation runs stay.
 8. **Land** once the last verdict is triaged with no core finding open, or at the cap with no
    blocker open and your `Cap: #<follow-up>` line in the PR body (SKILL.md, The cap); the merge itself
    waits for the landing rule (SKILL.md):
