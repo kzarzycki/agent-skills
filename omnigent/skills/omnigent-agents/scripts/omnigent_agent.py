@@ -8017,6 +8017,23 @@ def apply_route(args: argparse.Namespace) -> None:
     args.same_family = True
 
 
+VERIFIER_WORDS = re.compile(r"\bverif(?:y|ier|iers|ication)\b", re.IGNORECASE)
+
+
+def verifier_without_role(args: argparse.Namespace) -> bool:
+    """Whether a start that is not a verifier's role reads as one: it names a PR and a verifier by ``--same-family`` or
+    by its title or report name. A fallback started so posts a plain PR comment in no format the gatekeeper reads
+    (#2573)."""
+    return bool(
+        args.pr
+        and (
+            getattr(args, "same_family", False)
+            or VERIFIER_WORDS.search(args.title)
+            or VERIFIER_WORDS.search(args.report.stem)
+        )
+    )
+
+
 def reviews(role: str | None) -> bool:
     """Whether ``role`` is the verifier's role file (engineering-loop's verifier.md): only that one reviews a PR,
     so only it takes ``--pr`` as the PR it reviews and may start on a clone other sessions hold."""
@@ -12742,6 +12759,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
         verifier = args.cmd in ("run", "start") and reviews(args.role)
+        if args.cmd in ("run", "start") and not verifier and verifier_without_role(args):
+            raise Fail(
+                f"--pr {args.pr} on a start that reads as a verifier's (--same-family, or a title or report named"
+                " for one) without --role <skills>/engineering-loop/verifier.md: its report would carry no `Head:`,"
+                " `VERDICT:` or finding format, and `record verdict` would refuse it. Every verifier route, a"
+                " fallback included, starts with --role verifier"
+            )
         if args.cmd in ("run", "start"):
             if args.verifier_route not in (None, "codex") and not verifier:
                 raise Fail(
