@@ -10690,9 +10690,10 @@ def queue_select(
     command per line on stdout, each to pass: the `select.unkeyed` checks, then the floor, `affected-tests --base
     <point>` for each PR with no record of its `Affected tests:` run (queue_recorded) at that PR's branch point. A PR
     with a record runs nothing: its own tests passed on its head. Where the commits don't split into PRs, the batch's
-    `affected-tests --base <base>`. Without an `Affected tests:` line (and no `Gate: full`) a floor selects nothing, so
-    none is printed. Refused (exit 1, queue_refusal) when that is nothing while a PR has no record; nothing to run with
-    a record for every PR passes and says so. Each step's reason goes to stderr, prefixed `queue-select:`.
+    `affected-tests --base <base>`. The floor prints with or without an `Affected tests:` line: without one,
+    `affected-tests` runs gatekeeper.md's `select` cut, then the project's full check, the narrowest set it can name
+    (#2143 D2, #2362). Refused (exit 1, queue_refusal) when there is nothing to run while a PR has no record; nothing
+    to run with a record for every PR passes and says so. Each step's reason goes to stderr, prefixed `queue-select:`.
 
     ponytail: a floor runs in the batch's checkout, so it selects against everything since the PR's branch point, the
     other PRs and the base's newer commits included: a superset of the PR's own tests, run on the merged tree. A
@@ -10703,14 +10704,13 @@ def queue_select(
     queue_say(
         f"{len(checks)} unkeyed checks (select.unkeyed){': ' if checks else ''}{'; '.join(checks)}"
     )
-    selects = narrowing() is not None or bool(FULL_GATE.search(loop_md()))
     floor = [sys.executable, str(Path(__file__).resolve()), "affected-tests", "--base"]
     pulls = queue_pulls(base)
     runs: list[str] = []
     missing: list[QueuePull] = []
     if isinstance(pulls, str):
         queue_say(f"the batch's affected tests: the commits don't split into PRs ({pulls})")
-        runs = [shlex.join([*floor, base])] if selects else []
+        runs = [shlex.join([*floor, base])]
     else:
         for pull in pulls:
             found, line = record(pull.head, pull.point)
@@ -10719,7 +10719,7 @@ def queue_select(
             )
             if not found:
                 missing.append(pull)
-                if selects and (run := shlex.join([*floor, pull.point])) not in runs:
+                if (run := shlex.join([*floor, pull.point])) not in runs:
                     queue_say(
                         f"PR {pull.name}: no record, so its own affected tests run (the floor)"
                     )
