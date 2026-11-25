@@ -6608,8 +6608,9 @@ def queue_alarms(repo: str, memo: dict, now: float | None = None) -> list[tuple[
 
 def dequeue_message(repo: str, entry: dict, flakes: dict) -> str:
     """What a dequeue tells the lead that owns its PR: the PR, the code, each failing check with its job URL, the
-    failing tests with the known flakes among them named, Mergify's fault line (all of these from
-    ``queue_failure.failure_lines``, as the PR's ``Queue failure`` record has them), and the step to take."""
+    failing tests with the known flakes among them named (from ``queue_failure.failure_lines``, whose checks and
+    tests the PR's ``Queue failure`` record lists too; the record holds no diagnosis, the message keeps Mergify's own
+    fault line as before), and the step to take."""
     n = entry["pr"]
     lines = [f"{repo}#{n} left the merge queue: {entry['code'] or 'dequeued'}."]
     lines += QUEUE_FAILURE.failure_lines(entry, flakes)
