@@ -6659,9 +6659,14 @@ def gate_stall(log: Path, run: str | None) -> float | None:
     if not any(line.startswith("lock ") for line in run_lines(log, run) or []):
         return None
     gk = _load_gatekeeper()
-    try:
-        return float(gk.timeouts(project_loop(Path.cwd()))["run"]) if gk else None
-    except Exception:  # noqa: BLE001 - no readable policy: the default stands
+    root = checkout_root(str(Path.cwd()))
+    if not gk or not root:
+        return None
+    try:  # the policy as the gatekeeper reads it: gatekeeper.md's `## Policy`, else loop.md's `## Settings`
+        return float(gk.timeouts(gk.tree_policy(Path(root)))["run"])
+    except (
+        gk.Refused
+    ):  # no settings block (a bullet-form loop.md) or a malformed one: the default stands
         return None
 
 

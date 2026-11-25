@@ -1,5 +1,6 @@
 """wait-for's stall limit follows a gate run's timeout; claude-cloud-run beats while it works (#2510)."""
 
+import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +16,11 @@ def policy(monkeypatch: pytest.MonkeyPatch, run: int) -> None:
     monkeypatch.setattr(
         omnigent_agent,
         "_load_gatekeeper",
-        lambda: SimpleNamespace(timeouts=lambda loop: {"test": 60, "run": run}),
+        lambda: SimpleNamespace(
+            tree_policy=lambda root: None,
+            timeouts=lambda loop: {"test": 60, "run": run},
+            Refused=ValueError,
+        ),
     )
 
 
@@ -77,3 +82,60 @@ def test_claude_cloud_run_prints_a_heartbeat_while_the_remote_command_runs(
     assert cloud_run_main(checkout, "pytest") == 0
     beats = [l for l in capsys.readouterr().out.splitlines() if "still running" in l]
     assert beats and "s elapsed" in beats[0]
+
+
+def gate_log(tmp_path: Path) -> Path:
+    log = tmp_path / "gate.log"
+    log.write_text("lock /x\nlocked\nbuilding\n")
+    return log
+
+
+def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]) -> Path:
+    """A checkout holding ``files``, which is the working directory."""
+    root = tmp_path / "proj"
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text)
+    monkeypatch.chdir(root)
+    return gate_log(tmp_path)
+
+
+def test_the_real_policy_read_gives_a_gate_run_the_policys_timeouts_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy_text = "# Gatekeeper\n\n## Policy\n\n```yaml\ntimeouts:\n  run: 2h\n```\n"
+    log = project(tmp_path, monkeypatch, {"docs/agents/gatekeeper.md": policy_text})
+    assert omnigent_agent.gate_stall(log, None) == 7200.0
+
+
+def test_a_policy_with_no_timeouts_gives_the_default_run_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy_text = "# Gatekeeper\n\n## Policy\n\n```yaml\nspec:\n  auto: true\n```\n"
+    log = project(tmp_path, monkeypatch, {"docs/agents/gatekeeper.md": policy_text})
+    assert omnigent_agent.gate_stall(log, None) == 3600.0
+
+
+def test_a_loop_md_with_no_settings_block_keeps_the_default_stall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = project(tmp_path, monkeypatch, {"docs/agents/loop.md": "# Loop\n\nGate: make\n"})
+    assert omnigent_agent.gate_stall(log, None) is None
+
+
+def test_an_unexpected_policy_error_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = project(tmp_path, monkeypatch, {})
+
+    def boom(loop: object) -> dict:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        omnigent_agent,
+        "_load_gatekeeper",
+        lambda: SimpleNamespace(tree_policy=lambda root: None, timeouts=boom, Refused=ValueError),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        omnigent_agent.gate_stall(log, None)
