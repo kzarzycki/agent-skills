@@ -458,7 +458,8 @@ UNTRACKED_WHY = "waits on what does not wake it"
 # A process in its wait, anywhere in the STILL WORKING text beside a wait word: a pid (``pid 4242``,
 # ``its pid is 4242``, a pid file) or a log, output or pid path; a run that notifies is tracked.
 UNTRACKED = re.compile(
-    r"\bpids?\b(?:\s+is)?\s*[:#]?\s*`?\d+|\bpid[ -]file\b|[\w./~-]+\.(?:log|out|pid)\b",
+    r"\bpids?\b(?:\s+is)?\s*[:#]?\s*`?\d+|\bpid[ -]file\b|[\w./~-]+\.(?:log|out|pid)\b"
+    r"|\bpoll(?:s|ed|ing)?\b|\bsleep(?:s|ing)?\b|\bwhile\s+!|\bwait\s+loop\b",  # a loop of its own (#2623)
     re.IGNORECASE,
 )
 NOTIFIES = re.compile(r"--notify\b|\bLOOP_NOTIFY\b")

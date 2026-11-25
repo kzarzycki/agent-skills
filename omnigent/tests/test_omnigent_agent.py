@@ -14935,6 +14935,31 @@ def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
     assert via_env not in og.archived
 
 
+def test_a_plain_words_still_working_with_no_waits_line_and_no_child_is_flagged_after_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2623: the supervisor cannot see a cloud VM's processes, so "no live helper" is read from the turn
+    end: a ``STILL WORKING`` in any wording that names no ``Waits:`` line and no followed child is flagged to
+    the manager once ``DEADLINE_SECONDS`` pass with no new turn, the existing deadline path and no second timer."""
+    registry, og = manager(tmp_path, "STILL WORKING: waiting on CI. Report: m.md")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == ["Supervisor: m t-m: no progress 60m (CI)"]
+    assert (
+        omnigent_agent.DEADLINE_SECONDS < 3600.0
+    )  # the quiet turn was 60 m old: past the deadline
+
+
+def test_a_still_working_that_names_a_live_session_is_held_past_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2623: the same quiet turn end with ``Waits: session <id>`` of a session that shows life raises none."""
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on CI. Report: m.md\nWaits: session {WORKER}"
+    )
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
 def blocker_gh(
     calls: list[tuple[str, ...]],
     blocking: str = "[]",
