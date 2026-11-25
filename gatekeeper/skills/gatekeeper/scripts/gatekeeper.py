@@ -4149,21 +4149,34 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
     return found
 
 
-def red_base(base: str) -> list[str]:
-    """One line per required check that failed on `base`'s tip, the commit its latest push run ran on, with the run's
-    link: the lander is the one who can stop or fix before stacking more changes on a red base (#2565). Advice that
-    blocks nothing, and none when the forge can't say. Reads the forge's `commit_checks`, as the merge gates do.
-    ponytail: a warning only; a run that failed before any test ran should refuse, once a gate can tell it from a red test."""
+def red_base(base: str, loop: str | None = None) -> tuple[list[str], list[str]]:
+    """What `base`'s latest push run, the checks on its tip, tells a lander (#2565): (advice, refusals). A required check
+    that failed is advice, with the run's link, since the lander can stop or fix before stacking more onto a red base and
+    a flaky test must not block every landing. It is a refusal when that run failed before any test ran: it published
+    no `breakglass.artifact` of failed test ids (run_artifact), so the pipeline is broken, which a lander can't read
+    from a red test. A forge read that fails is one advice line saying so, never silence and never a refusal."""
     try:
         checks = commit_checks(base)
         wanted = required_checks(base) - OWN
-    except (Refused, subprocess.CalledProcessError, OSError, ValueError):
-        return []
-    return [
-        f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}; fix it or stop before landing more onto it"
-        for name, run in sorted(checks.items())
-        if run["conclusion"] in RED and (name in wanted or not wanted) and name not in OWN
-    ]
+        artifact = breakglass_settings(loop)["artifact"]
+        advice: list[str] = []
+        refusals: list[str] = []
+        for name, run in sorted(checks.items()):
+            if run["conclusion"] not in RED or name in OWN or (wanted and name not in wanted):
+                continue
+            where = f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}"
+            number = re.search(r"/actions/runs/(\d+)", run["url"])
+            if number and run_artifact(int(number[1]), artifact) is None:
+                refusals.append(
+                    f"{where}; it failed before any test ran (no `{artifact}` artifact)"
+                )
+            else:
+                advice.append(f"{where}; fix it or stop before landing more onto it")
+        return advice, refusals
+    except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+        return [
+            f"{base}'s latest push run could not be read from the forge ({err}): check it before landing"
+        ], []
 
 
 def unforced(pull: dict[str, Any]) -> str | None:
@@ -6414,11 +6427,13 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     )
     # what land's pre-land check would refuse, after the rest, so check merge never calls clear a PR land leaves out
     waiting += pre_land_holds(pull, loop, bool(found or waiting)) if point == "merge" else []
+    red: list[str] = []
     if point == "merge":
-        advice += red_base(pull["baseRefName"])
-    for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
+        said, red = red_base(pull["baseRefName"], loop)
+        advice += said
+    for line in holds(pull, issues, loop) + found + waiting + after + used + advice + red:
         print(line)
-    return 1 if found else WAITING if waiting else 0
+    return 1 if found or red else WAITING if waiting else 0
 
 
 def unopened() -> dict[str, Any]:
@@ -7263,8 +7278,11 @@ def landing_here(
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
     required = rules - OWN
-    for line in red_base(base):
+    said, red = red_base(base, loop)
+    for line in said:
         print(line)
+    if red:
+        raise Refused("\n".join(red))
     queue = held_by(loop, rules)  # before readied, so a refused policy touches no PR
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:
