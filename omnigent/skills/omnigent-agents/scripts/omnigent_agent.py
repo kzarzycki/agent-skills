@@ -62,7 +62,8 @@ ends``, it lands then), 5 while an approval prompt or a question holds it, 4 whe
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy), 8 when the
 session's host is offline (nothing sent, nothing kept: run it again once the host is back).
-``relay --unarchive`` unarchives an archived session first, so it resumes with its history. An open
+``relay --unarchive`` unarchives an archived session first, so it resumes with its history; ``send`` does so for a session the
+supervisor registry lists, and ``send --unarchive`` for one it does not. An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
 nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
 ``card open: <question>``; a plain relay (or ``send``, which prints the same line before it waits) is
@@ -11623,6 +11624,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("session")
     p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
     p.add_argument("report", type=Path)
+    p.add_argument(
+        "--unarchive",
+        action="store_true",
+        help="unarchive an archived session even when the registry does not list it; a listed"
+        " one is unarchived without it, and an unlisted one exits 4",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p.add_argument(
         "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
@@ -12551,7 +12558,18 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             undeleted = None
             try:
-                send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
+                # an archived lead the registry still lists is the supervisor's own archive after
+                # its DONE, so its next brief resumes it; an unlisted one was reaped (#2420)
+                listed = bool(registry) and args.session in registered(Path(registry))[0]
+                send(
+                    og,
+                    args.session,
+                    f"{mark}\n{text}",
+                    report,
+                    args.confirm_seconds,
+                    far=far,
+                    unarchive=args.unarchive or listed,
+                )
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
             # armed once the message is in the history: before it, the report or question of the
