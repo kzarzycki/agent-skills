@@ -11,7 +11,7 @@ Your own check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
 Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent, not a helper, and starts as `brief` describes.
-A cloud lead starts its worker and verifier through the Omnigent session tools the bridge serves in the VM: `sys_session_create` with an explicit `model` (it fails without one), `sys_session_get_history` for a child's reply and `sys_session_close` to end it. `omnigent_agent.py start` needs a server URL and a login the VM lacks, so a cloud lead never calls it.
+A cloud lead starts its worker through the Omnigent session tools the bridge serves in the VM: `sys_session_create` with an explicit `model` (it fails without one), `sys_session_get_history` for a child's reply and `sys_session_close` to end it. It starts no verifier: it ends its turn with `READY FOR VERIFIER: PR #<n> head <sha>`, and the manager that started it runs the verifier and sends back the verdict, which the lead posts (step 7). `omnigent_agent.py start` needs a server URL and a login the VM lacks, so a cloud lead never calls it.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
 edits and commits of a size M or larger change go to a Sonnet worker (an XS or S change stays with you, step 4): your context is re-read on every call (about 150k
@@ -235,7 +235,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    **Verifier route.** Codex is the default verifier whenever it has quota. When it refuses (the quota error
    text goes to the owner at once), `--verifier-route gemini|claude` on the same verifier start, or
    `$OMNIGENT_VERIFIER_ROUTE`, picks the fallback, with the same brief, report format and `verdict` post:
-   `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode, with a model
+   `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode (a lead in a cloud VM can't start it, since the VM has no Omnigent server route: it asks its coordinator to start the Gemini verifier, and `start` refuses at once from the cloud), with a model
    from that host's `agy models` (`gemini-4-hydrogen-medium`; verifier.md's `Verifier:` line names it as
    `agy/<model>/<effort>`), and the PR body's review line says "verifier ran on Gemini (experimental
    fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
@@ -264,7 +264,13 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    (step 8) merges only a head the newest verifier review covers. A fix that changes nothing an
    agent or tool reads (prose for people: a README, the changelog, a code comment), a note
    fixed after a satisfied verdict among them, gets a short delta pass: the verifier reviews
-   only the change since the last verdict's head. Instructions are code: a skill, a role
+   only the change since the last verdict's head.
+   A change that cannot alter the product (R2: docs for people, CI config outside the gating
+   job) skips the verifier's proof runs, its builds, e2e and mutation runs, and its review and
+   verdict stay, since `land` merges only on a verdict. The skip never covers instructions,
+   anything a tool parses, the gate's policy, a gating CI job, or a change rated `high` or
+   `critical`, and the PR body says it was used.
+   <!-- ponytail: skipping the review too would need a policy key the gate reads; none exists, so only the proof runs are skipped. --> Instructions are code: a skill, a role
    file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt,
    and anything a tool parses each need the full verifier pass, still reviewing only the change
    since the last verdict's head. Its "tests" are the checks that change's layer reaches
@@ -482,14 +488,14 @@ timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per ch
 Your own long runs (a build, a test, a gate, a land, a live check) end in something that wakes you, since a harness
 re-invokes a session only for its own tracked background tasks and a detached pid is none
 (orchestrating-agents, A wait wakes you, or you stay in the turn): a harness-tracked background task, a
-detached run with `LOOP_NOTIFY` set, or one tracked background `wait-for --budget <its expected length>`; never a turn ended on "waiting on pid N",
+detached run with `LOOP_NOTIFY` set, or one tracked background `wait-for --budget <its expected length>` (not in a claude-cloud session, which is not woken when a detached run ends, though a tracked background task has woken one (#2611): it waits in the foreground, each call under 10 minutes, and ends its turn only once the run has ended); never a turn ended on "waiting on pid N",
 a log or, in a cloud session, a subagent of yours, which the supervisor nudges. Detached, they start the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (omnigent-agents'
 SKILL.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you
 how it ended and you end your turn meanwhile; else wait on one with one wake, never a loop of short calls:
 `omnigent_agent.py wait-for --log <log> --pid <pid> --budget <its expected length>`, or `wait-for --pr <n>` for a PR's checks,
-as a background call your harness tracks. Start each with `exec`, or in its own process group under
+as a background call whose exit wakes the session (in a claude-cloud session, a foreground call in the same turn, each under 10 minutes). Start each with `exec`, or in its own process group under
 `trap 'kill 0' EXIT`, since stopping a wrapper shell leaves its command running, gating a target
 you have moved past; count runs with a pattern anchored at the interpreter
 (`pgrep -f '^python3 <script> run'`), since one the wrapper's own command line holds never drops.

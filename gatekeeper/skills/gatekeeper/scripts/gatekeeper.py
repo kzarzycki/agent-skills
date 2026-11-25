@@ -32,6 +32,7 @@
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
+    uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -147,9 +148,8 @@ the branch's name starts a segment with (`loop/329-fix`), the same way, and clai
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in gatekeeper.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
-`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
-workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
-prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
+`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop, naming the proofs it lacks, and exits 1, as `land` does for the same PR (one rule, `outside`): `land`
+never takes it into a batch, and named, prints the same line and exits 1, so the loop never merges it and its author merges it their usual way. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
 repository's default branch, through one of three merge queues, picked by the base's rules (`required_checks`) and the
@@ -477,7 +477,7 @@ a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` 
 naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
 any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
-variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
+variable `LOOP_DENY_LIST` names (denied): a line naming a listed term, outside an Omnigent session link, refuses the post before any call to GitHub.
 `verdict` posts a report in the verifier role's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
 (a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
@@ -2424,12 +2424,25 @@ SESSION_FIELD = "Session"
 unfielded: str | None = None
 
 
+# the variable a cloud lead, with no server variables, sets to its own session link, and the form that link must have
+SESSION_LINK_ENV = "OMNIGENT_SESSION_LINK"
+SESSION_LINK_FORM = re.compile(
+    r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._~-]+)*/c/[A-Za-z0-9_-]+"
+)
+
+
 def session_link() -> str | None:
     """The lead's Omnigent session link, `<server>/c/<session id>`; None outside Omnigent. The lead's id names the
     lead inside its workers and verifiers too, since they run as its children."""
     lead = os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "").strip()
     server = os.environ.get("RUNNER_SERVER_URL", "").strip().rstrip("/")
-    return f"{server}/c/{lead}" if lead and server else None
+    if lead and server:
+        return f"{server}/c/{lead}"
+    # ponytail: epic #2458 open question "how a cloud lead learns its own link", narrower reading: the host cannot
+    # put the link atop a cloud brief (the session's id exists only after the session does), so the lead exports its
+    # own link (nothing in the cloud brief says so yet: a follow-up), and this reads it when the server variables are absent (a cloud VM has none)
+    given = os.environ.get(SESSION_LINK_ENV, "").strip().rstrip("/")
+    return given if SESSION_LINK_FORM.fullmatch(given) else None
 
 
 def issue_field(number: int, name: str) -> tuple[str | None, str]:
@@ -2655,6 +2668,99 @@ def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
         and (event.get("createdAt") or "") >= max(recorded)  # ISO 8601 in UTC, so it orders as text
     ]
     return len(later) <= 1
+
+
+# the first lines of an early claim's records on the issue: `Assigned: @<login>` (ASSIGNED, the line older tooling reads),
+# the takeover's `Handover: @<login>` and the release's `Released: @<login>`, each with its `Session:` link folded under it
+HANDOVER, RELEASED = "Handover: @", "Released: @"
+
+
+def claim_holder(issue: dict[str, Any]) -> tuple[str, str] | None:
+    """The record and session link of whoever holds `issue`'s claim: the last `Assigned:`, `Handover:` or `Released:`
+    record that names a session (a release names none, and ends the claim); None when unclaimed, released or closed.
+    ponytail: an `Assigned:` record with no `Session:` (written outside Omnigent) names no holder, so it blocks no one."""
+    if issue.get("state") == "CLOSED":
+        return None
+    kept = []
+    for note in notes(issue):
+        first = note["body"].strip().split("\n", 1)[0].strip()
+        if not first.startswith((ASSIGNED, HANDOVER, RELEASED)):
+            continue
+        session = re.search(r"^Session: (\S+)", machine(note["body"]), re.MULTILINE)
+        if first.startswith(RELEASED) or session:
+            kept.append((first, session[1] if session else ""))
+    if not kept or kept[-1][0].startswith(RELEASED):
+        return None
+    return kept[-1]
+
+
+def held_claims(issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+    """`check build`'s refusal, a line per issue another session holds an unreleased claim on, naming the holder.
+    ponytail: only for a run that names its own session: a run with no session reads no claim and is not refused,
+    so a single-user project changes nothing, and without a link there is no one to tell apart."""
+    link = session_link()
+    if not link:
+        return []
+    found = []
+    for issue in issues:
+        if (holder := claim_holder(issue)) and holder[1] != link:
+            found.append(
+                f"#{issue['number']}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}): "
+                "ask them to `claim --release`, or take it over with `claim --takeover`"
+            )
+    return found
+
+
+def claim_verb(number: int, takeover: bool = False, release: bool = False) -> int:
+    """`claim <issue>`: the early claim, a record on the issue before any PR exists, which `check build` reads
+    (held_claims). `--takeover` takes one another session holds, with a `Handover:` record naming the session it came
+    from; `--release` ends this session's claim.
+    ponytail: a run with no session to name (session_link()) writes no claim and is not refused, so a project with
+    no session changes nothing."""
+    link = session_link()
+    if not link:
+        print(
+            f"#{number}: this run names no session, so a claim has no holder to name: nothing written"
+        )
+        return 0
+    issue = issue_node(number)
+    holder = claim_holder(issue)
+    login = approver(issue) or viewer()
+    if not login:
+        raise Refused(f"#{number}: no one to record the claim for: the forge names no account")
+    details = "By: claim"
+    mine = holder is not None and holder[1] == link
+    if release:
+        if holder is None:
+            print(f"#{number}: no claim to release")
+            return 0
+        if not mine:
+            raise Refused(
+                f"#{number}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}), not this session"
+            )
+        comment(number, fold(f"{RELEASED}{login}", details=details))
+        print(f"#{number}: released")
+        return 0
+    if mine:
+        print(f"#{number}: already claimed by this session")
+        return 0
+    if holder and not takeover:
+        raise Refused(
+            f"#{number}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}): "
+            "`claim --takeover` takes it over"
+        )
+    if takeover and not holder:
+        raise Refused(f"#{number}: no unreleased claim to take over: `claim` it")
+    if holder:
+        comment(
+            number,
+            fold(f"{HANDOVER}{login}", details=f"{details}\nFrom: {holder[1]}\nSession: {link}"),
+        )
+        print(f"#{number}: taken over from session {holder[1]}")
+    else:
+        comment(number, fold(f"{ASSIGNED}{login}", details=f"{details}\nSession: {link}"))
+        print(f"#{number}: claimed")
+    return 0
 
 
 def graduate(epic: int, pr: int) -> int:
@@ -3992,7 +4098,7 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
             return None
     return (
         f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
-        " revert or bot exemption): its author merges it"
+        " revert or bot exemption): land refuses it, and its author merges it"
     )
 
 
@@ -4213,6 +4319,46 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
     except (subprocess.CalledProcessError, OSError) as exc:
         return f"git failed reading {commit}: {exc}"
     return found
+
+
+def pipeline_down(run: int) -> bool:
+    """Whether a job of Actions run `run` shows CI down: cancelled, timed out, never started, or with no steps, so no test
+    ran (breakglass_verify's `infra`, and red_base's refusal)."""
+    broken = {"cancelled", "timed_out", "startup_failure"}
+    return any(job.get("conclusion") in broken or not job.get("steps") for job in run_jobs(run))
+
+
+def red_base(base: str, loop: str | None = None) -> tuple[list[str], list[str]]:
+    """What `base`'s latest push run, the checks on its tip, tells a lander (#2565): (advice, refusals). A required check
+    that failed is advice, with the run's link, since the lander can stop or fix before stacking more onto a red base and
+    a flaky test must not block every landing. It is a refusal when the run's own jobs show the pipeline down, as
+    breakglass_verify reads them: a job cancelled, timed out or never started, or one with no steps, so no test ran. A
+    forge read that fails is one advice line saying so, never silence and never a refusal, and it leaves the refusals
+    already found."""
+    advice: list[str] = []
+    refusals: list[str] = []
+    try:
+        checks = commit_checks(base)
+        wanted = required_checks(base) - OWN
+    except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+        return [
+            f"{base}'s latest push run could not be read from the forge ({err}): check it before landing"
+        ], []
+    for name, run in sorted(checks.items()):
+        if run["conclusion"] not in RED or name in OWN or (wanted and name not in wanted):
+            continue
+        where = f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}"
+        number = re.search(r"/actions/runs/(\d+)", run["url"])
+        try:
+            down = number is not None and pipeline_down(int(number[1]))
+        except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+            advice.append(f"{where}; its jobs could not be read ({err})")
+            continue
+        if down:
+            refusals.append(f"{where}; its jobs show the pipeline down, so no test ran")
+        else:
+            advice.append(f"{where}; fix it or stop before landing more onto it")
+    return advice, refusals
 
 
 def unforced(pull: dict[str, Any]) -> str | None:
@@ -5017,11 +5163,7 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
                 f" ({', '.join(sorted(required))})"
             )
         got = tests(failed["id"])
-        broken = {"cancelled", "timed_out", "startup_failure"}
-        down = any(
-            job.get("conclusion") in broken or not job.get("steps")
-            for job in run_jobs(failed["id"])
-        )
+        down = pipeline_down(failed["id"])
         if got is None and not down:
             why.append(
                 f"{where}: run {failed['id']} published no `{cfg['artifact']}` artifact and no job shows CI down:"
@@ -5435,25 +5577,12 @@ DENY_LIST = "LOOP_DENY_LIST"
 
 
 def denied(text: str) -> None:
-    """Refuse to post `text` when it names a term of the local deny list: the file `LOOP_DENY_LIST` names, one term per
-    line (a name, a repo slug, a hostname; `#` starts a comment), matched ignoring case at word boundaries, since a
-    public repo's comment keeps its first text in GitHub's edit history for good. Without the variable nothing is
-    checked; a list it names that can't be read refuses, since an unread list would let every post through."""
-    if not (where := os.environ.get(DENY_LIST)):
-        return
+    """Refuse to post `text` when it names a term of the local deny list (denylist.py, which has the format and the
+    one allowance: an Omnigent session link); a refusal exits 1 like any other."""
     try:
-        listed = Path(where).expanduser().read_text().splitlines()
-    except OSError as exc:
-        raise Refused(
-            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
-        ) from exc
-    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
-    for number, line in enumerate(text.splitlines(), 1):
-        for term in terms:
-            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
-                raise Refused(
-                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
-                )
+        denylist.check(text)
+    except denylist.Denied as exc:
+        raise Refused(str(exc)) from exc
 
 
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5575,6 +5704,7 @@ def sibling(name: str) -> ModuleType:
 github = sibling("github_adapter")
 # every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
 folding = sibling("folding")
+denylist = sibling("denylist")
 fold, machine = folding.fold, folding.machine
 # the adapters a policy's `adapters` section may name, by name; another agent tree's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
@@ -6438,12 +6568,17 @@ def checked(point: str, pull: dict[str, Any]) -> int:
         )
         return 1 if found else 0
     if point == "merge" and (why := outside(pull, loop)):
+        # land refuses this PR on the same rule (proof_gaps), so the check says so now, never green (#2576)
         print(why)
-        return 0
+        return 1
     if point == "merge":
         base = pull["baseRefName"]
         judge_with_base(base, fetch=True)
     found, issues = gated(point, pull, tracker, loop)
+    if point == "build":
+        found += held_claims(
+            issues, loop
+        )  # before claim(): another session's claim is not overwritten
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
     if point == "build" and not found:
@@ -6465,9 +6600,13 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     )
     # what land's pre-land check would refuse, after the rest, so check merge never calls clear a PR land leaves out
     waiting += pre_land_holds(pull, loop, bool(found or waiting)) if point == "merge" else []
-    for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
+    red: list[str] = []
+    if point == "merge":
+        said, red = red_base(pull["baseRefName"], loop)
+        advice += said
+    for line in holds(pull, issues, loop) + found + waiting + after + used + advice + red:
         print(line)
-    return 1 if found else WAITING if waiting else 0
+    return 1 if found or red else WAITING if waiting else 0
 
 
 def unopened() -> dict[str, Any]:
@@ -6490,7 +6629,7 @@ def unbuilt(number: int, tracker: str | None, loop: str | None) -> int:
     the assignee."""
     issues, pull = adopted([issue_node(number)], loop), unopened()
     found = problems(issues, None if tracker is None else label_names(tracker))
-    found += proofs("build", pull, issues, loop)
+    found += proofs("build", pull, issues, loop) + held_claims(issues, loop)
     for line in holds(pull, issues, loop) + found:
         print(line)
     if not found:
@@ -7242,6 +7381,9 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         )
     with policy_from(base):
         tracker, loop = project()
+        host_takes_pre_land(
+            loop
+        )  # before any lock, draft or step: a host that can't run it refuses up front (#2577)
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
         watched["required"] = set(rules) - OWN
@@ -7312,6 +7454,11 @@ def landing_here(
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
     required = rules - OWN
+    said, red = red_base(base, loop)
+    for line in said:
+        print(line)
+    if red:
+        raise Refused("\n".join(red))
     queue = held_by(loop, rules)  # before readied, so a refused policy touches no PR
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:
@@ -8576,6 +8723,20 @@ def pre_land_run(pull: dict[str, Any], work: Path, loop: str | None) -> PreLand 
     return PreLand(command, tip, code, output or "")
 
 
+def host_takes_pre_land(loop: str | None) -> None:
+    """Refuse, before `land` starts any step, a loop.md `pre_land` this host's policy file forbids (host_forbids, the
+    check run_heavy makes at each step): the same rule, said up front as a land run in the wrong place, never as a step's
+    refusal midway or a machine fault (`machine_exit`)."""
+    if not (written := settings(loop).get("pre_land")):
+        return
+    command, words, _ = command_line(written, "pre_land")
+    if rule := host_forbids(words):
+        raise Refused(
+            f"land runs loop.md's `pre_land` {command!r}, which is on this host's {HOST_COMMANDS} ({rule!r}), so this"
+            " host can't land: run land from a cloud session or a host that can take it"
+        )
+
+
 def pre_landed(
     pull: dict[str, Any], base: str, work: Path, loop: str | None, failed: set[int]
 ) -> bool:
@@ -9010,6 +9171,34 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
     return tracker, loop, rules - OWN, queue
 
 
+# the label `land` puts on a PR whose test selection is the whole suite, before QUEUED: `.mergify.yml`'s `solo` queue
+# rule (batch_size 1) takes a PR with it, and the `default` rule one without it, so a slow run never holds or fails a
+# batch of quick PRs while the queue keeps one ordering (#2553)
+SOLO = "loop:solo"
+
+
+def whole_suite(pull: dict[str, Any]) -> str | None:
+    """Why the project's own selection makes this PR's test run the whole suite, None when it is an affected-tests
+    run: loop.md's opt-out `Gate: full`, a loop.md with no `Affected tests:` selector, or a changed build input under
+    gatekeeper.md's `select.build_inputs_in_queue: full`. Only the project's settings decide, never a path or name
+    the pack knows."""
+    text = loop_md()
+    if FULL_GATE.search(text):
+        return "loop.md's `Gate: full`"
+    if narrowing(text) is None:
+        return "loop.md names no `Affected tests:` selector"
+    select = None
+    with contextlib.suppress(Refused):
+        select = settings(project()[1]).get("select")
+    if select and "build_inputs" in select and select.get("build_inputs_in_queue") == "full":
+        head = pull["headRefOid"]
+        point = merge_base_of(pull["baseRefName"], head)
+        cut = selected(point, head) if point else None
+        if cut and cut[0]:
+            return f"build input {cut[0][0]} under `select.build_inputs_in_queue: full`"
+    return None
+
+
 def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1), unless its queue check
@@ -9085,6 +9274,16 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
             label(number, DEQUEUED, add=False)
         queued = QUEUED in labels and ours
         if not queued:
+            # the solo label first: the queue rule that matches QUEUED must already see which rule is the PR's
+            alone = whole_suite(pull)
+            if alone and SOLO not in labels:
+                label(number, SOLO, add=True)
+            elif not alone and SOLO in labels:
+                label(number, SOLO, add=False)
+            if alone:
+                print(
+                    f"{where}: its selection is the whole suite ({alone}): queued in a batch of its own"
+                )
             refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
             if QUEUED not in labels:
                 label(number, QUEUED, add=True)
@@ -9805,7 +10004,7 @@ def installed_scripts(skill: str) -> Path | None:
     Code's cache (`<marketplace>/<plugin>/<version>/`, beside the script or in `~/.claude/plugins/cache`) that no
     update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
     searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
-    tests set it. None when none holds it."""
+    tests set it, or the checkout is the GITHUB_WORKSPACE of the CI job running there. None when none holds it."""
     # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
     import os
 
@@ -9813,7 +10012,13 @@ def installed_scripts(skill: str) -> Path | None:
     plugin = own.parent.parent
     root = plugin.parent
     checkout = (root / ".git").exists() and (root / ".claude-plugin" / "marketplace.json").is_file()
-    laid = not checkout or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
+    # the pack's own CI runs in the workspace its job checked out: that checkout is the repo it runs in, not a stale clone
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    laid = (
+        not checkout
+        or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
+        or bool(workspace and Path(workspace).resolve() == root)
+    )
     cached = [
         *(root.parent.glob(f"[!.]*/[!.]*/skills/{skill}") if laid else []),
         *(Path.home() / ".claude" / "plugins" / "cache").glob(f"[!.]*/[!.]*/[!.]*/skills/{skill}"),
@@ -12773,8 +12978,13 @@ def mergify_rendered(policy: str | None) -> str:
         ("checks_timeout", said_span(timeouts(policy)["run"])),
     ):
         if value is not None:
+            # the default rule is the first; `checks_timeout` is every queue rule's (the solo one too)
             text, found = re.subn(
-                rf"^(\s+{key}:) .*$", rf"\g<1> {value}", text, count=1, flags=re.MULTILINE
+                rf"^(\s+{key}:) .*$",
+                rf"\g<1> {value}",
+                text,
+                count=0 if key == "checks_timeout" else 1,
+                flags=re.MULTILINE,
             )
             if not found:
                 raise Refused(f"{MERGIFY_TEMPLATE} has no `{key}` line to render")
@@ -13841,6 +14051,10 @@ def main(argv: list[str]) -> int:
     checking.add_argument("point", choices=("build", "merge", "ready", "rerun", "setup", "stalled"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--issue", type=int)
+    claiming = commands.add_parser("claim")
+    claiming.add_argument("issue", type=int)
+    claiming.add_argument("--takeover", action="store_true")
+    claiming.add_argument("--release", action="store_true")
     # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
     records = commands.add_parser("record").add_subparsers(dest="kind", required=True)
     approving = records.add_parser("approval")
@@ -14010,6 +14224,10 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         if args.issue is not None and (args.point != "build" or args.pr is not None):
             raise Refused("--issue goes with check build and no PR number")
         return check(args.point, args.pr, args.issue)
+    if args.command == "claim":
+        if args.takeover and args.release:
+            raise Refused("claim --takeover and --release are two verbs: pass one")
+        return claim_verb(args.issue, args.takeover, args.release)
     if args.command == "breakglass-proof":
         return breakglass_proof(
             args.pr, args.head, args.failed_run, args.rerun, args.smoke, args.earlier

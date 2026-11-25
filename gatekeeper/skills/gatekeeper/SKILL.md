@@ -22,6 +22,7 @@ it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged 
 | `record approval\|verdict\|checks` | records a person's approval, a verifier report as a review, or a check pass on the head |
 | `land [--wait]` | every merge proof, then marks the PR ready and merges it, pinned to the head |
 | `report [--json]` | reads a verifier report as the gatekeeper does; `--json` prints its facts |
+| `claim <issue> [--takeover\|--release]` | an early claim as a record on the issue naming this session (none for a run with no session), `check build` exits 1 naming the holder when another session holds it, `--takeover` writes a `Handover:` record, `--release` a `Released:` one |
 | `delegate` | the delegated approver's `approved:merge`, feature branch only |
 | `timeouts [--json\|--mergify\|--check]` | every time limit the policy's `timeouts` derive; `--mergify` renders `.mergify.yml`, `--check` exits 1 where it is out of step |
 
@@ -50,6 +51,7 @@ Planning > Issue fields > New field, name `Session`, type Text), and exits as it
   forge and the evidence store only through ports, each served by the adapter the policy's
   `adapters` section names; GitHub's is the only one, and `gatekeeper.py` loads it from
   beside itself.
+- `scripts/denylist.py`: the local deny list (`LOOP_DENY_LIST`), the one check `gatekeeper.py`, engineering-loop's `nightly.py` and `omnigent_agent.py` run on a text before posting it; an Omnigent session link is let through. Read it to change the rule.
 - `scripts/folding.py`: builds and reads the folded comments the gatekeeper and the loop post.
 - `scripts/events.py` and [events.md](events.md): a step's state written as a small git ref
   (`emit`, `read`, `wait`, `clear`), which the gatekeeper reads and the loop and a runner write.
