@@ -56,7 +56,7 @@ Planning > Issue fields > New field, name `Session`, type Text), and exits as it
   (`emit`, `read`, `wait`, `clear`), which the gatekeeper reads and the loop and a runner write.
   events.md has the kinds, states, beat intervals and `event.json` fields; read it to write or
   read an event.
-- `scripts/loop_metrics.py`: `loop-metrics <owner/repo>... --since <date>` prints one read-only line per repo for the week: merged PRs, median ready->merged time, runner-minutes per merged PR, reverts and red nights, with the week before beside them (`merged with no record` prints `not measured yet (#2310)`). Run it for the weekly numbers; its docstring holds the quota it spends.
+- `scripts/loop_metrics.py`: `loop-metrics <owner/repo>... --since <date>` prints one read-only line per repo for the week: merged PRs, median ready->merged time, runner-minutes per merged PR, reverts and red nights, with the week before beside them (`merged with no record N of M` reads each merged PR's `land` status, which `land` writes before it deletes the record, #2310). Run it for the weekly numbers; its docstring holds the quota it spends.
 - `scripts/acceptance.py`: runs one spec's acceptance checks from a folder of executables, and
   the gatekeeper's `check` reads the evidence it leaves.
 - [policy.md](policy.md): every policy key, its type and default, the rules the policy

@@ -12,9 +12,13 @@ from typing import Any
 # the same to the scripts the tests run as subprocesses (#1022).
 sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+# The pack's own tests run its scripts from this checkout, which the installed-copy resolver otherwise never
+# searches (#2485); tests/test_installed_pack.py unsets it to prove that.
+os.environ["AGENT_SKILLS_CHECKOUT"] = "1"
 
 import pytest
 
+from tools import test_env
 from tools.gh_trap import install_trap, without_trap
 
 # the gatekeeper's test harness, whose fixtures every package's tests run under, and the Omnigent driver's tests
@@ -109,11 +113,13 @@ def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _not_in_the_merge_queue(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The merge queue's batch run sets GITHUB_HEAD_REF to `mergify/merge-queue/...`, which makes the test selector read
-    its queue policy (tools/affected_tests.py, #2445): a test of the selector sees the queue only when it sets it."""
-    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
-    monkeypatch.delenv("GATE_IN_QUEUE", raising=False)
+def _not_where_it_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test sees the same environment in the merge queue, a PR's CI, a cloud VM and a host: the runner's variables
+    are gone, and a test that needs one sets it. The queue's batch sets GITHUB_HEAD_REF to `mergify/merge-queue/...`,
+    which makes the test selector read its queue policy (tools/affected_tests.py, #2445, #2449). tools/test_env.py holds
+    the list; tests/test_env_reads.py fails on a variable product code reads that it does not name (#2455)."""
+    for var in test_env.RUNNER:
+        monkeypatch.delenv(var, raising=False)
 
 
 _Environ = type(os.environ)
@@ -286,15 +292,9 @@ def _no_own_pr_start(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
 def _outside_omnigent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests run as if outside an Omnigent session; one that needs a session sets it."""
     for var in (
-        "OMNIGENT_RUNNER_PRIMARY_SESSION_ID",
-        "OMNIGENT_SESSION_ID",
-        "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
-        "LOOP_HEAVY_LOCK",
-        "OMNIGENT_PERMISSION_MODE",
-        # a cloud session's marker: land refuses there without a landing key, so tests run as a host's
-        "CLAUDE_CODE_REMOTE",
+        *test_env.SESSION,  # CLAUDE_CODE_REMOTE, a cloud session's marker: land refuses there without a landing key
         # the host's defaults for a child's model and effort
-        *(v for v in os.environ if v.startswith(("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_"))),
+        *(v for v in os.environ if v.startswith(test_env.SESSION_PREFIXES)),
     ):
         monkeypatch.delenv(var, raising=False)
 
