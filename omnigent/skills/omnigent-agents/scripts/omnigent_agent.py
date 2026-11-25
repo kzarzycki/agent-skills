@@ -6458,58 +6458,29 @@ QUEUE_REJECT_SHARE = (
 )
 QUEUE_REJECT_FLOOR = 5  # the fewest entries in the window a share is judged on
 QUEUE_FRESH = 1800.0  # a dequeue a repo's first read finds is relayed when it left the queue this recently: 2 PR polls
-MERGIFY_LOGIN = "mergify[bot]"
-MERGIFY_PAYLOAD = re.compile(
-    r"-\*- Mergify Payload -\*-\s*(\{.*?\})\s*-\*- Mergify Payload End -\*-", re.DOTALL
-)
-# a failing check's line under `Failing checks:`: its name and job URL, whose last number is the job id
-FAILING_CHECK = re.compile(r"^- \S+ \[`([^`]+)`\]\((https://github\.com/[^)\s]*/job/(\d+))\)")
-QUEUE_FAULT = re.compile(r"^\*\*The failure is in this pull request\.\*\*.*$", re.MULTILINE)
-# pytest's summary line for a failed test, behind the Actions log's timestamp
-PYTEST_FAILED = re.compile(r"^(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?FAILED (\S+)", re.MULTILINE)
 
 
-def queue_comment(comment: dict) -> dict | None:
-    """One merge-queue entry from a Mergify status comment (a row of GitHub's issue comments): the PR, ``state``
-    (``merged``, ``dequeued``, or one not yet final), ``left_at`` (seconds, 0 while in the queue), the dequeue
-    ``code``, the ``checks`` under ``Failing checks:`` as ``[name, job URL, job id]`` and Mergify's ``fault`` line
-    when it named this PR as the failure, else empty. None for a comment not from Mergify or holding no payload."""
-    if str((comment.get("user") or {}).get("login")) != MERGIFY_LOGIN:
-        return None
-    body = str(comment.get("body") or "")
-    found = MERGIFY_PAYLOAD.search(body)
-    pr = re.search(r"/issues/(\d+)$", str(comment.get("issue_url") or ""))
-    if not found or not pr:
-        return None
-    try:
-        payload = json.loads(found[1])
-    except ValueError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    reason_ = payload.get("dequeue_reason") or {}
-    _, _, failing = body.partition("\nFailing checks:\n")
-    checks = []
-    for line in failing.splitlines():
-        if not line.strip():
-            break  # the list ends at its blank line
-        if m := FAILING_CHECK.match(line.strip()):
-            checks.append([m[1], m[2], m[3]])
-    fault = QUEUE_FAULT.search(body)
-    return {
-        "pr": int(pr[1]),
-        "state": str(payload.get("state") or ""),
-        "left_at": stamp(payload["left_at"]) if payload.get("left_at") else 0.0,
-        "code": str(reason_.get("code") or "") if isinstance(reason_, dict) else "",
-        "checks": checks,
-        "fault": fault[0].replace("**", "") if fault else "",
-    }
+def _load_queue_failure() -> Any:
+    """``queue_failure.py`` beside this file, loaded by path under a name of this module's: the reading of a Mergify
+    status comment and of a job log's failing tests, which the ``queue-failure`` workflow writes on the PR too (#2497),
+    so the lead's message and the PR's record cannot disagree. Mergify's queue only; the GitHub merge queue is not
+    read (ponytail: epic #2458 open question on the GitHub merge queue, answered narrowly)."""
+    path = Path(__file__).resolve().with_name("queue_failure.py")
+    spec = importlib.util.spec_from_file_location(f"{__name__}_queue_failure", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def failed_tests(log: str) -> list[str]:
-    """The test ids of pytest's ``FAILED <id>`` lines in an Actions job log, the timestamp each line opens with
-    stripped, once each, in order."""
-    return list(dict.fromkeys(PYTEST_FAILED.findall(log)))
+QUEUE_FAILURE = _load_queue_failure()
+MERGIFY_LOGIN = QUEUE_FAILURE.MERGIFY_LOGIN
+MERGIFY_PAYLOAD = QUEUE_FAILURE.MERGIFY_PAYLOAD
+FAILING_CHECK = QUEUE_FAILURE.FAILING_CHECK
+QUEUE_FAULT = QUEUE_FAILURE.QUEUE_FAULT
+PYTEST_FAILED = QUEUE_FAILURE.PYTEST_FAILED
+queue_comment = QUEUE_FAILURE.queue_comment
+failed_tests = QUEUE_FAILURE.failed_tests
 
 
 def queue_read(repo: str, memo: dict, now: float | None = None) -> list[str]:
@@ -6661,22 +6632,20 @@ def owner_record(comments: list) -> str | None:
 
 def dequeue_message(repo: str, entry: dict, flakes: dict) -> str:
     """What a dequeue tells the lead that owns its PR: the PR, the code, each failing check with its job URL, the
-    failing tests with the known flakes among them named, Mergify's fault line, and the step to take."""
+    failing tests with the known flakes among them named (from ``queue_failure.failure_lines``, whose checks and
+    tests the PR's ``Queue failure`` record lists too; the record holds no diagnosis, the message keeps Mergify's own
+    fault line as before), and the step to take."""
     n = entry["pr"]
     lines = [f"{repo}#{n} left the merge queue: {entry['code'] or 'dequeued'}."]
-    lines += [f"Failing check: {name} {url}" for name, url, _ in entry["checks"]]
+    lines += QUEUE_FAILURE.failure_lines(entry, flakes)
     tests = entry.get("tests") or []
-    if tests:
-        lines.append(
-            "Failing tests: " + ", ".join(f"{t}{' (a known flake)' * (t in flakes)}" for t in tests)
+    if tests and all(t in flakes for t in tests):
+        at = next(i for i, x in enumerate(lines) if x.startswith("Failing tests: "))
+        lines.insert(
+            at + 1,
+            "Every failing test is a known flake (it failed other PRs' queue runs too): the PR is still out"
+            " of the queue.",
         )
-        if all(t in flakes for t in tests):
-            lines.append(
-                "Every failing test is a known flake (it failed other PRs' queue runs too): the PR is still out"
-                " of the queue."
-            )
-    if entry.get("fault"):
-        lines.append(entry["fault"])
     lines.append(f"Fix it, then run `land {n}` again.")
     return "\n".join(lines)
 
