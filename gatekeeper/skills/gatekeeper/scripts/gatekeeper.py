@@ -10700,7 +10700,10 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     if estimate is not None:  # no estimate, nothing to compare, and no file to dirty a checkout
         note_run(root, estimate, time.monotonic() - started, code)
     if spent is SPENT:
-        print(over_budget(budget, root, base if written is not None else None), file=sys.stderr)
+        whole = "`Gate: full`" if FULL_GATE.search(text) else "no `Affected tests:` line"
+        print(
+            over_budget(budget, root, base if written is not None else None, whole), file=sys.stderr
+        )
     return code
 
 
@@ -10862,14 +10865,15 @@ def run_budget() -> int:
         return fallback
 
 
-def over_budget(budget: int, root: Path, base: str | None) -> str:
+def over_budget(budget: int, root: Path, base: str | None, whole: str = "`Gate: full`") -> str:
     """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
-    knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
+    knows it (the whole suite, its cause named by `whole`: `Gate: full`, or a loop.md with no `Affected tests:` line
+    (#2361); else unknown, since the project's own command selects, with the
     count of files the change touches against `base`, the selector's input), and that it ran unsharded: this verb runs
     the project's one command, so with `select.shards` above 1 the line names the `shards` verb that splits a selection
     (#2229)."""
     if base is None:
-        size = "the whole suite (`Gate: full`)"
+        size = f"the whole suite ({whole})"
     else:
         try:
             count = str(len(git("-C", str(root), "diff", "--name-only", base, "HEAD").split()))
