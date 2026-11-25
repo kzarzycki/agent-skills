@@ -116,7 +116,9 @@ def test_check_build_exits_0_where_the_account_lacks_the_field(
     session_fields: list[tuple[Any, ...]],
 ) -> None:
     in_project(monkeypatch)
-    monkeypatch.setattr(approvals, "owner_record", lambda _pull: [])  # the `Owner:` record is its own test's
+    monkeypatch.setattr(
+        approvals, "owner_record", lambda _pull: []
+    )  # the `Owner:` record is its own test's
     monkeypatch.setattr(approvals, "issue_field", lambda number, name: (None, f"ISSUE_{number}"))
     pr = pull()
     pr["closingIssuesReferences"]["nodes"] = [held(specced(1, "kind:bug"))]
