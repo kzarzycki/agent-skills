@@ -9,6 +9,7 @@ import pytest
 from approvals_harness import LOOP, TRACKER, VERDICT, approvals, approved, pull
 from test_approvals import in_project
 
+REAL = approvals.red_base
 URL = "https://github.com/o/r/actions/runs/9/job/1"
 
 
@@ -21,6 +22,7 @@ def checks(conclusion: str) -> dict[str, dict[str, str]]:
 
 @pytest.fixture(autouse=True)
 def forge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(approvals, "red_base", REAL)
     monkeypatch.setattr(approvals, "required_checks", lambda base: {"test", "loop:approvals"})
     # the run published its failed test ids unless a test says otherwise
     monkeypatch.setattr(approvals, "run_artifact", lambda run, name: {"failed": ["t::x"]})
