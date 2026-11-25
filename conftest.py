@@ -41,6 +41,7 @@ from approvals_harness import (  # noqa: F401
     refs,
     repo_template,
     required,
+    session_fields,
 )
 
 # No test reaches GitHub through the real `gh` (tools/gh_trap.py, #2035); the trap folder this process made is removed
