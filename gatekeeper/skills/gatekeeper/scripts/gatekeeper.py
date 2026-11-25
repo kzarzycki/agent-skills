@@ -44,6 +44,7 @@ unchanged. Its own names for three of them, and one verb more:
     uv run scripts/gatekeeper.py record approval <spec|plan|merge> <n> --by ...  # `approve`, the same arguments
     uv run scripts/gatekeeper.py record verdict <pr> <report>   # `verdict`
     uv run scripts/gatekeeper.py record checks [<pr>] [--record|--run|--status <head>|--head-proof]  # `local-ci`
+    uv run scripts/gatekeeper.py record waiting <pr> --on <what> [--within 4h|2d]  # a PR waiting on another agent tree's go: `Waiting on:` and its `Deadline:` (default 24h); `--clear` ends it (#2501)
     uv run scripts/gatekeeper.py report --json <report>   # the report's facts as JSON: verifier, head, verdict, ...
 
 The policy reaches the tracker, the forge and the evidence only through their ports (PORTS), each run by the adapter
@@ -2609,6 +2610,43 @@ def owner_record(pull: dict[str, Any]) -> list[str]:
             f"PR #{pull['number']}: could not write the `Owner:` record ({(exc.stderr or '').strip() or exc})"
         ]
     return []
+
+
+# the first line of the record a PR waiting on another agent tree's go carries: `Waiting on: <what>`, its `Deadline:` (ISO
+# 8601, UTC) folded under it; the clearing record repeats the line and adds `Cleared:`. The last one on the PR decides.
+WAIT_RECORD = "Waiting on: "
+# how long a wait may last before the waiting agent tree's supervisor raises it to the PR's owner, when `--within` is absent
+WAIT_SPAN = "24h"
+
+
+def wait_on(number: int, what: str | None, within: str | None, clear: bool) -> int:
+    """`record waiting <pr> --on <what> [--within <span>]` posts the PR's `Waiting on:` record with its deadline (now
+    plus the span, default WAIT_SPAN); `--clear` posts the one that ends the wait, naming what the PR last waited on.
+    The omnigent-agents supervisor of the agent tree that owns the PR (its `Owner:` record) raises one event to that owner
+    once the deadline passes with no clearing record. Refused: no `--on` (or `--clear`), both, a span it cannot read, a
+    `--clear` with nothing to clear. ponytail (#2501): the record is written on request, never by `check build`, and
+    the deadline is the writer's span, not a policy setting: the epic names nothing to configure."""
+    if clear == bool(what):
+        raise Refused(
+            "record waiting takes `--on <what>` to start a wait, or `--clear` to end one, not both or neither"
+        )
+    pull = pull_request(number)
+    last = next((n for n in reversed(notes(pull)) if n["body"].startswith(WAIT_RECORD)), None)
+    if clear:
+        if last is None or "Cleared:" in machine(last["body"]):
+            raise Refused(f"PR #{number} has no `Waiting on:` record to clear")
+        first = machine(last["body"]).split("\n", 1)[0]
+        comment(number, fold(first, details=f"Cleared: {utcnow():%Y-%m-%dT%H:%M:%SZ}"))
+        return 0
+    delta = span(within or WAIT_SPAN)
+    if delta is None:
+        raise Refused(f"--within {within!r} is not a span: write it as `4h`, `2d` or `1d12h`")
+    deadline = f"{utcnow() + delta:%Y-%m-%dT%H:%M:%SZ}"
+    comment(
+        number,
+        fold(f"{WAIT_RECORD}{' '.join((what or '').split())}", details=f"Deadline: {deadline}"),
+    )
+    return 0
 
 
 def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
@@ -5668,7 +5706,7 @@ github = sibling("github_adapter")
 folding = sibling("folding")
 denylist = sibling("denylist")
 fold, machine = folding.fold, folding.machine
-# the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
+# the adapters a policy's `adapters` section may name, by name; another agent tree's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
 # each port's adapter while main() runs, read from the policy at the first call (port); GitHub's outside main()
 using: dict[str, Any] | None = None
@@ -13992,7 +14030,7 @@ def refuses_stale() -> bool:
 
 
 # `record <kind>`: the verb each kind was before #614, which the code below names
-RECORDS = {"approval": "approve", "verdict": "verdict", "checks": "local-ci"}
+RECORDS = {"approval": "approve", "verdict": "verdict", "checks": "local-ci", "waiting": "wait-on"}
 # today's verbs, kept for one release line (approvals.py's), and the gatekeeper's words for each
 ALIASES = {verb: ["record", kind] for kind, verb in RECORDS.items()}
 
@@ -14041,6 +14079,15 @@ def main(argv: list[str]) -> int:
     proving.add_argument("--earlier", type=int, nargs="*", default=[])
     delegating = commands.add_parser("delegate")
     delegating.add_argument("pr", type=int)
+    waiting_on = records.add_parser("waiting")
+    waiting_on.add_argument("pr", type=int)
+    waiting_on.add_argument(
+        "--on", metavar="WHAT", help="what the PR waits on, e.g. another agent tree's go"
+    )
+    waiting_on.add_argument(
+        "--within", metavar="SPAN", help=f"the deadline, as `4h`, `2d`: default {WAIT_SPAN}"
+    )
+    waiting_on.add_argument("--clear", action="store_true", help="the wait is over")
     posting = records.add_parser("verdict")
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
@@ -14207,6 +14254,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             if args.point == "merge"
             else approve(args.point, args.number, None, args.by)
         )
+    if args.command == "wait-on":
+        return wait_on(args.pr, args.on, args.within, args.clear)
     if args.command == "delegate":
         return delegate(args.pr)
     if args.command == "gate-record":
