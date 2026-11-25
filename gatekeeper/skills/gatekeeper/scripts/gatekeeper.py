@@ -29,7 +29,7 @@
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
     uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1, one line each, when .mergify.yml, a marked workflow job's `timeout-minutes`, loop.md's `Wall-clock variable:`, a hand-set `land.wait` or the nightly's push paths (against `select.build_inputs`) is out of step
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
-    uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
+    uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.build_inputs` file) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
     uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
@@ -10858,9 +10858,20 @@ def narrowed_gate(
     if (written := narrowing()) is None:
         return None
     variable = gate_base_variable()
-    if (cut := selected(base, NARROW_HEAD.get())) is not None and not cut[0]:
-        # no build input changed (select): the run is affected-tests' own cut, keyed by the checks it runs
-        said = shlex.join(["select.checks:", *cut[1]] if cut[1] else ["select.checks:", "none"])
+    cut = selected(base, NARROW_HEAD.get())
+    ci_whole = (
+        cut is not None and cut[0] and ci_runs_whole_suite(base, NARROW_HEAD.get()) is not None
+    )
+    if cut is not None and (not cut[0] or ci_whole):
+        # no build input changed (select): the run is affected-tests' own cut, keyed by the checks it runs; a whole-suite
+        # selection CI runs (#2621) is that cut too, keyed `select.checks: ci`, so its record is the head's tests pass
+        said = shlex.join(
+            ["select.checks:", "ci"]
+            if ci_whole
+            else ["select.checks:", *cut[1]]
+            if cut[1]
+            else ["select.checks:", "none"]
+        )
         words = [
             sys.executable,
             str(Path(__file__).with_name("gatekeeper.py")),
@@ -10943,6 +10954,37 @@ def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[
     return inputs, commands
 
 
+def whole_suite_inputs(inputs: list[str], select: dict[str, Any]) -> list[str]:
+    """The build inputs among `inputs` the project declares as ones that run the whole suite (`select.build_inputs`, or
+    the selection's own policy files), not the paths it merely can't judge (classify): a project's `Affected tests:`
+    command may narrow those."""
+    declared = select.get("build_inputs", [])
+    return [
+        path
+        for path in inputs
+        if path in SELECTION_FILES or any(fnmatch.fnmatch(path, glob) for glob in declared)
+    ]
+
+
+# set by `affected-tests --local`: run a whole-suite selection here though CI runs it (ci_runs_whole_suite)
+FORCE_LOCAL: contextvars.ContextVar[bool] = contextvars.ContextVar("FORCE_LOCAL", default=False)
+
+
+def ci_runs_whole_suite(base: str, head: str | None = None) -> str | None:
+    """The first declared build input of the change since `base` when it selects the whole test root and the project's
+    CI is the merge proof (`loop.ci` is not false) and `--local` is not given, else None (#2621). The worker's
+    affected-tests run then records `whole suite selected; CI runs it` and runs no test: the merge queue or the required
+    check runs the same selection, sharded."""
+    if FORCE_LOCAL.get() or no_ci(project()[1]):
+        return None
+    cut = selected(base, head)
+    if cut is None:
+        return None
+    select = settings(project()[1]).get("select") or {}
+    whole = whole_suite_inputs(cut[0], select)
+    return whole[0] if whole else None
+
+
 def changed_since(base: str, head: str | None = None) -> list[str] | None:
     """The files `head` (else the checkout's HEAD) changes since `base` (a moved file both names), None when git
     can't tell: a diff git can't list, or, for the checkout, uncommitted or untracked changes, which no commit holds."""
@@ -10975,6 +11017,12 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
     if (cut := selected(base)) is None:
         return None
     inputs, commands = cut
+    if inputs and (whole := ci_runs_whole_suite(base)) is not None:
+        print(
+            f"affected-tests: whole suite selected; CI runs it (build input {whole}; `--local` runs it here)",
+            file=sys.stderr,
+        )
+        return 0
     if inputs:
         print(
             f"affected-tests: build input {inputs[0]}: the cut can't settle it",
@@ -14125,6 +14173,8 @@ def main(argv: list[str]) -> int:
     selecting.add_argument("--base", metavar="REV")
     # --record: a pass is recorded and pushed as narrowed `local-ci --record` records one (the worker's final head)
     selecting.add_argument("--record", action="store_true")
+    # --local: run a whole-suite selection here though CI runs it (#2621)
+    selecting.add_argument("--local", action="store_true")
     commands.add_parser("queue-config")
     # the batch's base: the queue's target branch tip the batch merges onto
     queueing = commands.add_parser("queue-select")
@@ -14191,7 +14241,11 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "report":  # reads a local file only, so no remote needs choosing
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "affected-tests":
-        return affected_tests(args.base, args.record)
+        token = FORCE_LOCAL.set(args.local)
+        try:
+            return affected_tests(args.base, args.record)
+        finally:
+            FORCE_LOCAL.reset(token)
     if args.command == "shards":
         return sharded(args)
     if (

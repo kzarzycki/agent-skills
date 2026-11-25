@@ -153,28 +153,70 @@ def test_a_failing_check_fails_the_run(worker: dict[str, Any]) -> None:
 @pytest.mark.parametrize(
     "path",
     [
-        "src/app.py",  # a declared build input
-        "package.json",
+        "package.json",  # in neither list's whole-suite sense: the selector can't judge it
         "Makefile",  # in neither list: unclear, so it tests
         ".github/workflows/ci.yml",
-        "docs/agents/gatekeeper.md",  # the selection's own policy
-        "docs/agents/loop.md",
     ],
 )
-def test_a_build_input_or_an_unclear_path_runs_the_selector(
-    worker: dict[str, Any], path: str
-) -> None:
-    worker["start"](SELECT)
+def test_an_unclear_path_runs_the_selector(worker: dict[str, Any], path: str) -> None:
+    worker["start"](SELECT.replace("    - package.json\n", ""))
     worker["commit"]("docs/guide.md", path)
     assert approvals.main(["affected-tests"]) == 0
     assert worker["ran"]() == ["selector"]
+
+
+@pytest.mark.parametrize(
+    "path", ["src/app.py", "package.json", "docs/agents/gatekeeper.md", "docs/agents/loop.md"]
+)
+def test_a_whole_suite_selection_under_ci_runs_nothing_and_says_so(
+    worker: dict[str, Any], capsys: Any, path: str
+) -> None:
+    """#2621: a declared build input (or the selection's own policy) selects the whole suite, which CI runs."""
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md", path)
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == []
+    assert "whole suite selected; CI runs it" in capsys.readouterr().err
+
+
+def test_local_runs_a_whole_suite_selection_here(worker: dict[str, Any]) -> None:
+    worker["start"](SELECT)
+    worker["commit"]("src/app.py")
+    assert approvals.main(["affected-tests", "--local"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_without_ci_a_whole_suite_selection_runs_here_as_before(worker: dict[str, Any]) -> None:
+    worker["start"]("ci: false\n" + SELECT)
+    worker["commit"]("src/app.py")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_the_skip_records_a_pass_of_the_tests_kind_land_reads(worker: dict[str, Any]) -> None:
+    """The open question of #2621: the skip is keyed `select.checks: ci` in the narrowed gate, the record
+    `head_recorded` (so `check merge`, `land` and the verifier start) already reads; no second kind."""
+    worker["start"](SELECT)
+    worker["commit"]("src/app.py")
+    base = base_of_work()
+    with approvals.narrowed_to(base):
+        command = approvals.narrowed_gate()[0]
+    assert "select.checks: ci" in command and command.endswith("(narrowed)")
+    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    assert worker["ran"]() == []
+    assert (
+        approvals.gate_record(
+            git_in(Path.cwd(), "rev-parse", "HEAD").strip(), __import__("shlex").split(command)
+        )
+        == 0
+    )
 
 
 def test_a_build_input_under_a_non_product_glob_still_tests(worker: dict[str, Any]) -> None:
     """build_inputs win over the pack's non-product set: a project whose product is markdown declares it."""
     worker["start"](SELECT.replace("    - package.json\n", "    - package.json\n    - content/*\n"))
     worker["commit"]("content/post.md")
-    assert approvals.main(["affected-tests"]) == 0
+    assert approvals.main(["affected-tests", "--local"]) == 0
     assert worker["ran"]() == ["selector"]
 
 
@@ -286,9 +328,13 @@ def test_the_narrowed_gate_of_a_build_input_runs_the_selector(worker: dict[str, 
     worker["start"](SELECT)
     worker["commit"]("docs/guide.md", "src/app.py")
     base = base_of_work()
-    with approvals.narrowed_to(base):
-        assert "select.checks" not in approvals.narrowed_gate()[0]
-    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    token = approvals.FORCE_LOCAL.set(True)  # `--local`: CI's run of the whole suite is not taken
+    try:
+        with approvals.narrowed_to(base):
+            assert "select.checks" not in approvals.narrowed_gate()[0]
+        assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    finally:
+        approvals.FORCE_LOCAL.reset(token)
     assert worker["ran"]() == ["selector"]
 
 
@@ -297,7 +343,7 @@ def test_a_moved_build_input_still_tests(worker: dict[str, Any]) -> None:
     worker["start"](SELECT)
     git_in(Path.cwd(), "mv", "src/app.py", "docs/app.md")
     git_in(Path.cwd(), "commit", "-qm", "move")
-    assert approvals.main(["affected-tests"]) == 0
+    assert approvals.main(["affected-tests", "--local"]) == 0
     assert worker["ran"]() == ["selector"]
 
 
@@ -560,7 +606,7 @@ def test_without_the_line_the_select_cut_runs_then_the_full_check(
 ) -> None:
     worker["start"](SELECT, selector=False)
     worker["commit"](*paths)
-    assert approvals.main(["affected-tests"]) == 0
+    assert approvals.main(["affected-tests", "--local"]) == 0
     assert worker["ran"]() == ran
 
 
@@ -570,7 +616,7 @@ def test_a_build_input_without_the_line_says_the_full_check_runs(
     """With no `Affected tests:` line, the build input's line names no command that isn't there."""
     worker["start"](SELECT, selector=False)
     worker["commit"]("src/app.py")
-    assert approvals.main(["affected-tests"]) == 0
+    assert approvals.main(["affected-tests", "--local"]) == 0
     said = capsys.readouterr().err
     assert (
         "build input src/app.py: the cut can't settle it" in said
