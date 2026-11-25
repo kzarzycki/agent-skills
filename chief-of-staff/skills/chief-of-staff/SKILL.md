@@ -334,6 +334,9 @@ manager per project, each a node.
   other directly about a bug that crosses their projects.
 - **Leads.** Each manager's leads are in its own registry, followed by its own supervisor
   (Follow).
+- **The manager's role file.** Read `roles/pm.md` when you start a project manager or run as one:
+  the shared role, its hard limits with their reasons, and where a project's own numbers go.
+  A project with one registry needs no manager, so the file is optional reading.
 - **Decision log.** While the owner is away, each decision taken for them goes in the node's
   decision log with how to undo it. A morning digest is drafted from it and the board's
   `## Needs the owner`, and sent by hand, never by a scheduled send. `scripts/decisions.py`
