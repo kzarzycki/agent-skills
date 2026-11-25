@@ -481,6 +481,8 @@ def moved_report(mode: str, found: dict | None, note: str = "") -> None:
                 handle.write(text + "\n")
 
 
+# ponytail: #2560's third item, a failed push run on main visible to whoever lands next (e.g. `check merge` reading main's
+# latest push run), is not built: it is a gatekeeper change beyond this fix, which keeps to the resolver and its test.
 def moved(args: argparse.Namespace, api: Api = forge) -> int:
     repo, sha = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"]
     workflow = (

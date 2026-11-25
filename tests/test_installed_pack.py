@@ -101,6 +101,44 @@ def test_the_pack_own_tests_may_opt_into_the_checkout(
     assert resolve("omnigent-agents") == root / "other/skills/omnigent-agents/scripts"
 
 
+def test_the_pack_own_ci_finds_its_scripts_in_the_workspace_it_runs_in(tmp_path: Path) -> None:
+    """#2560: main's push run, the nightly and the tag check run `nightly.py moved <event>` in a plain checkout of the
+    pack, with no installed plugin and no AGENT_SKILLS_CHECKOUT. It must resolve the gatekeeper skill there and exit 0
+    (the forge read, here refused at once, only means "run as usual"), on every event's path, a PR's included."""
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(tmp_path / "empty"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_WORKSPACE": str(REPOSITORY),
+        "GITHUB_REPOSITORY": "owner/pack",
+        "GITHUB_SHA": "0" * 40,
+        "GITHUB_TOKEN": "unused",
+        "GITHUB_API_URL": "http://127.0.0.1:9",
+    }
+    script = REPOSITORY / "loop/skills/engineering-loop/scripts/nightly.py"
+    for mode in ("push", "schedule", "tag"):
+        done = subprocess.run(
+            [sys.executable, str(script), "moved", mode],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert done.returncode == 0, (mode, done.stderr)
+        assert "Running:" in done.stdout, (mode, done.stdout)
+    outside = {**env, "GITHUB_WORKSPACE": str(tmp_path)}
+    refused = subprocess.run(
+        [sys.executable, str(script), "moved", "push"],
+        env=outside,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert refused.returncode != 0
+    assert "needs the `gatekeeper` skill" in refused.stderr
+
+
 def test_the_deprecated_forwarder_runs_the_installed_omnigent_agents_script(
     tmp_path: Path,
 ) -> None:
