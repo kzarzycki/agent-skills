@@ -71,18 +71,17 @@ def test_under_full_a_lockfile_bump_selects_the_whole_suite(lock_bump: list[str]
     assert a.targets(files, base, build_inputs="full") == a.ALL
 
 
-def test_the_queue_reads_the_policy_and_runs_the_whole_suite_unless_a_project_opts_into_floor(
+def test_the_queue_reads_the_policy_and_defaults_to_floor_outside_it_full(
     lock_bump: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     base, *files = lock_bump
     assert a.targets(files, base) == a.ALL  # a PR head, not the queue: as before
     monkeypatch.setenv("GITHUB_HEAD_REF", "mergify/merge-queue/abc")
-    assert (
-        a.targets(files, base) == a.ALL
-    )  # no policy: `full` until a project's nightly records durations
+    assert a.targets(files, base) == [
+        "tests/test_app.py",
+        "tests/test_pkg.py",
+    ]  # no policy: `floor`
     Path("docs/agents").mkdir(parents=True)
-    Path("docs/agents/gatekeeper.md").write_text("select:\n  build_inputs_in_queue: floor\n")
-    assert a.targets(files, base) == ["tests/test_app.py", "tests/test_pkg.py"]
     Path("docs/agents/gatekeeper.md").write_text("select:\n  build_inputs_in_queue: full\n")
     assert a.targets(files, base) == a.ALL
 

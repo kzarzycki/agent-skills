@@ -1035,8 +1035,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         unkeyed=list,
         # how many shards a whole-suite selection splits into (shard_selections), 1 or absent is one
         shards=int,
-        # what the merge queue's selection does with a build input (#2445): `full`, the default, the whole suite; `floor`
-        # (opt in), the other changed files' tests plus a lockfile's importers
+        # what the merge queue's selection does with a build input (#2445): `floor`, the default, the other changed
+        # files' tests plus a lockfile's importers; `full`, the whole suite
         build_inputs_in_queue=Choice(("floor", "full")),
         optional=("build_inputs", "checks", "unkeyed", "shards", "build_inputs_in_queue"),
     ),

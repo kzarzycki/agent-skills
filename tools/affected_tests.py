@@ -13,7 +13,7 @@ its file name); a file no test names runs its package's tests, else the tests of
 (home_tests). A skill's prose, which the repo-wide checks `tests/test_skill_*.py` read, runs those. Zero tests run only
 when every changed path is non-product (NON_PRODUCT) and no test reads it, and the run says `0 selected: non-product`.
 In the merge queue (`GITHUB_HEAD_REF` under `mergify/merge-queue/`, or `GATE_IN_QUEUE=1`) a build input selects the whole
-suite only under `select.build_inputs_in_queue: full` in docs/agents/gatekeeper.md; under `floor`, which a project opts into once its nightly records durations,
+suite only under `select.build_inputs_in_queue: full` in docs/agents/gatekeeper.md; under `floor`, the default there,
 it selects the other changed files' tests, and for a changed `uv.lock` the tests that import a package whose version
 changed (#2445). The nightly and a push to main, which touch a build input, run the whole suite after the merge.
 A selection of over half the test files runs as picked (#1872): only the nightly runs the whole suite.
@@ -86,16 +86,16 @@ def changed(base: str) -> list[str] | None:
 
 def queue_build_inputs() -> str:
     """`floor` or `full`: what a build input selects here. Outside the merge queue it is `full`, as ever; inside it is
-    gatekeeper.md's `select.build_inputs_in_queue`, `full` when unset: a project opts into `floor`."""
+    gatekeeper.md's `select.build_inputs_in_queue`, `floor` when unset."""
     head = os.environ.get("GITHUB_HEAD_REF", "")
     if not (head.startswith("mergify/merge-queue/") or os.environ.get("GATE_IN_QUEUE") == "1"):
         return "full"
     try:
         text = Path("docs/agents/gatekeeper.md").read_text()
     except OSError:
-        return "full"
+        return "floor"
     found = re.search(r"^[ \t]+build_inputs_in_queue:[ \t]*(floor|full)\b", text, re.MULTILINE)
-    return found[1] if found else "full"
+    return found[1] if found else "floor"
 
 
 def locked(base: str | None, ref: str) -> dict[str, str]:
