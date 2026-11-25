@@ -182,8 +182,7 @@ release tag, the config block and one row per deleted file with its kind from st
    check runs is a loop rule: if it isn't step 2's configuration, it's a copy to delete.
 
 After a migration, the repo's loop-specific content is the `gatekeeper.md` block and the `Affected tests:`,
-`Acceptance tests:` and `Acceptance budget:` lines, and nothing else. Measure it: one week of merged PRs, the
-median ready-to-merged time and the runner-minutes per merged PR, against the week before.
+`Acceptance tests:` and `Acceptance budget:` lines, and nothing else.
 
 #### A check runs only if it can fail because of the change
 
