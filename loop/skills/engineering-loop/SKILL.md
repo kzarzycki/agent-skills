@@ -823,8 +823,11 @@ or the owner's private network.
   instance build together, plus at most one compile for the verifier's mutation check, since
   taking builds off the host is the split's point; a worker's iterations compile only in the
   cloud.
-- **Nothing on GitHub names a host or a path**: not the report, the verdict, the evidence or
-  a brief's text quoted there, since a public repo publishes them.
+- **Nothing on GitHub names a host or a path, except an Omnigent session link**: not the report,
+  the verdict, the evidence or a brief's text quoted there, since a public repo publishes them. A
+  session link (`<scheme>://<host>[:port]/c/<32 hex id>`) may go in issues, PRs and comments, and the
+  deny-list check lets a term inside one through; the same host name outside a link, and any
+  filesystem path, still stay off GitHub.
 - **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host; the sharing a
