@@ -8458,7 +8458,18 @@ def follow(
     if last and last.get("role") != "user" and waits_on_card(og, sid, text_of(last)):
         told[sid] = key  # its owner card reaches the owner; this end is no news above
         return "", key
-    if not (last and last.get("role") != "user" and ENDING.search(text_of(last))):
+    if not (
+        last
+        and last.get("role") != "user"
+        and (
+            ENDING.search(text_of(last))
+            # a wait on a PR's verifier is news at once: the supervisor checks one runs (#2618)
+            or (
+                wait_of(text_of(last), last.get("created_at")) == "verifier"
+                and verifier_wait(text_of(last))[1]
+            )
+        )
+    ):
         # ponytail: item and child clocks against the local one, as check does; the end is when
         # this loop first saw it, so a poll interval late. Upgrade: the turn's end time, if Omnigent
         # reports one.
@@ -9013,6 +9024,18 @@ def question_for(lead_ev: dict | None, message: str) -> str:
     return ""
 
 
+def verifier_wait(text: str) -> tuple[str, int, str]:
+    """The PR and head a ``STILL WORKING`` that waits on the verifier names: ``(owner/name or "", number, head or "")``, or
+    ``("", 0, "")`` when it names no PR (#2618). The first PR reference in the turn's own wait and the first hex word of
+    7 to 40 characters with a digit in it."""
+    if (start := still_start(text)) < 0:
+        return "", 0, ""
+    text = text[start:]
+    ref = re.search(r"(?<![\w/.-])(?:([\w.-]+/[\w.-]+))?#(\d+)", text)
+    head = re.search(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b", text)
+    return (ref[1] or "", int(ref[2]), head[0] if head else "") if ref else ("", 0, "")
+
+
 def wait_of(text: str, at: float | None = None) -> str:
     """What a lead's message says it waits on: ``parked``, the wait its ``STILL WORKING`` names
     (``until <UTC time>`` for a timed one, ``TIMED`` says which, ``at`` being when the message was
@@ -9384,6 +9407,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
             "act",
             "USER NEEDED with no card: its manager asks the owner on its own card, or sends it to its card",
         )
+    if still and event.get("no_verifier"):  # a verifier wait nothing will end (#2618)
+        return "rule", "act", event["no_verifier"]
     if event.get("supervisor"):
         return (
             "rule",
@@ -9829,6 +9854,39 @@ def supervise_registry(
                 )
                 queue(f"escalated:{intent['id']}", sid, "act", line, "an action open at a restart")
 
+    def no_verifier(sid: str, text: str) -> str:
+        """``lead gated #N <head>, no verifier running: start one`` when a lead's turn waits on the verifier of a PR
+        and no live session labelled ``omni.role=verifier`` carries that PR's ``omni.pr`` label, else empty (#2618).
+        The registry records a verifier's PR and not its head, so the label alone matches: a verifier still running
+        on an older head holds the wait, and its own end raises the news. A PR the turn doesn't name, or sessions
+        that can't be listed, hold the wait as before."""
+        named_repo, pr, head = verifier_wait(text)
+        if not pr:
+            return ""
+        repo = wait_repo(sid, named_repo)
+        if not repo:
+            return ""
+        try:
+            sessions = every_session()
+        except Exception as e:  # noqa: BLE001 - held as before
+            log(
+                ("verifier-sessions", sid),
+                f"{sid}: sessions not read, verifier wait held: {reason(e)}",
+            )
+            return ""
+        log(("verifier-sessions", sid), None)
+        label = f"{repo}#{pr}"
+        for s in sessions:
+            labels = s.get("labels") or {}
+            if (
+                labels.get("omni.role") == "verifier"
+                and not s.get("archived")
+                and str(s.get("status")) in RUNNING
+                and label in label_refs(labels.get(PR_LABEL, ""))
+            ):
+                return ""
+        return f"lead gated #{pr} {head}, no verifier running: start one".replace("  ", " ")
+
     def settle(line: str, sid: str, eid: str, kind: str) -> None:
         """Route one event and do what the route says: record it, act on the lead (a nudge, a
         revive, telling the leads waiting on a ``DONE``), or queue it for ``deliver``; then log
@@ -9892,6 +9950,9 @@ def supervise_registry(
             # taking it (#2090)
             "relayed": bool(info.get("archived")) or relayed_to(items, notify, last),
         }
+
+        if event["wait"] == "verifier" and not event["repeat"]:
+            event["no_verifier"] = no_verifier(sid, parsed or "")
 
         # a coordinator's turn with nothing on its DONE line (#2309): its notified session is not woken for it
         quiet = bool(
