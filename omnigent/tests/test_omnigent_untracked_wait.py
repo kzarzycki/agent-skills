@@ -168,3 +168,29 @@ def test_a_wait_that_names_a_live_helper_or_a_followed_wait_is_held(text: str) -
     deadline chain that reaches the manager within ``NUDGED_SECONDS`` of a quiet lead, not the PR sweep's hour."""
     assert not omnigent_agent.untracked_wait(text, cloud=True)
     assert omnigent_agent.NUDGED_SECONDS < omnigent_agent.PR_STALL_SECONDS
+
+
+QUOTED = (
+    'Report: a test case is a `STILL WORKING` in plain words ("STILL WORKING: waiting on CI, pid 4242").\n'
+    "> STILL WORKING: waiting on tmp/loop/gate.log\n"
+    "READY FOR VERIFIER: PR #2625 head abc1234"
+)
+
+
+def test_quoted_still_working_is_no_state_2629():
+    """A report that quotes the phrase, ending on a verifier hand-back, is a hand-back: no wait, no nudge."""
+    assert omnigent_agent.still_start(QUOTED) < 0
+    assert omnigent_agent.wait_of(QUOTED) == "unknown"
+    assert not omnigent_agent.untracked_wait(QUOTED)
+    assert route(QUOTED)[:2] == ("rule", "act")
+    assert "hands back" in route(QUOTED)[2]
+
+
+def test_handback_line_routes_whatever_the_body_quotes_2629():
+    text = "He said `STILL WORKING` once.\nHandback: #7 gate record is yours"
+    assert route(text)[2] == "hands back to its manager: Handback: #7 gate record is yours"
+
+
+def test_line_start_still_working_is_found_2629():
+    assert omnigent_agent.still_start("x\nSTILL WORKING: waiting on CI") == 2
+    assert omnigent_agent.still_start("```\nSTILL WORKING: a\n```") < 0

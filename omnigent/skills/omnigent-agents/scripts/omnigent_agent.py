@@ -655,6 +655,8 @@ NAMED = re.compile(
 # What a report keeps for routing (``report_head``): an ending line, not one quoted in a code
 # fence, a ``>`` quote or backticks; and from its ``STILL WORKING`` this many characters, whole lines.
 STILL_OR_ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED|STILL WORKING)\b", re.MULTILINE)
+STILL_LINE = re.compile(r"^[ \t]*[*_#-]*[ \t]*(STILL WORKING)\b", re.MULTILINE)
+HANDED_BACK_END = re.compile(r"^[\s*_>-]*(?:READY FOR VERIFIER\b|Handback:)", re.IGNORECASE)
 REPORT_ENDING = re.compile(r"^[\s*_#-]*(DONE|USER NEEDED|PARKED)\b")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,}).*?^ {0,3}\1[^\n]*$", re.MULTILINE | re.DOTALL)
 REPORT_WAIT_CHARS = 600
@@ -8734,7 +8736,7 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "wait": wait_of(text, said[-1].get("created_at") if said else None),
         "named": named_of(text),
         "refs": [v for form, v in trailer_items(text) if form == "ref"],  # PRs a set names
-        "still": "STILL WORKING" in text,  # an intermediate turn: its wait is not its end
+        "still": still_start(text) >= 0,  # an intermediate turn: its wait is not its end
         "asked": bool(items) and items[-1].get("role") == "user",  # prompted since it answered
         "last_line": text.splitlines()[0][:200] if text else "",
         "last_text": text,
@@ -8742,6 +8744,15 @@ def lead_status(info: dict, items: list[dict]) -> dict:
         "last": str(items[-1].get("id") or items[-1].get("created_at") or "") if items else "",
         "turn_at": float(said[-1].get("created_at") or 0) if said else 0.0,
     }
+
+
+def still_start(text: str) -> int:
+    """Where a turn's own ``STILL WORKING`` starts, or -1: the phrase opening a line, outside a code fence, so one
+    quoted in backticks, a ``>`` quote or a sentence is no state of the lead's (#2629). Every reader of the
+    phrase goes through here."""
+    masked = FENCE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+    m = STILL_LINE.search(masked)
+    return m.start(1) if m else -1
 
 
 def done_result(text: str) -> str:
@@ -8814,9 +8825,9 @@ def trailer_items(text: str) -> list[tuple[str, str]]:
     ``(form, value)`` with the form ``supervisor``, ``own`` (a manager's own supervisor wakes it: no wait on its parent), ``session``, ``ref``, ``ci`` or ``until``. The
     line is a set: items split by a comma or "and", all of which must be a form, else none count,
     since a line half read would wake a lead on a wrong thing. Empty when there is no such line."""
-    if "STILL WORKING" not in text:
+    if (start := still_start(text)) < 0:
         return []
-    found = TRAILER.findall(text[text.find("STILL WORKING") :])
+    found = TRAILER.findall(text[start:])
     items = []
     for part in re.split(r"\s*,\s*|\s+and\s+", found[-1].strip()) if found else []:
         if not (m := TRAILER_FORMS.fullmatch(part.strip())):
@@ -8834,9 +8845,9 @@ def trailer_items(text: str) -> list[tuple[str, str]]:
 def unparsed_trailer(text: str) -> str:
     """The last ``Waits:`` line of a ``STILL WORKING`` message when it names no form (the line
     ``trailer_items`` drops), else empty: the lead is told once that it did not parse."""
-    if "STILL WORKING" not in text or trailer_items(text):
+    if (start := still_start(text)) < 0 or trailer_items(text):
         return ""
-    found = TRAILER.findall(text[text.find("STILL WORKING") :])
+    found = TRAILER.findall(text[start:])
     return found[-1].strip() if found else ""
 
 
@@ -8975,7 +8986,7 @@ def wait_of(text: str, at: float | None = None) -> str:
             return {"supervisor": "supervisor", "ci": "CI", "ref": value.strip("[]")}.get(
                 form, value
             )
-    if (start := text.find("STILL WORKING")) >= 0:
+    if (start := still_start(text)) >= 0:
         times = []  # (said with a wait, the time, as written)
         for sentence in re.split(r"(?<=[.!?])\s+|\n", text[start:]):
             for m in TIMED.finditer(sentence):
@@ -8995,6 +9006,8 @@ def wait_of(text: str, at: float | None = None) -> str:
         ahead = [x for x in times if written is not None and x[1].timestamp() > written]
         if pick := (waited or ahead or times)[:1]:
             return f"until {pick[0][2]}"
+    if still_start(text) < 0:  # the phrase only quoted: the turn names no wait (#2629)
+        return "unknown"
     if len(ids := named_of(text)) == 1:  # a child's id anywhere in the wait, not only after "on"
         return ids[0]
     if m := WAIT.search(text):
@@ -9007,7 +9020,7 @@ def wait_of(text: str, at: float | None = None) -> str:
 def named_of(text: str) -> list[str]:
     """The full session ids (32 hex, in a link or bare) a message's ``STILL WORKING`` text names:
     the paragraph it opens, so "waiting on cloud session <id>" names it as "on <id>" does."""
-    start = text.find("STILL WORKING")
+    start = still_start(text)
     if start < 0:
         return []
     para = re.split(r"\n\s*\n", text[start:], maxsplit=1)[0]
@@ -9025,7 +9038,7 @@ def report_head(text: str) -> str:
     lines = [line for line in text.strip().splitlines() if not line.lstrip().startswith((">", "`"))]
     kept = [line for line in lines if REPORT_ENDING.match(line)]
     body = "\n".join(lines)
-    if (start := body.find("STILL WORKING")) >= 0:
+    if (start := still_start(body)) >= 0:
         tail = body[start : start + REPORT_WAIT_CHARS]
         kept.append(
             tail if len(body) - start <= REPORT_WAIT_CHARS else tail.rpartition("\n")[0] or tail
@@ -9084,7 +9097,7 @@ def waits_on(text: str, lead: dict, notify: str | None, event: bool = False) -> 
         return False
     if notify and notify in (lead.get("named") or []):
         return True
-    start = text.find("STILL WORKING")
+    start = still_start(text)
     # a Waits: line that does not parse still says what the lead waits on: it decides, not the prose or footer
     if start >= 0 and (found := TRAILER.findall(text[start:])):
         return bool(
@@ -9099,7 +9112,7 @@ def untracked_wait(text: str, cloud: bool = False) -> bool:
     a pid, a pid file or a log, output or pid path anywhere in it, naming no ``--notify`` or ``LOOP_NOTIFY``, a wrapper that tells the
     session, and no child session, verifier, worker, lead or CI), or, in a ``cloud`` session, a
     subagent it started. A ``Waits:`` trailer names the wait exactly, so it decides alone."""
-    if (start := text.find("STILL WORKING")) < 0 or trailer_of(text) or named_of(text):
+    if (start := still_start(text)) < 0 or trailer_of(text) or named_of(text):
         return False
     wait = FENCE.sub("", text[start:])
     if cloud and SUBAGENT_WAIT.search(wait):
@@ -9115,8 +9128,10 @@ def handback_of(text: str) -> str:
     line's text, else the prose line that says a PR is ready (``#12 READY``, ``READY FOR VERIFY``)
     or a PR's step is the manager's (``#12 ... is yours``, ``#12 ... over to you``); empty when it hands
     nothing back."""
-    if (start := text.find("STILL WORKING")) < 0:
-        return ""
+    # a turn that closes on a hand-back line is one, whatever it quotes
+    if (start := still_start(text)) < 0:
+        last = next((x for x in reversed(text.strip().splitlines()) if x.strip()), "")
+        return last.strip()[:200] if HANDED_BACK_END.match(last) else ""
     body = FENCE.sub("", text[start:])
     if found := HANDBACK.findall(body):
         return found[-1].strip()
