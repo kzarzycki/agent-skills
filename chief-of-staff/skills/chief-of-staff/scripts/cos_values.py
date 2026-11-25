@@ -92,7 +92,6 @@ OWNER_ONLY = (
     "owner-own-list",
 )
 JOBS = ("lead", "worker", "mechanical", "verifier", "scheduled")
-RISKS = ("low", "medium", "high")
 
 F, S = "first", "second"
 
@@ -162,15 +161,6 @@ def _keys() -> dict[str, Key]:
             (F,),
         ),
         Key("delegation.on", "bool", False, "Whether the owner delegates specs and merges", (S, F)),
-        # ponytail: open question 5 proposed `low`; the gate's own risk guard still wins on critical paths.
-        Key(
-            "delegation.max_risk",
-            "str",
-            "low",
-            "Highest risk a delegate may approve",
-            (S,),
-            choices=RISKS,
-        ),
         # ponytail: the owner's own entries add to the pack's list, never shorten it.
         Key(
             "owner_only",
@@ -182,8 +172,6 @@ def _keys() -> dict[str, Key]:
         ),
         # ponytail: open question proposed `held` (safer).
         Key("releases", "str", "held", "continuous or held", (S,), choices=("continuous", "held")),
-        Key("agents.default", "str", "claude", "Agent kind for starts", (S,)),
-        Key("agents.fallback", "str", None, "Agent kind when the default is unavailable", (S,)),
         Key(
             "harness.default",
             "str|map",
@@ -209,14 +197,6 @@ def _keys() -> dict[str, Key]:
             (S, F),
         ),
         Key("parked", "list", [], "Parked list; each entry with an end date", (S, F)),
-        # ponytail: open question 8 has no number yet, so no default.
-        Key(
-            "lead.context_limit",
-            "int",
-            None,
-            "The one context-size limit for leads, in tokens; None until chosen",
-            (F, S),
-        ),
         Key("memory", "str|strs", "none", "Memory bank names, or none", (F,)),
         Key(
             "permissions.coordinator_mode",
@@ -253,8 +233,6 @@ def _keys() -> dict[str, Key]:
             "Authors whose PRs count as ours; None: the account the scan runs as",
             (F,),
         ),
-        # ponytail: open question proposals, SKILL.md says "about 4 KB" and 14 days.
-        Key("hygiene.board_max_kb", "num", 4, "Board size limit in KB", (F, S)),
         Key(
             "hygiene.retention_days",
             "int",
@@ -267,33 +245,6 @@ def _keys() -> dict[str, Key]:
         Key("pin.schedule", "str", None, "How often the pin updater runs", (S,)),
         Key("deps.repos", "strs", [], "Repos the dependency nightly runs in", (S,)),
         Key("deps.schedule", "str", None, "How often the dependency nightly runs", (S,)),
-        Key(
-            "bridge.channel",
-            "str|map",
-            "github",
-            "github or file-inbox, or a map peer -> channel",
-            (S,),
-            choices=("github", "file-inbox"),
-        ),
-        Key("bridge.peer_server", "str", None, "The other setup's server; None: no peer", (F, S)),
-        Key(
-            "bridge.peer_session",
-            "str",
-            None,
-            "The other setup's CoS session; None: no peer",
-            (F, S),
-        ),
-        Key(
-            "bridge.inbox_dir",
-            "str",
-            None,
-            "Inbox folder for the file-inbox channel",
-            (S,),
-            base="home",
-        ),
-        Key(
-            "bridge.log", "str", "bridge.log", "Crossing log, beside the board", (S,), base="board"
-        ),
         Key("bridge.never_crosses", "strs", [], "What must never cross", (S,)),
         Key("data.allowed_hosts", "strs", [], "Machines client data may sit on", (S,)),
         Key("drafts_dir", "str", None, "Where drafts go", (S,), base="home"),

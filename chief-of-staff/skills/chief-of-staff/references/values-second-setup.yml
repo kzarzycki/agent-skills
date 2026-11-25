@@ -6,12 +6,8 @@ registry: leads/leads.registry
 reports_dir: reports
 delegation:
   on: true
-  max_risk: high
 owner_only: [publish, send, delete, credentials, public-packages]
 releases: continuous
-agents:
-  default: claude-cloud
-  fallback: claude
 harness:
   default: {repo-a: claude, repo-b: codex}
   codex_opt_in: [repo-b]
@@ -25,8 +21,6 @@ budget:
   weekly_limit: 50
   until: 2030-01-31
 parked: [{item: nightly-x, until: 2030-01-31}]
-lead:
-  context_limit: 200000
 prompts:
   cos_approves: [read-only-shell]
 decisions:
@@ -34,7 +28,6 @@ decisions:
   cos_line: "Chief of staff session: session-cos-2"
 hygiene:
   repos: [owner-a/repo-a]
-  board_max_kb: 8
   retention_days: 30
 pin:
   tag_prefix: pack-v
@@ -44,11 +37,6 @@ deps:
   repos: [owner-a/repo-a]
   schedule: "0 3 * * *"
 bridge:
-  channel: file-inbox
-  peer_server: https://peer.example.invalid
-  peer_session: session-cos-1
-  inbox_dir: inbox
-  log: log/bridge.log
   never_crosses: [client-data]
 data:
   allowed_hosts: [host-1]

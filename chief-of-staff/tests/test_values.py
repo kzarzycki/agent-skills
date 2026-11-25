@@ -69,10 +69,12 @@ def test_missing_key_is_named_by_require(tmp_path):
 
 
 def test_wrong_type_and_choice_are_named(tmp_path):
-    _write(tmp_path, "delegation: {on: yes please, max_risk: huge}\nmodels: {tiers: {boss: x}}\n")
+    _write(
+        tmp_path, "delegation: {on: yes please}\nreleases: sometimes\nmodels: {tiers: {boss: x}}\n"
+    )
     with pytest.raises(cv.ValuesError) as e:
         cv.load(home=tmp_path)
-    assert set(e.value.keys) == {"delegation.on", "delegation.max_risk", "models.tiers.boss"}
+    assert set(e.value.keys) == {"delegation.on", "releases", "models.tiers.boss"}
 
 
 def test_manager_missing_field_is_named(tmp_path):
@@ -115,15 +117,15 @@ def test_get_returns_a_copy(tmp_path):
 
 
 def test_path_keys_resolve_beside_board_or_home(tmp_path):
-    _write(
-        tmp_path, "board: boards/root.md\ndecisions: {file: /abs/d.md}\nbridge: {inbox_dir: in}\n"
-    )
+    _write(tmp_path, "board: boards/root.md\ndecisions: {file: /abs/d.md}\ndrafts_dir: in\n")
     v = cv.load(home=tmp_path)
     assert v.path("registry") == tmp_path / "boards/leads.registry"
     assert v.path("decisions.file") == Path("/abs/d.md")
-    assert v.path("bridge.inbox_dir") == tmp_path / "in"
-    with pytest.raises(cv.ValuesError, match="drafts_dir: missing"):
-        v.path("drafts_dir")
+    assert v.path("drafts_dir") == tmp_path / "in"
+    with pytest.raises(
+        cv.ValuesError, match="reports_dir: not a path|data.allowed_hosts: not a path"
+    ):
+        v.path("data.allowed_hosts")
     with pytest.raises(cv.ValuesError, match="server: not a path key"):
         v.path("server")
 
