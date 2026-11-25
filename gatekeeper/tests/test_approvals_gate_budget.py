@@ -200,3 +200,9 @@ def test_build_inputs_in_queue_takes_floor_or_full_and_nothing_else() -> None:
 def test_a_deleted_test_file_is_no_part_of_the_estimate(budget: dict[str, Any]) -> None:
     budget["record"](a=300, gone=900)  # `gone` no longer exists: 300 seconds, not 1200
     assert approvals.main(["affected-tests"]) == 0
+
+
+def test_a_nested_runs_line_with_no_file_is_no_recorded_test() -> None:
+    assert approvals.parse_durations(
+        "0.000s setup ::test_inner\n1.0s call tests/test_a.py::t\n"
+    ) == {"tests/test_a.py": 1.0}

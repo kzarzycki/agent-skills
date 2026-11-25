@@ -10651,6 +10651,8 @@ def parse_durations(text: str) -> dict[str, float]:
     else:
         for seconds, node in DURATION_LINE.findall(text):
             file = node.split("::")[0]
+            if not file:  # a nested pytest run's `::test` line: no file of this run
+                continue
             found[file] = found.get(file, 0.0) + float(seconds)
     return {file: round(seconds, 3) for file, seconds in found.items()}
 

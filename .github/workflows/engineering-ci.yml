@@ -153,8 +153,9 @@ jobs:
           GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
           PYTEST_ADDOPTS: -n 0 --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
-      # The nightly's per-test durations (#2445): the file `shards --durations` and `affected-tests`' estimate read,
-      # kept beside the test map so the queue's restore step brings it back. Only a green run reaches here.
+      # The nightly's per-test durations (#2445): the file `shards --durations` reads, kept beside the test map. Nothing in
+      # this repo's CI reads it yet: `affected-tests`' estimate reads it from GATE_DURATIONS where that verb runs, and this
+      # repo's selector (`Affected tests:`) lists no tests to estimate, so the fail-fast stays off here (#2445's open question).
       - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
         run: python3 gatekeeper/skills/gatekeeper/scripts/gatekeeper.py durations --record .test-map/durations.log --out .test-map/durations.json
       # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.

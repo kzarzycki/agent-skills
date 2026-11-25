@@ -66,4 +66,6 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
             out.write(f"{report.nodeid}\n")
     if path := os.environ.get(DURATIONS):
         with open(path, "a") as out:
-            out.write(f"{report.duration:.3f}s {report.when} {report.nodeid}\n")
+            out.write(
+                f"{getattr(report, 'duration', 0.0):.3f}s {getattr(report, 'when', 'call')} {report.nodeid}\n"
+            )
