@@ -2669,7 +2669,9 @@ def claim_verb(number: int, takeover: bool = False, release: bool = False) -> in
     no session changes nothing."""
     link = session_link()
     if not link:
-        print(f"#{number}: this run names no session, so a claim has no holder to name: nothing written")
+        print(
+            f"#{number}: this run names no session, so a claim has no holder to name: nothing written"
+        )
         return 0
     issue = issue_node(number)
     holder = claim_holder(issue)
