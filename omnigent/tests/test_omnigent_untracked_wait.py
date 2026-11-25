@@ -35,6 +35,9 @@ def route(text: str, **event: object) -> tuple[str, str, str]:
         "STILL WORKING: build started.\nWaiting on its pid file before the push.",
         "STILL WORKING: waiting on gate; its pid is 4242",
         "STILL WORKING: waiting on nohup build, output in build.out",
+        # a loop of its own, naming no pid or log (#2623)
+        "STILL WORKING: waiting for the gate to print EXIT, polling every 30 s",
+        "STILL WORKING: waiting on the gate, a sleep loop checks for its last line",
     ],
 )
 def test_a_wait_on_a_pid_or_a_log_is_nudged_once_then_escalated(text: str) -> None:
@@ -149,3 +152,19 @@ def test_the_supervisor_reports_a_hand_back_to_the_session_it_notifies(
     assert [t for s, t in og.inbox if s == "a"] == []  # the lead is not nudged
     assert base.events_of(registry)[-1]["action"] == "act"
     assert any("#1755 READY" in t for t in base.posted(og))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "STILL WORKING: gate started; polling every 30 s\nWaits: until 2026-11-25T23:17Z",
+        "STILL WORKING: waiting on the gate (wait-for --notify), not polling it",
+        "STILL WORKING: waiting on the verifier, no polling\nWaits: session 0123456789abcdef0123456789abcdef",
+    ],
+)
+def test_a_wait_that_names_a_live_helper_or_a_followed_wait_is_held(text: str) -> None:
+    """#2623: the supervisor cannot see a cloud VM's processes, so a live wait is the one the turn end names:
+    a ``Waits:`` line it follows, or a helper that notifies; the first nudge, then the act, are the
+    deadline chain that reaches the manager within ``NUDGED_SECONDS`` of a quiet lead, not the PR sweep's hour."""
+    assert not omnigent_agent.untracked_wait(text, cloud=True)
+    assert omnigent_agent.NUDGED_SECONDS < omnigent_agent.PR_STALL_SECONDS
