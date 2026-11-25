@@ -306,8 +306,7 @@ its starter, so the path rides in the brief.
 
 **Waiting on a run or a PR.** `python3 scripts/omnigent_agent.py wait-for --log <log> [--pid
 <n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed|gate|verdict]` blocks up to `--budget`
-seconds (default 570, under a 10-minute tool call; pass the run's expected length when the harness tracks the call
-in the background, so it wakes you once, never a loop of short calls), printing nothing until it ends: on the log's
+seconds (default 570, under a 10-minute tool call; pass the run's expected length only where a finished background call wakes the session (a host's Claude Code or Codex), so it wakes you once, never a loop of short calls; a claude-cloud session is not woken by a finished background task, so it waits in the foreground, each call under 10 minutes, and never ends a turn on one), printing nothing until it ends: on the log's
 `exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
 only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
 first, since a reused log path still holds the previous run's line; a log alone is trusted as
@@ -862,7 +861,7 @@ offline while idle raises nothing.
 | `adopted`: a live top-level lead no registry held, read from the server's listing, and at least 60 seconds old so its launcher has written its registry (#2181, #2313) | rule | act: followed from now on; fix what started it unwatched |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |
-| a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the turn, or restart it as a harness-tracked background task or detached with `LOOP_NOTIFY`); the same wait again after it: act |
+| a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the foreground in the turn, each call under 10 minutes, since a claude-cloud session is not woken by a finished background task, or restart it detached with `LOOP_NOTIFY`); the same wait again after it: act |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
