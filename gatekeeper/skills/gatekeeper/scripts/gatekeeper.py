@@ -4149,6 +4149,23 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
     return found
 
 
+def red_base(base: str) -> list[str]:
+    """One line per required check that failed on `base`'s tip, the commit its latest push run ran on, with the run's
+    link: the lander is the one who can stop or fix before stacking more changes on a red base (#2565). Advice that
+    blocks nothing, and none when the forge can't say. Reads the forge's `commit_checks`, as the merge gates do.
+    ponytail: a warning only; a run that failed before any test ran should refuse, once a gate can tell it from a red test."""
+    try:
+        checks = commit_checks(base)
+        wanted = required_checks(base) - OWN
+    except (Refused, subprocess.CalledProcessError, OSError, ValueError):
+        return []
+    return [
+        f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}; fix it or stop before landing more onto it"
+        for name, run in sorted(checks.items())
+        if run["conclusion"] in RED and (name in wanted or not wanted) and name not in OWN
+    ]
+
+
 def unforced(pull: dict[str, Any]) -> str | None:
     """The line check merge and brief print when every commit since the newest verdict's commit is a merge of the
     base (base_merges) whose parents merge cleanly (merged) and land posted no CONFLICTS comment naming a head that
@@ -6397,6 +6414,8 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     )
     # what land's pre-land check would refuse, after the rest, so check merge never calls clear a PR land leaves out
     waiting += pre_land_holds(pull, loop, bool(found or waiting)) if point == "merge" else []
+    if point == "merge":
+        advice += red_base(pull["baseRefName"])
     for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
         print(line)
     return 1 if found else WAITING if waiting else 0
@@ -7244,6 +7263,8 @@ def landing_here(
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
     required = rules - OWN
+    for line in red_base(base):
+        print(line)
     queue = held_by(loop, rules)  # before readied, so a refused policy touches no PR
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:
