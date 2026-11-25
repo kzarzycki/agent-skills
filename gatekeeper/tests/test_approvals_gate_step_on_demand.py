@@ -14,6 +14,7 @@ from approvals_harness import approvals, committed, gatekeeper_md, git_in, pull
 STEP = """import pathlib, sys
 name, runs = sys.argv[1], pathlib.Path(sys.argv[2])
 runs.open("a").write(name + "\\n")
+sys.exit(1 if (runs.parent / f"fail-{name}").exists() else 0)
 """
 POLICY = "docs/agents/gatekeeper.md"
 
@@ -79,6 +80,7 @@ def demand(
         "commit": commit,
         "head": lambda: git_in(repo, "rev-parse", "HEAD").strip(),
         "ran": lambda: runs.read_text().split() if runs.exists() else [],
+        "fail": lambda name: (tmp_path / f"fail-{name}").touch(),
     }
 
 
@@ -99,8 +101,10 @@ def test_the_gate_skips_an_on_demand_step_and_says_so(
     out = capsys.readouterr().out
     said = [line for line in out.splitlines() if line.startswith("reference:")]
     assert said == [
-        "reference: skipped, on demand (`on_demand: true`): it runs only when named,"
-        " `local-ci --record --step reference`, and the gate's pass does not need it"
+        (
+            "reference: skipped, on demand (`on_demand: true`): it runs only when named,"
+            " `local-ci --record --step reference`, and the gate's pass does not need it"
+        )
     ]
     assert "Local check passed on" in out
     commands = demand["commands"]
@@ -213,3 +217,39 @@ def test_on_demand_must_be_a_bool_and_a_typo_is_still_refused(demand: dict[str, 
     (demand["repo"] / POLICY).write_text(policy(demand["commands"]))
     assert [one["on_demand"] for one in approvals.gate_plan(every=True)] == [False, False, True]
     assert json.dumps([one["name"] for one in approvals.gate_plan()]) == '["lint", "unit"]'
+
+
+def test_a_checkout_with_changes_skips_it_too_unless_named(
+    demand: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    (demand["repo"] / "app.py").write_text("value = 5\n")
+    assert approvals.main(["local-ci", "--record"]) == 0
+    assert demand["ran"]() == ["lint", "unit"]
+    assert "reference: skipped, on demand" in capsys.readouterr().out
+    assert approvals.main(["local-ci", "--record", "--step", "reference"]) == 0
+    assert demand["ran"]() == ["lint", "unit", "reference"]
+
+
+def test_a_named_step_that_fails_writes_no_gate_failure(
+    demand: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """A failed `--step` run says nothing of the gate: the head's `gate` status is left as the gate's own run set it."""
+    demand["fail"]("reference")
+    assert approvals.main(["local-ci", "--record", "--step", "reference"]) == 1
+    assert demand["head"]() not in hub
+    demand["fail"]("lint")
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert [one["state"] for one in hub[demand["head"]()]] == ["failure"]
+
+
+def test_status_passes_a_named_run_reused_by_its_inputs(demand: dict[str, Any]) -> None:
+    """`local-ci --status` of a `--step` run on a tree that reused the step's pass by its inputs: passed."""
+    assert approvals.main(["local-ci", "--record", "--step", "reference"]) == 0
+    demand["commit"]({"docs/readme.md": "# again\n"})
+    assert approvals.main(["local-ci", "--record", "--step", "reference"]) == 0
+    head = demand["head"]()
+    assert approvals.RAN["command"] == demand["commands"]["reference"]
+    approvals.run_files(head)[2].parent.mkdir(parents=True, exist_ok=True)
+    approvals.run_files(head)[2].write_text("0\n")
+    approvals.ran_command_file(head).write_text(approvals.RAN["command"] + "\n")
+    assert approvals.local_ci_status(head) == 0

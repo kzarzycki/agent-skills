@@ -10133,7 +10133,7 @@ def here(step: dict[str, Any]) -> bool:
 
 def runs_only(left: list[str]) -> str:
     """`left` steps by the place their `where` limits them to: `a, b runs only on a host (`where: host`)`, one clause per `where`."""
-    wheres = {step["name"]: step["where"] for step in gate_plan(every=True)}
+    wheres = {step["name"]: step["where"] for step in gate_plan()}
     places = {"host": "a host", "linux": "Linux"}
     clauses = []
     for where in dict.fromkeys(wheres.get(name, "host") for name in left):
