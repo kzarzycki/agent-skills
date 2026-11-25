@@ -58,6 +58,10 @@ def committed(sha: str, tree: str) -> dict[str, Any]:
     return {"event": "committed", "sha": sha, "tree": {"sha": tree}}
 
 
+def land(description: str) -> dict[str, str]:
+    return {"context": "land", "state": "success", "description": description}
+
+
 # The week is 2026-11-17..2026-11-23, the week before 2026-11-10..2026-11-16.
 # #1: a draft first (last ready event 1h before merge, created a day earlier), one head (a run with no PR list),
 #     one 10-minute job.
@@ -116,6 +120,22 @@ RECORDED: dict[str, Any] = {
     "repos/acme/widgets/issues/5/timeline": [committed("eee", "T5")],
     "repos/acme/widgets/issues/7/timeline": [committed("hhh", "T7")],
     "repos/acme/widgets/issues/10/timeline": [committed("jjj", "T10")],
+    # each merged PR's final head and its `land` status (#2310): #1, #3 and #10 name a record, #2, #4 and #5 say none, #6
+    # has a status that says neither (landed before `land` wrote it) and #7 has none
+    **{
+        f"repos/acme/widgets/pulls/{n}": {"head": {"sha": f"head{n}"}}
+        for n in (1, 2, 3, 4, 5, 6, 7, 10)
+    },
+    "repos/acme/widgets/commits/head1/status": {"statuses": [land("Landed: record T1-k")]},
+    "repos/acme/widgets/commits/head2/status": {"statuses": [land("Landed: no record")]},
+    "repos/acme/widgets/commits/head3/status": {"statuses": [land("Landed: record T3-k, T3-j")]},
+    "repos/acme/widgets/commits/head4/status": {"statuses": [land("Landed: no record")]},
+    "repos/acme/widgets/commits/head5/status": {"statuses": [land("Landed: no record")]},
+    "repos/acme/widgets/commits/head6/status": {
+        "statuses": [land("Landing under the lock main, nonce 1")]
+    },
+    "repos/acme/widgets/commits/head7/status": {"statuses": []},
+    "repos/acme/widgets/commits/head10/status": {"statuses": [land("Landed: record T10-k")]},
     "runs": [
         run(11, "aaa", "2026-11-18T10:00:00Z"),
         run(12, "bbb", "2026-11-19T10:00:00Z", (2,)),
@@ -183,10 +203,10 @@ def test_week_line_counts_median_minutes_and_the_week_before() -> None:
     # #10 merged 09:00 and created months ago, no draft: far over 2h. Median of six: 1h30m (#7 is next week's).
     # minutes: #1 10, #2 26, #3 and #4 (12+8)/2 = 10 each, #6 0, #10 4: 60 / 6 = 10.0
     assert text.startswith(
-        f"{REPO} 2026-11-17..2026-11-23: merged 6, median ready->merged 1h30m, runner-min/PR 10.0, reverts 1, merged with no record: not measured yet (#2310), red-nights 1"
+        f"{REPO} 2026-11-17..2026-11-23: merged 6, median ready->merged 1h30m, runner-min/PR 10.0, reverts 1, merged with no record 2 of 5 (1 unread), red-nights 1"
     )
     assert (
-        "| week before 2026-11-10..2026-11-16: merged 1, median ready->merged 1h00m, runner-min/PR 4.0, reverts 0, merged with no record: not measured yet (#2310), red-nights 1"
+        "| week before 2026-11-10..2026-11-16: merged 1, median ready->merged 1h00m, runner-min/PR 4.0, reverts 0, merged with no record 1 of 1, red-nights 1"
         in text
     )
     assert "batch minutes split evenly across each queue batch's PRs" in text
@@ -252,17 +272,35 @@ def test_a_week_with_no_merges_prints_zero() -> None:
         }
     )
     assert (
-        "merged 0, reverts 0, merged with no record: not measured yet (#2310), red-nights 0 | week before"
+        "merged 0, reverts 0, merged with no record 0 of 0, red-nights 0 | week before"
         in loop_metrics.line(gh, REPO, SINCE)
     )
 
 
-def test_the_no_record_field_prints_its_replacement_for_both_weeks() -> None:
-    text = loop_metrics.line(FakeGh(RECORDED), REPO, SINCE)
-    assert (
-        text.count("merged with no record: not measured yet (#2310)") == 2
-    )  # the week and the week before
-    assert "no-record" not in text
+def test_the_no_record_field_counts_the_merged_prs_whose_land_status_says_none() -> None:
+    """#2310: `land` names the record in the head's `land` status before deleting it; the metric reads that status."""
+    gh = FakeGh(RECORDED)
+    text = loop_metrics.line(gh, REPO, SINCE)
+    assert text.count("merged with no record") == 2  # the week and the week before
+    assert "not measured yet" not in text
+    assert [c for c in gh.calls if c.startswith("repos/acme/widgets/commits/")] and not [
+        c for c in gh.calls if "loop-gate" in c
+    ]
+
+
+def test_a_land_status_is_read_for_the_final_head_and_only_the_newest_land_context_counts() -> None:
+    recorded = RECORDED | {
+        "repos/acme/widgets/commits/head1/status": {
+            "statuses": [
+                {"context": "gatekeeper", "state": "success", "description": "Landed: no record"},
+                land("Landed: record T1-k"),
+            ]
+        }
+    }
+    assert loop_metrics.landed_without_record(FakeGh(recorded), REPO, 1) is False
+    assert loop_metrics.landed_without_record(FakeGh(recorded), REPO, 2) is True
+    assert loop_metrics.landed_without_record(FakeGh(recorded), REPO, 6) is None
+    assert loop_metrics.landed_without_record(FakeGh(recorded), REPO, 7) is None
 
 
 def test_a_server_error_or_cut_output_is_retried_and_a_client_error_is_not(monkeypatch) -> None:
