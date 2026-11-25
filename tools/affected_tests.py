@@ -52,7 +52,16 @@ ALL = [
     "omnigent/tests",
 ]
 # files every test reads (the runner's config, the lock, the toolchain pins, the root conftest): a change runs the suite
-BUILD_INPUTS = ("pyproject.toml", "uv.lock", "mise.toml", "conftest.py")
+# (gatekeeper.md's `select.build_inputs` is this list, which tests/test_own_loop_settings.py holds: the selector's own code
+# and the pack's `affected_tests` are in it, since a change to the selector can't be judged by the selector it changes)
+BUILD_INPUTS = (
+    "pyproject.toml",
+    "uv.lock",
+    "mise.toml",
+    "conftest.py",
+    "tools/affected_tests.py",
+    "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py",
+)
 # paths no product test can fail on, unless a test reads one by path: design notes, the repo's own top-level prose,
 # changelog entries, an agent's config and vendored skills, the pack's own pin (fnmatch: `*` crosses `/`)
 NON_PRODUCT = (
