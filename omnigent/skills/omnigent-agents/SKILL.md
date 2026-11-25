@@ -997,6 +997,8 @@ On Linux a user unit starts at boot only with lingering on: the install prints
 `loginctl show-user`'s `Linger` value and leaves `loginctl enable-linger $USER` to the owner,
 since it changes what runs on the host while nobody is logged in.
 
+A kill is not a stop: the service restarts the supervisor within seconds, on whatever code the checkout then holds. To pause it, stop the service (`systemctl --user stop omnigent-supervise-<hash>`, or `launchctl bootout gui/$(id -u)/omnigent.supervise.<hash>`); to pick up new code, restart it (`systemctl --user restart omnigent-supervise-<hash>`, or `launchctl kickstart -k gui/$(id -u)/omnigent.supervise.<hash>`). A supervisor its service started logs these commands, named for its unit, as its first line; one run by hand logs no such line.
+
 An update needs no restart: when `omnigent_agent.py` is replaced on disk (a skills sync
 installing a new one), `supervise --registry` re-executes itself in place with the same
 arguments, at the top of a poll with nothing waiting to be posted and its state written first,
