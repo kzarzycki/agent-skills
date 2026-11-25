@@ -32,8 +32,12 @@ def test_a_land_that_merges_posts_land_on_the_head_before_the_merge_call(
     head = lands["open"](7, {"7.txt": "7\n"})
     code, lines = lands["land"]()
     assert code == 0, lines
-    [(sha, context, description, state, merges_before)] = [p for p in posted if p[1] == "land"]
+    # the landing status first, then the one that names the record (#2310) once the merge went through
+    [(sha, context, description, state, merges_before), after] = [
+        p for p in posted if p[1] == "land"
+    ]
     assert (sha, context, state) == (head, "land", "success")
+    assert after[0] == head and after[2].startswith("Landed: ") and after[4] > merges_before
     assert re.search(r"nonce [0-9a-f]{16}$", description), description
     # the nonce is the one in the lock commit this land pushed
     nonce = description.rsplit(" ", 1)[-1]
