@@ -85,7 +85,9 @@ def test_the_record_lists_the_failing_checks_and_tests_of_a_real_dequeue(pr: str
     assert code == 0
     assert body.split("\n", 1)[0] == "Queue failure"
     assert "left the merge queue: CHECKS_FAILED" in body
-    assert "At fault: this pull request" in body
+    assert (
+        "At fault" not in body
+    )  # a diagnosis: the record lists evidence, a person or lead reads it (owner decision)
     for name in EXPECTED[pr]["checks"]:
         assert re.search(
             rf"^- \[`{name}`\]\(https://github\.com/\S+/job/\d+\)$", body, re.MULTILINE

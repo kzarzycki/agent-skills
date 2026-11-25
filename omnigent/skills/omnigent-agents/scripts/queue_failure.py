@@ -120,20 +120,14 @@ def record(
     entry: dict, comment_id: str, comment_url: str = "", unread: tuple[str, ...] = ()
 ) -> str:
     """The ``Queue failure`` record for a ``CHECKS_*`` dequeue ``entry``: its first line is ``RECORD_FIRST``; then
-    the PR, the dequeue code, whether Mergify named this PR the cause (``fault``), each failing check as a link to its
+    the PR, the dequeue code, each failing check as a link to its
     job, the failing tests, and under the details the Mergify comment it reports, which keeps one record per
     comment. ``unread`` names the checks whose log could not be read, so a missing test list is not read as no failing
     test."""
     n = entry["pr"]
-    fault = entry.get("fault")
     lines = [
         RECORD_FIRST,
         f"#{n} left the merge queue: {entry['code'] or 'dequeued'}.",
-        (
-            "At fault: this pull request (Mergify: it failed tested alone on top of the base)."
-            if fault
-            else "At fault: Mergify did not name this pull request as the cause."
-        ),
         "",
         "Failing checks:",
     ]
