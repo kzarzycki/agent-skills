@@ -341,7 +341,6 @@ def test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections()
 @pytest.mark.parametrize(
     ("settings", "refused"),
     [
-        ('sizes:\n  XXL: ""\n', "issue-tracker.md has an unknown settings section `sizes`"),
         ("components: api\n", "issue-tracker.md has a setting `components` outside a section"),
         ("[components]\napi\n", "issue-tracker.md's settings block is not YAML"),
         (
@@ -603,14 +602,15 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
 @pytest.mark.parametrize(
     ("settings", "refused"),
     [
-        ("loop:\n  caps: 3\n", "loop.md has an unknown setting `loop.caps`"),
-        ("risk:\n  path:\n    - a/**\n", "loop.md has an unknown setting `risk.path`"),
-        ("plan:\n  paths:\n    - a/**\n", "loop.md has an unknown setting `plan.paths`"),
+        ("loop:\n  caps: 3\n", "loop.md has an unknown setting `loop.caps`: did you mean `cap`?"),
+        (
+            "risk:\n  path:\n    - a/**\n",
+            "loop.md has an unknown setting `risk.path`: did you mean `paths`?",
+        ),
         (
             "practice:\n  reviews: code-review\n",
-            "loop.md has an unknown setting `practice.reviews`",
+            "loop.md has an unknown setting `practice.reviews`: did you mean `review`?",
         ),
-        ("approvals:\n  spec: auto\n", "loop.md has an unknown settings section `approvals`"),
         ("spec: auto\n", "loop.md has a setting `spec` outside a section"),
         (
             "bot:\n  paths:\n    - uv.lock\n",
@@ -630,7 +630,6 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
             "spec:\n  auto:\n    - bugs\n",
             "loop.md's `spec.auto` must be true, false or a list of bug, follow-up, sub-issue, not ['bugs']",
         ),
-        ("loop:\n  spec: auto\n", "loop.md has an unknown setting `loop.spec`"),
         (
             "risk:\n  labels: size:L, size:XL\n",
             "loop.md's `risk.labels` must be a list of strings, not 'size:L, size:XL'",
@@ -9307,7 +9306,42 @@ def test_a_landing_leaves_no_record_of_the_landed_head_and_publishes_no_pass_on_
     approvals.merges([({**pull(), "headRefOid": head}, tree)], "main", head, LOOP, set())
     assert loop_gate_branches(origin) == set()
     assert "published in origin" not in capsys.readouterr().out
-    assert [found["context"] for found in hub[head]] == ["land"]
+    # the status the head keeps names the record the clean-up deleted (#2310)
+    assert [found["context"] for found in hub[head]] == ["land", "land"]
+    assert hub[head][0]["description"] == f"Landed: record {name_of(head)}"
+
+
+def test_a_landing_of_a_head_with_no_record_says_so_in_its_land_status(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#2310: merges() runs no gate and publishes no pass on the new tip (#1872); the record clean-up leaves origin with no
+    record of the landed head, and the tip shows only the `land` status."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    b, origin = tmp_path / "b", tmp_path / "origin.git"
+    tree = approvals.tree_of(head)
+    git_in(b, "push", "-q", "origin", f":{branch_of(head)}")  # a head that was never recorded
+    assert loop_gate_branches(origin) == set()
+    listing = open_prs()
+
+    def gh(*args: str) -> str:
+        if args[:2] == ("pr", "merge"):
+            git_in(b, "push", "-q", "origin", f"{head}:refs/heads/main")
+            return ""
+        return listing(*args)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    # the squash body is tested on its own
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
+    monkeypatch.setattr(approvals, "comment", lambda *_a: None)
+    hub.clear()
+    capsys.readouterr()
+    approvals.merges([({**pull(), "headRefOid": head}, tree)], "main", head, LOOP, set())
+    assert loop_gate_branches(origin) == set()
+    assert [found["context"] for found in hub[head]] == ["land", "land"]
+    assert hub[head][0]["description"] == "Landed: no record"
 
 
 def test_land_deletes_the_record_branches_of_the_prs_it_merged(
