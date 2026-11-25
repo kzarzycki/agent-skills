@@ -22,6 +22,7 @@ RUNNER = (
     "GITHUB_SHA",
     "GITHUB_TOKEN",
     "GITHUB_WORKFLOW_REF",
+    "GITHUB_WORKSPACE",
 )
 
 # Which agent session the run is in: an Omnigent session, a cloud VM's marker, the host's model and effort defaults.
