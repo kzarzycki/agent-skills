@@ -68,8 +68,8 @@ def test_a_malformed_duration_is_refused_naming_its_key(key: str, text: str) -> 
 def test_a_bare_number_and_an_unknown_key_are_refused_naming_the_key() -> None:
     with pytest.raises(approvals.Refused, match=r"timeouts\.run.* must be a string"):
         approvals.settings(timed("run: 60\n"))
-    with pytest.raises(approvals.Refused, match="job"):
-        approvals.settings(timed("job: 60m\n"))
+    # an unknown key far from every known one warns and is left out (#2475)
+    assert approvals.settings(timed("job: 60m\n"))["timeouts"] == {}
 
 
 # --- every other limit follows `timeouts.run`

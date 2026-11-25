@@ -259,7 +259,6 @@ def test_both_names_of_the_critical_paths_are_refused_naming_them() -> None:
 @pytest.mark.parametrize(
     ("levels", "said"),
     [
-        ("  medium:\n    merge: go\n", "loop.md has an unknown setting `levels.medium`"),
         (
             "  high:\n    merge: auto\n",
             "loop.md's `levels.high.merge` must be one of gates, go, owner, not 'auto'",
@@ -268,9 +267,8 @@ def test_both_names_of_the_critical_paths_are_refused_naming_them() -> None:
             "  low:\n    spec: auto\n",
             "loop.md's `levels.low.spec` must be one of policy, owner, not 'auto'",
         ),
-        ("  high:\n    approve: go\n", "loop.md has an unknown setting `levels.high.approve`"),
     ],
-    ids=["level", "merge", "spec", "key"],
+    ids=["merge", "spec"],
 )
 def test_an_unknown_level_or_action_is_refused_naming_the_key(levels: str, said: str) -> None:
     with pytest.raises(approvals.Refused) as refused:
