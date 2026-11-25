@@ -10576,9 +10576,14 @@ def supervise_registry(
             pushed = ((state["pr_stalls"].get(repo) or {}).get("prs") or {}).get(
                 str(entry["pr"])
             ) or {}
-            if entry.get("queued_at") and pushed.get("seen_at", 0.0) > entry["queued_at"]:
-                # the head was pushed after this entry queued (seen_at is a lower bound on the push): a later head
-                # replaced the run that failed, so there is nothing to fix and nobody to tell
+            if (
+                pushed.get("head") and not pushed["head"].startswith(entry["head"])
+                if entry.get("head")
+                else entry.get("queued_at") and pushed.get("seen_at", 0.0) > entry["queued_at"]
+            ):
+                # the comment names the head it queued (else seen_at, a lower bound on the head's push, is
+                # compared with queued_at): a later head replaced the run that failed, so there is nothing to fix
+                # and nobody to tell
                 entry["told"] = True
                 print(
                     stamp(f"{repo}#{entry['pr']} left the merge queue: its head has since changed"),
@@ -10653,6 +10658,9 @@ def supervise_registry(
                 if is_lead(sid):
                     return sid
                 sid = str(by_id.get(sid, {}).get("parent_session_id") or "")
+        followed = [
+            s for s in followed if is_lead(s)
+        ]  # a followed verifier owns no PR, by wait or report either
         for sid in followed:
             lead = state["leads"].get(sid) or {}
             for ref in [*(lead.get("refs") or []), *(lead.get("wait") or "").split(", ")]:

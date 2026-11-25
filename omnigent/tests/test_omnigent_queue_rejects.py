@@ -33,10 +33,14 @@ def comment(
     ago: float = 60.0,
     fault: bool = False,
     login: str = "mergify[bot]",
+    head: str = "",
+    queued_ago: float = 0.0,
 ) -> dict:
     """A Mergify status comment shaped as the real one: its payload, then a ``Failing checks:`` list of ``qualify``
     runs, one per job in ``jobs``."""
     payload = {"version": 1, "state": state, "left_at": iso(ago)}
+    if queued_ago:
+        payload["queued_at"] = iso(queued_ago)
     if state == "dequeued":
         payload["dequeue_reason"] = {"code": code, "checks": ["qualify"] * bool(jobs)}
     url = "https://github.com/o/r/actions/runs/9/job/{}"
@@ -47,6 +51,7 @@ def comment(
         "<!---\nDO NOT EDIT\n-*- Mergify Payload -*-\n"
         + json.dumps(payload)
         + "\n-*- Mergify Payload End -*-\n-->\n\n### Left the queue\n\n"
+        + (f"- 🚫 **Left the queue** 23:47 · `{head}`\n\n" if head else "")
         # an earlier attempt's red run, in the history above the reason: not one of the failing checks
         + f"- ❌ **Checks failed (attempt 1/2)**\n  - ❌ [`old`]({url.format(1)})\n\n"
         + ("**The failure is in this pull request.** It failed alone on top of `main`.\n\n" * fault)
@@ -800,17 +805,52 @@ def test_a_dequeue_for_a_head_since_replaced_goes_to_no_session(tmp_path, monkey
     monkeypatch.setattr(omnigent_agent, "loop_cards", lambda *a, **k: {})
     monkeypatch.setattr(omnigent_agent, "pr_facts", lambda *a, **k: {})
     monkeypatch.setattr(omnigent_agent, "pr_stall", lambda *a, **k: (time.time(), ""))
-    real = omnigent_agent.QUEUE_FAILURE.queue_comment
-    monkeypatch.setattr(
-        omnigent_agent,
-        "queue_comment",
-        lambda c: {**(real(c) or {}), "queued_at": time.time() - 3600} if real(c) else None,
-    )
 
     def push_then_dequeue(p: int) -> None:
         if p == 1:  # a push the sweep sees after the entry queued, then the old run's dequeue
             gh.pulls[0] = {**gh.pulls[0], "head": {"sha": "b" * 40}, "updated_at": iso(0)}
-            gh.comments.append(comment(100, 12, jobs=(7,)))
+            gh.comments.append(comment(100, 12, jobs=(7,), queued_ago=3600))
 
     run(og, registry, monkeypatch, 4, push_then_dequeue)
     assert not relays(og, 12) and not acts(og, "o/r#12")
+
+
+def test_a_dequeue_names_its_head_and_only_a_different_current_head_drops_it(
+    tmp_path, monkeypatch
+) -> None:
+    """The comment's head decides, not a clock: a PR sent back to draft and made ready on the same head, its sweep
+    after the entry queued, still gets its dequeue; a different current head gets none."""
+    for i, (current, want) in enumerate([("a" * 40, ["a"]), ("b" * 40, [])]):
+        (tmp_path / str(i)).mkdir()
+        registry, og = fleet(tmp_path / str(i))
+        og.snaps["a"] = {"labels": {"omni.pr": "o/r#12", "omni.role": "lead"}}
+        gh = GitHub(monkeypatch)
+        gh.pulls = [{"number": 12, "draft": False, "head": {"sha": current}, "updated_at": iso(0)}]
+        gh.comments.append(comment(100, 12, jobs=(7,), head="aaaaaaa", queued_ago=3600))
+        monkeypatch.setattr(omnigent_agent, "loop_cards", lambda *a, **k: {})
+        monkeypatch.setattr(omnigent_agent, "pr_facts", lambda *a, **k: {})
+        monkeypatch.setattr(omnigent_agent, "pr_stall", lambda *a, **k: (time.time(), ""))
+
+        run(og, registry, monkeypatch, 4)
+        assert [s for s, _ in relays(og, 12)] == want
+
+
+def test_a_followed_verifier_naming_the_pr_in_its_wait_is_still_no_owner(
+    tmp_path, monkeypatch
+) -> None:
+    """``a`` is the PR's verifier and its wait line names o/r#12: still no lead, so the manager gets it (#2614)."""
+    registry, og = fleet(tmp_path)
+    og.snaps["a"] = {"labels": {"omni.role": "verifier"}}
+    (tmp_path / "a.md").write_text("")
+    og.histories["a"][-1] = ending("STILL WORKING: waiting on o/r#12\nWaits: #12", 8000)
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 3)
+    assert all(s != "a" for s, _ in relays(og, 12))
+
+
+def test_queue_comment_reads_queued_at_and_the_head() -> None:
+    entry = omnigent_agent.queue_comment(comment(1, 12, jobs=(7,), head="1ae8cad", queued_ago=3600))
+    assert entry["head"] == "1ae8cad"
+    assert entry["queued_at"] == pytest.approx(time.time() - 3600, abs=5)
+    assert omnigent_agent.queue_comment(comment(1, 12))["head"] == ""
