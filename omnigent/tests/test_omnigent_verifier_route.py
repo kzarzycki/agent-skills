@@ -402,3 +402,23 @@ def test_gemini_route_run_records_its_verdict_like_every_route(
     argv += ["--verifier-route", "gemini", "--host", "host"]
     assert omnigent_agent.main(argv) == 0
     assert calls.read_text() == f"record verdict 7 {tmp_path / 'r.md'}"
+
+
+def test_a_report_on_another_host_is_brought_home_before_it_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The step `run` and `wait` share: a remote host's report is read through its file API, written here,
+    and only then recorded, where recording it in place would find no file."""
+    og = FakeOmnigent()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        omnigent_agent, "file_text", lambda og_, sid, path, far=False: "Head: abc\nSATISFIED: yes\n"
+    )
+    calls = fake_gatekeeper(tmp_path, monkeypatch, 0)
+    omnigent_agent.record_collected(og, "s0", Path("/there/r.md"), 7, far=True)
+    assert calls.read_text() == "record verdict 7 tmp/loop/r.md"
+    assert (tmp_path / "tmp/loop/r.md").read_text().startswith("Head: abc")
+    # on this host the report is recorded where it is
+    (tmp_path / "x.md").write_text("Head: abc\n")
+    omnigent_agent.record_collected(og, "s0", tmp_path / "x.md", 8, far=False)
+    assert calls.read_text().startswith("record verdict 8 ")

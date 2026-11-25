@@ -8040,6 +8040,12 @@ def record_verdict(pr: int, report: Path, repo: str = "") -> None:
     raise Fail(line)
 
 
+def record_collected(og: Omnigent, sid: str, report: Path, pr: int, far: bool) -> None:
+    """Record a collected verifier ``report`` on PR ``pr``, the one step ``run`` and ``wait`` share: a report on
+    another host (``far``, a path there) is copied here first, as ``approvals.py verdict`` reads a local file."""
+    record_verdict(pr, bring_home(og, sid, report, keep=True) if far else report)
+
+
 def apply_route(args: argparse.Namespace) -> None:
     """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
     agy needs to run unattended) and `claude` a fresh Claude session of any model, the author's own included, marked
@@ -12785,7 +12791,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             arm_quietly(registry, args.session)
             finish_delivered(og, args.session, keep=keeps(args, args.verdict), hold_pr=False)
             if args.verdict and args.record_pr:
-                record_verdict(args.record_pr, Path(home) if far else report)
+                record_collected(og, args.session, report, args.record_pr, far)
             return 0
         # A verifier's --pr names the PR it reviews, not a cloud worker's report channel: it
         # writes its report file as any child does (on another host, there, read back by wait).
@@ -13156,7 +13162,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             arm_quietly(registry, sid)
             finish_delivered(og, sid, keep=keeps(args, verifier), hold_pr=False)
             if verifier and verifies:
-                record_verdict(verifies, report if here else Path("tmp/loop") / report.name)
+                record_collected(og, sid, report, verifies, not here)
         if survivors:
             raise Fail(f"abandoned sessions survive: {', '.join(survivors)}")
         return 0
