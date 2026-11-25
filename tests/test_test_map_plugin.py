@@ -115,3 +115,22 @@ def test_addopts_is_back_after_a_test(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(StopIteration):
         hook.send(True)
     assert os.environ["PYTEST_ADDOPTS"] == "-q"
+
+
+def test_the_durations_file_gets_one_durations_line_per_phase(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """#2445: with TEST_DURATIONS set, each test phase's time is appended in `pytest --durations=0`'s format."""
+    listed = tmp_path / "durations.log"
+    monkeypatch.setenv(plugin.DURATIONS, str(listed))
+    report = pytest.TestReport(
+        "tests/test_x.py::test_a",
+        ("tests/test_x.py", 1, "test_a"),
+        {},
+        "passed",
+        None,
+        "call",
+        duration=1.5,
+    )
+    plugin.pytest_runtest_logreport(report)
+    assert listed.read_text() == "1.500s call tests/test_x.py::test_a\n"
