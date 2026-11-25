@@ -820,7 +820,7 @@ The owner authorized this task; do it now, without asking for a go-ahead. This i
 Your checkout is a clone of the branch checked out in the workspace this session started from, which need not be PR #{pr}'s branch; `git fetch origin pull/{pr}/head` gets the PR's.
 Read issues and PRs through REST too, since GraphQL answers 403 here: `gh api repos/{{owner}}/{{repo}}/issues/<n>` and `.../pulls/<n>`, never `gh issue view` or `gh pr view`.
 Push your commits to the `claude/…` branch this session started on, and nowhere else; your report names that branch and its head SHA, and the lead merges it into the PR.
-Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (`gh pr comment` goes through GraphQL too). Keep progress notes elsewhere, since that comment is read as your answer. It names no host, path or session, since the PR may be public.
+Your final report is one comment on PR #{pr}, posted once, when done, through REST: write it to a file, then `gh api repos/{{owner}}/{{repo}}/issues/{pr}/comments -F body=@<file> --jq .html_url` (`gh pr comment` goes through GraphQL too). Keep progress notes elsewhere, since that comment is read as your answer. It names no host or path outside a full Omnigent session link (`https://<server>/c/<id>`, which it may post), since the PR may be public.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A file under `tmp/loop/` that your report names (a repro, a log) goes in that comment too, since your files never reach the lead's host: a line `<!-- file: tmp/loop/<name> -->`, then the file in a fenced block (a fence longer than any it holds). A comment holds at most 65,536 characters: a file that would pass that goes as its last lines that fit, marked `<!-- file: tmp/loop/<name> (last lines) -->`.
 Demo: for a user-visible change, state in the report the command you ran and its output (or the demo skill's recording); otherwise say `Demo: none`, since a reviewer judges a visible change without checking out the branch.
@@ -836,7 +836,7 @@ When done, reply with only the comment's URL. If posting fails (the session's to
 HELD_POST = (
     "Your final report is one comment on PR #{pr}, which you don't post: reply with the line `{unposted}`, then the"
     " comment body verbatim, and it is checked and posted for you."
-    " It names no host, path or session, since the PR may be public."
+    " It names no host or path outside a full Omnigent session link (`https://<server>/c/<id>`, which it may post), since the PR may be public."
 )
 # The report paragraph is one line, so a sentence added after it survives the swap.
 SELF_POSTED = re.compile(r"Your final report is one comment on PR #\{pr\}, posted once[^\n]*")
@@ -6840,24 +6840,26 @@ DENY_LIST = "LOOP_DENY_LIST"
 
 
 def denied(text: str) -> None:
-    """A ``Fail`` when ``text`` names a term of the local deny list (``LOOP_DENY_LIST``'s file, one term per line,
-    ``#`` starts a comment), ignoring case at word boundaries, or when the list it names can't be read; the same check
-    as approvals.py's, which ships in another skill, so this script imports nothing of it."""
-    if not (where := os.environ.get(DENY_LIST)):
+    """A ``Fail`` when ``text`` names a term of the local deny list (``LOOP_DENY_LIST``'s file), outside an Omnigent
+    session link: the one check, ``denylist.py`` beside the loop's gatekeeper.py, loaded by path. With a deny list on this host
+    and that skill absent the check can't run, so it refuses."""
+    if not os.environ.get(DENY_LIST):
         return
+    folder = installed("gatekeeper")
     try:
-        listed = Path(where).expanduser().read_text().splitlines()
-    except OSError as e:
-        raise Fail(
-            f"{DENY_LIST} names {where}, which can't be read ({e.strerror}): nothing posted"
-        ) from e
-    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
-    for number, line in enumerate(text.splitlines(), 1):
-        for term in terms:
-            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
-                raise Fail(
-                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
-                )
+        assert folder
+        spec = importlib.util.spec_from_file_location(
+            f"{__name__}_denylist", folder / "denylist.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (Exception, SystemExit) as e:  # absent or broken: refuse, never let a post through
+        raise Fail(f"{DENY_LIST} is set but its denylist.py can't be loaded: nothing posted") from e
+    try:
+        module.check(text)
+    except module.Denied as e:
+        raise Fail(str(e)) from e
 
 
 def gh(*args: str, timeout: float = HTTP_SECONDS, cwd: Path | None = None) -> str:

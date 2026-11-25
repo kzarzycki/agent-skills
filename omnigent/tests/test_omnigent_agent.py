@@ -492,6 +492,18 @@ def test_every_brief_says_a_message_that_adds_no_task_never_rewrites_the_report(
         assert RELAY_RULE in omnigent_agent.brief_of(report).read_text()
 
 
+def test_a_listed_host_inside_a_session_link_is_denied_only_outside_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deny = tmp_path / "deny.txt"
+    deny.write_text("build-host.local\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    link = "https://build-host.local:8443/c/" + "ab" * 16
+    omnigent_agent.denied(f"Session: {link}\n")
+    with pytest.raises(omnigent_agent.Fail, match="line 2 names `build-host.local`"):
+        omnigent_agent.denied(f"Session: {link}\nran on build-host.local\n")
+
+
 def test_a_held_cloud_worker_with_a_pr_still_gets_the_relay_rule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -10904,7 +10916,9 @@ def test_the_cloud_preamble_forbids_a_question_tool_and_a_page() -> None:
     preamble = omnigent_agent.PR_PREAMBLE
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
-    assert "session link" not in preamble
+    # a full session link may be posted (#2571), and the old ban on a session is gone
+    assert "no host or path outside a full Omnigent session link" in preamble
+    assert "no host, path or session" not in preamble
 
 
 def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
