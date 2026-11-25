@@ -4149,6 +4149,46 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
     return found
 
 
+def pipeline_down(run: int) -> bool:
+    """Whether a job of Actions run `run` shows CI down: cancelled, timed out, never started, or with no steps, so no test
+    ran (breakglass_verify's `infra`, and red_base's refusal)."""
+    broken = {"cancelled", "timed_out", "startup_failure"}
+    return any(job.get("conclusion") in broken or not job.get("steps") for job in run_jobs(run))
+
+
+def red_base(base: str, loop: str | None = None) -> tuple[list[str], list[str]]:
+    """What `base`'s latest push run, the checks on its tip, tells a lander (#2565): (advice, refusals). A required check
+    that failed is advice, with the run's link, since the lander can stop or fix before stacking more onto a red base and
+    a flaky test must not block every landing. It is a refusal when the run's own jobs show the pipeline down, as
+    breakglass_verify reads them: a job cancelled, timed out or never started, or one with no steps, so no test ran. A
+    forge read that fails is one advice line saying so, never silence and never a refusal, and it leaves the refusals
+    already found."""
+    advice: list[str] = []
+    refusals: list[str] = []
+    try:
+        checks = commit_checks(base)
+        wanted = required_checks(base) - OWN
+    except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+        return [
+            f"{base}'s latest push run could not be read from the forge ({err}): check it before landing"
+        ], []
+    for name, run in sorted(checks.items()):
+        if run["conclusion"] not in RED or name in OWN or (wanted and name not in wanted):
+            continue
+        where = f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}"
+        number = re.search(r"/actions/runs/(\d+)", run["url"])
+        try:
+            down = number is not None and pipeline_down(int(number[1]))
+        except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+            advice.append(f"{where}; its jobs could not be read ({err})")
+            continue
+        if down:
+            refusals.append(f"{where}; its jobs show the pipeline down, so no test ran")
+        else:
+            advice.append(f"{where}; fix it or stop before landing more onto it")
+    return advice, refusals
+
+
 def unforced(pull: dict[str, Any]) -> str | None:
     """The line check merge and brief print when every commit since the newest verdict's commit is a merge of the
     base (base_merges) whose parents merge cleanly (merged) and land posted no CONFLICTS comment naming a head that
@@ -4951,11 +4991,7 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
                 f" ({', '.join(sorted(required))})"
             )
         got = tests(failed["id"])
-        broken = {"cancelled", "timed_out", "startup_failure"}
-        down = any(
-            job.get("conclusion") in broken or not job.get("steps")
-            for job in run_jobs(failed["id"])
-        )
+        down = pipeline_down(failed["id"])
         if got is None and not down:
             why.append(
                 f"{where}: run {failed['id']} published no `{cfg['artifact']}` artifact and no job shows CI down:"
@@ -6385,9 +6421,13 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     )
     # what land's pre-land check would refuse, after the rest, so check merge never calls clear a PR land leaves out
     waiting += pre_land_holds(pull, loop, bool(found or waiting)) if point == "merge" else []
-    for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
+    red: list[str] = []
+    if point == "merge":
+        said, red = red_base(pull["baseRefName"], loop)
+        advice += said
+    for line in holds(pull, issues, loop) + found + waiting + after + used + advice + red:
         print(line)
-    return 1 if found else WAITING if waiting else 0
+    return 1 if found or red else WAITING if waiting else 0
 
 
 def unopened() -> dict[str, Any]:
@@ -7232,6 +7272,11 @@ def landing_here(
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
     required = rules - OWN
+    said, red = red_base(base, loop)
+    for line in said:
+        print(line)
+    if red:
+        raise Refused("\n".join(red))
     queue = held_by(loop, rules)  # before readied, so a refused policy touches no PR
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:

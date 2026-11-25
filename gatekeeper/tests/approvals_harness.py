@@ -85,6 +85,7 @@ AUTOUSE = (
     "session_fields",
     "merging",
     "reran",
+    "green_base",
 )
 
 
@@ -192,6 +193,13 @@ def reran(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every head the gate reads holds the independent rerun its level asks (levels' `rerun`, #2240), instead of
     reading origin's record branches and the forge's pushes; test_approvals_rerun.py puts the real check back."""
     monkeypatch.setattr(approvals, "rerun_gap", lambda _pull, _issues, _loop: None)
+
+
+@pytest.fixture
+def green_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The base's latest push run is green, instead of read from the forge (red_base, #2565); test_approvals_red_base.py
+    puts the real read back."""
+    monkeypatch.setattr(approvals, "red_base", lambda _base, _loop=None: ([], []))
 
 
 @pytest.fixture
@@ -343,6 +351,7 @@ __all__ = [
     "git_in",
     "github",
     "graphql_answers",
+    "green_base",
     "heavy_by_run",
     "held",
     "hub",
