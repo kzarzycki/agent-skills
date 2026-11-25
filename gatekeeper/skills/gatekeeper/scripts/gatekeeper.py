@@ -1061,8 +1061,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
     ),
     # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
     "timeouts": Table(test=str, run=str, optional=("test", "run")),
-    # the team this project's PRs belong to (owner_record, #2494); a policy without the section keeps no Owner record
-    "team": Table(name=str, optional=("name",)),
     # the break-glass land's proof windows (breakglass_settings); every key is optional
     "breakglass": Table(
         max_age=str,
@@ -2572,44 +2570,30 @@ def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
     return found
 
 
-# the first line of the record `check build` leaves on a PR: `Owner: <team>`, its `Session:` link folded under it
+# the first line of the record `check build` leaves on a PR: `Owner: <the lead's session link>`, and nothing else
 OWNER = "Owner: "
 
 
-def owner_record(pull: dict[str, Any], loop: str | None) -> list[str]:
-    """Several teams share a project only through GitHub, so `check build` writes one `Owner:` record on the PR: the
-    team (the policy's `team.name`, else the account running the gate) and the lead's session link (session_link).
-    A line each for a record it cannot write and a run with no session or no team to name, which `check build` counts
-    as a failure; nothing is written again while the PR's last `Owner:` record already says the same.
-    ponytail: the record is kept only by a policy with a `team` section, since a project with one team and no queue
-    must change nothing; the epic's table says the setting defaults to the account name, which holds inside the
-    section. An empty `team:` turns it on."""
-    team = settings(loop).get("team")
-    if team is None:
-        return []
-    where = f"PR #{pull['number']}"
-    name = str(team.get("name") or viewer() or "").strip()
+def owner_record(pull: dict[str, Any]) -> list[str]:
+    """Several agent trees (independent groups of agents) work one repo and align only through GitHub, so `check build`
+    writes one `Owner:` record on the PR: the lead's session link (session_link). A line when it cannot write the
+    record, which `check build` counts as a failure; nothing is written again while the PR's last `Owner:` record
+    already says the same.
+    ponytail: the record is written whenever the run has a session to name, and a run with no session at all (a
+    project that does not use sessions) writes none and is not refused, so a single-user project changes nothing; the
+    epic left open what turns the record on, and the owner chose this reading (#2458)."""
     link = session_link()
     if not link:
-        return [
-            (
-                f"{where}: no `Owner:` record: this run names no Omnigent session (RUNNER_SERVER_URL and"
-                " OMNIGENT_RUNNER_PRIMARY_SESSION_ID are unset), and the policy's `team` section asks for one"
-            )
-        ]
-    if not name:
-        return [
-            f"{where}: no `Owner:` record: no team name, and the forge names no account: set `team.name`"
-        ]
-    body = fold(f"{OWNER}{name}", details=f"Session: {link}")
+        return []
+    body = f"{OWNER}{link}\n"
     kept = [n for n in notes(pull) if n["body"].startswith(OWNER)]
-    if kept and machine(kept[-1]["body"]).strip() == machine(body).strip():
+    if kept and kept[-1]["body"].strip() == body.strip():
         return []
     try:
         comment(pull["number"], body)
     except subprocess.CalledProcessError as exc:
         return [
-            f"{where}: could not write the `Owner:` record ({(exc.stderr or '').strip() or exc})"
+            f"PR #{pull['number']}: could not write the `Owner:` record ({(exc.stderr or '').strip() or exc})"
         ]
     return []
 
@@ -6425,7 +6409,7 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
     if point == "build" and not found:
-        found = owner_record(pull, loop)
+        found = owner_record(pull)
     covered = breakglass_cover(pull, loop, ran(pull)) if point == "merge" else Covered([], [])
     waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
