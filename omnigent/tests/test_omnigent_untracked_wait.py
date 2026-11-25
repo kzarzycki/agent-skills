@@ -194,3 +194,19 @@ def test_handback_line_routes_whatever_the_body_quotes_2629():
 def test_line_start_still_working_is_found_2629():
     assert omnigent_agent.still_start("x\nSTILL WORKING: waiting on CI") == 2
     assert omnigent_agent.still_start("```\nSTILL WORKING: a\n```") < 0
+
+
+def test_a_quote_before_the_real_still_working_decides_nothing_2629():
+    quote = "> STILL WORKING: waiting on CI\n"
+    assert (
+        omnigent_agent.wait_of(
+            'Note: "STILL WORKING: waiting on CI"\nSTILL WORKING: waiting on deployment'
+        )
+        != "CI"
+    )
+    assert omnigent_agent.wait_of(quote + "STILL WORKING: waiting on pid 4242") != "CI"
+    assert omnigent_agent.untracked_wait(quote + "STILL WORKING: waiting on pid 4242")
+    assert not omnigent_agent.own_run_only(
+        "> STILL WORKING: waiting on my background run\nSTILL WORKING: waiting on verifier"
+    )
+    assert omnigent_agent.ending_of("> STILL WORKING: waiting on CI\nDONE: fixed") == "DONE"

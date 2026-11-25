@@ -654,7 +654,9 @@ NAMED = re.compile(
 )
 # What a report keeps for routing (``report_head``): an ending line, not one quoted in a code
 # fence, a ``>`` quote or backticks; and from its ``STILL WORKING`` this many characters, whole lines.
-STILL_OR_ENDING = re.compile(r"^\W*(DONE|USER NEEDED|PARKED|STILL WORKING)\b", re.MULTILINE)
+STILL_OR_ENDING = re.compile(
+    r"^(?:(?![>`])\W)*(DONE|USER NEEDED|PARKED|STILL WORKING)\b", re.MULTILINE
+)
 STILL_LINE = re.compile(r"^[ \t]*[*_#-]*[ \t]*(STILL WORKING)\b", re.MULTILINE)
 HANDED_BACK_END = re.compile(r"^[\s*_>-]*(?:READY FOR VERIFIER\b|Handback:)", re.IGNORECASE)
 REPORT_ENDING = re.compile(r"^[\s*_#-]*(DONE|USER NEEDED|PARKED)\b")
@@ -8813,7 +8815,7 @@ DURATION = re.compile(
 def own_run_only(text: str) -> bool:
     """Whether ``text``'s ``STILL WORKING`` line waits on the lead's own background run alone: its
     wait object, less a trailing duration, holds only words of ``OWN_RUN_WORDS``."""
-    m = WAIT_OBJECT.search(text)
+    m = WAIT_OBJECT.search(text[max(still_start(text), 0) :])
     if not m:
         return False
     tokens = re.findall(r"[\w'-]+|\S", DURATION.sub("", m.group("object")).replace("`", " "))
@@ -9006,8 +9008,9 @@ def wait_of(text: str, at: float | None = None) -> str:
         ahead = [x for x in times if written is not None and x[1].timestamp() > written]
         if pick := (waited or ahead or times)[:1]:
             return f"until {pick[0][2]}"
-    if still_start(text) < 0:  # the phrase only quoted: the turn names no wait (#2629)
+    if (start := still_start(text)) < 0:  # the phrase only quoted: the turn names no wait (#2629)
         return "unknown"
+    text = text[start:]  # what the turn's own STILL WORKING says, not an earlier quote
     if len(ids := named_of(text)) == 1:  # a child's id anywhere in the wait, not only after "on"
         return ids[0]
     if m := WAIT.search(text):
@@ -9117,7 +9120,7 @@ def untracked_wait(text: str, cloud: bool = False) -> bool:
     wait = FENCE.sub("", text[start:])
     if cloud and SUBAGENT_WAIT.search(wait):
         return True
-    if WAIT.search(text):
+    if WAIT.search(text[start:]):
         return False
     found = UNTRACKED.search(wait) and WAIT_WORD.search(wait)
     return bool(found) and not NOTIFIES.search(wait)
