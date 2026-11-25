@@ -28,6 +28,9 @@ MERGIFY_PAYLOAD = re.compile(
 )
 # a failing check's line under `Failing checks:`: its name and job URL, whose last number is the job id
 FAILING_CHECK = re.compile(r"^- \S+ \[`([^`]+)`\]\((https://github\.com/[^)\s]*/job/(\d+))\)")
+LEFT_HEAD = re.compile(
+    r"\*\*Left the queue\*\*[^`\n]*`([0-9a-f]{7,40})`"
+)  # the head Mergify queued
 QUEUE_FAULT = re.compile(r"^\*\*The failure is in this pull request\.\*\*.*$", re.MULTILINE)
 # pytest's summary line for a failed test, behind the Actions log's timestamp
 PYTEST_FAILED = re.compile(r"^(?:\d{4}-\d\d-\d\dT[\d:.]+Z )?FAILED (\S+)", re.MULTILINE)
@@ -75,6 +78,8 @@ def queue_comment(comment: dict) -> dict | None:
     return {
         "pr": int(pr[1]),
         "state": str(payload.get("state") or ""),
+        "head": left[1] if (left := LEFT_HEAD.search(body)) else "",
+        "queued_at": stamp(payload["queued_at"]) if payload.get("queued_at") else 0.0,
         "left_at": stamp(payload["left_at"]) if payload.get("left_at") else 0.0,
         "code": str(reason_.get("code") or "") if isinstance(reason_, dict) else "",
         "checks": checks,
