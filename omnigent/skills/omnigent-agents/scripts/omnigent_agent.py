@@ -795,8 +795,9 @@ CLOUD_RUN_LINE = (
     " detached as engineering-loop's verifier.md's recipe says (its log, pid and exit in files), then wait on it in"
     " this turn, in the foreground: `omnigent_agent.py wait-for --log <log> --pid <pid> --budget 570`, called again"
     " on `still running`, each call under the 10-minute tool limit, never a short `wait-for`, `until grep` or `sleep`"
-    " loop. A claude-cloud session is not woken by a finished background task, so never end a turn waiting on one"
-    " (Bash `run_in_background` included) or on a detached run: end the turn only once the run has ended and its result"
+    " loop. A claude-cloud session is not woken when a detached run ends (a tracked background task has woken one, a detached pid"
+    " never does: #2611), so never end a turn waiting on a detached run, nor on a Bash `run_in_background` one: end the"
+    " turn only once the run has ended and its result"
     " is posted. The lead waits on the completion signal you post (the PR comment or a status file), not on your"
     " turn, so a `STILL WORKING` that names only your own run is not a valid ending."
 )
