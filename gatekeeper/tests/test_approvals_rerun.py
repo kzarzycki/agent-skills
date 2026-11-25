@@ -666,13 +666,12 @@ def flat(path: str) -> str:
 def test_the_skills_state_the_option_its_defaults_and_the_report_line() -> None:
     loop_skill = flat("loop/skills/engineering-loop/SKILL.md")
     assert (
-        "gatekeeper.md `levels.<level>.rerun` is on (by default `high` and `critical`)"
+        "gatekeeper.md `levels.<level>.rerun` is on (off by default at every level)"
         in loop_skill
     )
     assert "(the gatekeeper skill's policy.md, Independent rerun)" in loop_skill
     policy_md = (SKILLS / "gatekeeper/skills/gatekeeper/policy.md").read_text()
-    assert "    rerun: false   # the worker's record is the proof\n" in policy_md
-    assert policy_md.count("    rerun: true") == 2
+    assert policy_md.count("    rerun: false ") == 3 and "    rerun: true" not in policy_md
     assert "`low` {policy, gates, rerun false}" in policy_md
     assert "## Independent rerun" in policy_md
     gate_skill = flat("gatekeeper/skills/gatekeeper/SKILL.md")
