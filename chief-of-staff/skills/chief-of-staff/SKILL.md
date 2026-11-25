@@ -335,7 +335,11 @@ manager per project, each a node.
   (Follow).
 - **Decision log.** While the owner is away, each decision taken for them goes in the node's
   decision log with how to undo it. A morning digest is drafted from it and the board's
-  `## Needs the owner`, and sent by hand, never by a scheduled send.
+  `## Needs the owner`, and sent by hand, never by a scheduled send. `scripts/decisions.py`
+  does the writing: `log --what --why --undo` appends an entry and refuses one with no undo,
+  `digest` prints the draft and sends nothing, and `sent --via <where>` records, after you sent
+  it, that the log is delivered up to there. Read it when logging a decision or drafting the
+  digest.
 
 ## Speaking to the owner
 
@@ -440,6 +444,20 @@ buys nothing, but a lead missing from the board is one a successor never finds:
   lacks. Carry on without greeting the owner again. Read no transcript or report to rebuild
   state, since that is what the file saves; read one only when a lead's notice or the
   owner's question needs it.
+
+## Values file
+
+A setup's own settings (server, sessions, hosts, delegation, models, budgets, hygiene) live in one YAML file, `cos-values.yml`, in the setup's home folder: never in a
+project repo, which holds no coordinator instructions. It holds only what differs from the pack's
+defaults, and a setup with no file runs on them. `scripts/cos_values.py` is the one loader every
+pack script imports (`load()`, then `get(key)` or `require(key)`); `check` validates a file and
+names each unknown or mistyped key, `keys` lists every key with its default and meaning. The file is found by
+`--file`, else `$COS_VALUES`, else `cos-values.yml` in the home folder. Read
+`references/values-first-setup.yml` (a home of its own with project managers) or
+`references/values-second-setup.yml` (delegation, nightly jobs and a client-data rule) when writing a
+setup's file; both hold placeholder values only. A key the loader does not list is an error, never
+a default, so a typo is caught; a value that is a secret goes in the harness's credential store,
+never in this file.
 
 ## Memory
 

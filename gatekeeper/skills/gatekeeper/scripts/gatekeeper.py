@@ -545,7 +545,7 @@ section or key it doesn't know or a value of the wrong type is refused, naming t
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
 `short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
 `high` and `critical`, each with `spec` and `merge` (above), and `rerun`, whether `check merge` and `land` need an
-independent rerun of the head's selection on its tree (default false for `low`, true for `high` and `critical`): a
+independent rerun of the head's selection on its tree (default false at every level: a repo turns it on once a workflow pushes the rerun record): a
 record of `local-ci --record --rerun` on origin that an app pushed (a CI run on the head) or that a verifier pass on
 the head names on a `Rerun: <record commit>` line (a fresh session the verifier started), never the worker's own
 record (rerun_gap).
@@ -617,6 +617,7 @@ import ast
 import atexit
 import contextlib
 import contextvars
+import difflib
 import fcntl
 import fnmatch
 import functools
@@ -1130,12 +1131,52 @@ def sections(data: dict[str, Any], file: str) -> dict[str, dict[str, Any]]:
     return data
 
 
+def pack_version() -> str:
+    """The version of the gatekeeper pack running here, from the `.claude-plugin/plugin.json` above this script, else
+    `unversioned`. ponytail: a copy vendored without the manifest (a consumer's `.agents/skills`) names no version."""
+    for folder in Path(__file__).resolve().parents[:6]:
+        manifest = folder / ".claude-plugin" / "plugin.json"
+        if manifest.is_file():
+            try:
+                found = json.loads(manifest.read_text())
+            except (OSError, ValueError):
+                continue
+            if (
+                isinstance(found, dict)
+                and found.get("name") == "gatekeeper"
+                and found.get("version")
+            ):
+                return f"v{found['version']}"
+    return "unversioned"
+
+
+def unknown(file: str, where: str, key: str, known: Any, kind: str = "setting") -> None:
+    """An unknown setting or section: refused when it is a near match to a key `known` holds in the same place (a
+    typo, naming the key it probably meant), else said once per run on stderr and left to the caller to drop, so the
+    run goes on as if it were absent (#2475): a repo's main may set a key only a newer pack knows, and every branch
+    still on an older one would otherwise refuse every command until it merged main."""
+    near = difflib.get_close_matches(key, [k for k in known if isinstance(k, str)], n=1, cutoff=0.8)
+    if near:
+        raise Refused(
+            f"{file} has an unknown {kind} {where}: did you mean `{near[0]}`?"
+            if kind == "setting"
+            else f"{file} has an unknown settings section `{key}`: did you mean `{near[0]}`?"
+        )
+    if where not in DEPRECATED:
+        DEPRECATED.add(where)
+        print(
+            f"{file} sets {where}, which this gatekeeper ({pack_version()}) doesn't know: this repo's policy needs a"
+            " newer pack; merge main",
+            file=sys.stderr,
+        )
+
+
 def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md") -> dict[str, Any]:
     """A section's values checked against its schema (a map of keys, or one type for any key), refusing one that
     doesn't match it and naming the key, so a mistyped setting is never read as a rule nobody wrote. Types match
     exactly, which also refuses what YAML 1.1 reads as another type where a name was meant (`no` as false, `1.10` as
     a float), naming the key, since such a value is never the name written."""
-    for key, value in section.items():
+    for key, value in list(section.items()):
         where = f"`{name}.{key}`"
         if not isinstance(
             key, str
@@ -1143,7 +1184,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             raise Refused(f"{file}'s {where} is no name: quote it")
         kind = schema.get(key) if isinstance(schema, dict) else schema
         if kind is None:
-            raise Refused(f"{file} has an unknown setting {where}")
+            unknown(file, where, key, schema)
+            del section[key]  # as if it were absent
+            continue
         if isinstance(kind, Rows):  # a list of sections, such as `loop.gate_steps`
             if not (
                 isinstance(value, list) and value and all(isinstance(row, dict) for row in value)
@@ -1278,7 +1321,7 @@ def settings(loop: str | None) -> dict[str, Any]:
                 if adapter not in ADAPTERS:
                     raise Refused(unknown_adapter(file, port_name, adapter))
         else:
-            raise Refused(f"{file} has an unknown settings section `{name}`")
+            unknown(file, f"`{name}`", name, SCHEMA, "section")
     return data
 
 
@@ -1317,12 +1360,12 @@ def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
     """docs/agents/issue-tracker.md's settings block, checked against TRACKED: each section's names with their text.
     `components` and `categories` name a label bare (`billing`) or in full (`area:billing`)."""
     data = sections(block(tracker, "issue-tracker.md"), "issue-tracker.md")
-    unknown = [name for name in data if name not in TRACKED]
-    if unknown:
-        raise Refused(f"issue-tracker.md has an unknown settings section `{unknown[0]}`")
+    for name in [name for name in data if name not in TRACKED]:
+        unknown("issue-tracker.md", f"`{name}`", name, TRACKED, "section")
     return {
         name: typed(section, TRACKED[name], name, "issue-tracker.md")
         for name, section in data.items()
+        if name in TRACKED
     }
 
 
@@ -1804,8 +1847,8 @@ def levels(loop: str | None) -> dict[str, dict[str, Any]]:
     needs an independent rerun of the head's selection (`rerun`, rerun_gap): gatekeeper.md's `levels`, each key it
     leaves out at its default, which is the rule before levels existed: `low` {policy, gates}; `high` {policy, go}, or
     under `spec.auto: true` {owner, gates}, since there the owner approved the change before it was built; `critical`
-    {policy, owner}; `rerun` false for `low` and true for `high` and `critical` (#2240), since for a high-risk change
-    a red the nightly finds is found too late."""
+    {policy, owner}; `rerun` false at every level (#2472): a repo opts in once it has a workflow that pushes the rerun record
+    (#2240), since for a high-risk change a red the nightly finds is found too late."""
     high: dict[str, Any] = (
         {"spec": "owner", "merge": "gates"}
         if spec_auto(loop)
@@ -1813,8 +1856,8 @@ def levels(loop: str | None) -> dict[str, dict[str, Any]]:
     )
     table: dict[str, dict[str, Any]] = {
         "low": {"spec": "policy", "merge": "gates", "rerun": False},
-        "high": {**high, "rerun": True},
-        "critical": {"spec": "policy", "merge": "owner", "rerun": True},
+        "high": {**high, "rerun": False},
+        "critical": {"spec": "policy", "merge": "owner", "rerun": False},
     }
     for level, actions in settings(loop).get("levels", {}).items():
         table[level] = {**table[level], **actions}
@@ -2034,7 +2077,7 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
       session it started pushed, in a repo with no CI.
     A record branch someone pushed by hand alone is neither, so the worker's own record never satisfies it, nor does a
     rerun record a person's account pushed unless the verifier names it. The level is the rating's (rating), so a
-    level whose `rerun` is false (by default `low`) keeps the worker's record as the proof (#2143's D1)."""
+    level whose `rerun` is false (by default every level) keeps the worker's record as the proof (#2143's D1)."""
     level = rating(pull, issues, loop).level
     if not levels(loop)[level].get("rerun"):
         return None
@@ -2073,6 +2116,8 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
         if found
         else f"origin holds no rerun record on tree {held}"
     )
+    if missing := rerun_workflow_gap(toplevel(), loop, level, policy_tree(toplevel())):
+        return f"{asked} {said}; {missing}"
     return (
         f"{asked} {said}. Where the repo has CI, a CI run on the head runs `local-ci --record --rerun` and pushes its"
         f" record; with no CI, the verifier starts a fresh session that runs it on the head and names the record's"
@@ -5635,6 +5680,16 @@ def shown_at(root: Path, ref: str, path: Path) -> bytes | None:
     return found.stdout if found.returncode == 0 else None
 
 
+def policy_tree(root: Path) -> str | None:
+    """The ref whose files the policy is read from (policy_file): origin's default branch in a clone with no working
+    tree (policy_ref), else `origin/<base>` of the PR the run acts on (policy_from); None where the policy is the
+    working tree's, which has no such ref."""
+    if (ref := policy_ref(root)) is not None:
+        return ref
+    found = policy_base(str(root), POLICY_BASE.get())
+    return found[1] if found else None
+
+
 def policy_bytes(root: Path, path: Path) -> bytes | None:
     """A policy file's bytes as this run reads it (policy_ref): the working tree's, else origin's default branch's."""
     if (ref := policy_ref(root)) is not None:
@@ -6014,8 +6069,38 @@ MISE_CONFIGS = (
 MISE_TASK_DIRS = ("mise-tasks", ".mise-tasks", ".mise/tasks", ".config/mise/tasks", "mise/tasks")
 
 
-def mise_files(root: Path) -> list[Path]:
-    """The mise configs and file tasks of the repo, in every place mise reads them."""
+def tree_names(root: Path, ref: str) -> list[str]:
+    """Every file path `ref` holds, relative to the repo root; none where git can't list it."""
+    found = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return found.stdout.splitlines() if found.returncode == 0 else []
+
+
+def text_at(root: Path, ref: str | None, path: Path) -> str:
+    """`path`'s text in the working tree, or at `ref` (empty where the ref holds no such file)."""
+    if ref is None:
+        return read(path)
+    return (shown_at(root, ref, path.relative_to(root)) or b"").decode(errors="replace")
+
+
+def mise_files(root: Path, ref: str | None = None) -> list[Path]:
+    """The mise configs and file tasks of the repo, in every place mise reads them: the working tree's, or those `ref`
+    holds."""
+    if ref is not None:
+        names = tree_names(root, ref)
+        return sorted(
+            root / name
+            for name in names
+            if any(
+                fnmatch.fnmatchcase(name, pattern) and name.count("/") == pattern.count("/")
+                for pattern in MISE_CONFIGS
+            )
+            or any(name.startswith(f"{folder}/") for folder in MISE_TASK_DIRS)
+        )
     configs = {path for pattern in MISE_CONFIGS for path in root.glob(pattern) if path.is_file()}
     tasks = {path for name in MISE_TASK_DIRS for path in (root / name).rglob("*") if path.is_file()}
     return sorted(configs | tasks)
@@ -6033,17 +6118,17 @@ def runs_task(text: str, task: str) -> bool:
     return bool(re.search(rf"mise run\b[^\n;&|]*[ '\"]{re.escape(task)}\b", text))
 
 
-def pack_tasks(root: Path) -> set[str]:
-    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does:
-    `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named by their path, `/` as `:`).
-    Needs tomllib (Python 3.11+), imported here so the other commands still start on the pack's 3.9."""
+def task_bodies(root: Path, ref: str | None = None) -> dict[str, str]:
+    """Each mise task's command text by name: `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named
+    by their path, `/` as `:`). Needs tomllib (Python 3.11+), imported here so the other commands still start on the
+    pack's 3.9."""
     import tomllib
 
     bodies: dict[str, str] = {}
-    for path in mise_files(root):
+    for path in mise_files(root, ref):
         if path.suffix == ".toml":
             try:
-                tasks = tomllib.loads(read(path)).get("tasks") or {}
+                tasks = tomllib.loads(text_at(root, ref, path)).get("tasks") or {}
             except tomllib.TOMLDecodeError:
                 continue
             for task, body in tasks.items():
@@ -6051,16 +6136,74 @@ def pack_tasks(root: Path) -> set[str]:
         else:
             folder = next(d for d in MISE_TASK_DIRS if (root / d) in path.parents)
             task = ":".join(path.relative_to(root / folder).parts)
-            bodies[task] = bodies.get(task, "") + read(path)
+            bodies[task] = bodies.get(task, "") + text_at(root, ref, path)
+    return bodies
+
+
+def tasks_matching(bodies: dict[str, str], found: Callable[[str], bool]) -> set[str]:
+    """The tasks whose text `found` accepts, directly or through `mise run <task>` of one that does."""
     named: set[str] = set()
     while grew := {
         task
         for task, body in bodies.items()
-        if task not in named
-        and (PACK_SCRIPT.search(body) or any(runs_task(body, other) for other in named))
+        if task not in named and (found(body) or any(runs_task(body, other) for other in named))
     }:
         named |= grew
     return named
+
+
+def pack_tasks(root: Path) -> set[str]:
+    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does."""
+    return tasks_matching(task_bodies(root), lambda body: bool(PACK_SCRIPT.search(body)))
+
+
+RERUN_STEP = re.compile(r"\blocal-ci\b[^\n;&|]*--rerun\b")
+
+
+def rerun_workflow_gap(
+    root: Path, loop: str | None, level: str, ref: str | None = None
+) -> str | None:
+    """A line, or None: `levels.<level>.rerun` is on, the repo has CI (`loop.ci` is not false), and no workflow under
+    .github/workflows runs `local-ci --record --rerun`, in a step or through a mise task a step runs, so the rerun
+    record `rerun_gap` waits on can never come: a setup problem, not a wait. ponytail: a text scan of the workflows and
+    of mise's tasks, as setup_problems reads them (#2473's open question); where mise's TOML can't be read (Python
+    before 3.11) the tasks are not scanned, so a rerun run only through a task reads as present, never as missing.
+    With `ref` the files are read from that ref, as the policy is (policy_tree), so a clone with no working tree sees
+    the base's workflows; a ref git can't list reads as present too, since nothing then shows one missing."""
+    if no_ci(loop) or not levels(loop)[level].get("rerun"):
+        return None
+    flows = sorted((root / ".github" / "workflows").glob("*.y*ml")) if ref is None else []
+    if ref is not None:
+        names = tree_names(root, ref)
+        if not names:
+            return None
+        flows = [
+            root / name
+            for name in names
+            if fnmatch.fnmatchcase(name, ".github/workflows/*.y*ml") and name.count("/") == 2
+        ]
+    try:
+        tasks = tasks_matching(task_bodies(root, ref), lambda body: bool(RERUN_STEP.search(body)))
+    except ImportError:
+        return None
+    for path in flows:
+        try:
+            jobs = (yaml.safe_load(text_at(root, ref, path)) or {}).get("jobs") or {}
+        except (yaml.YAMLError, AttributeError):
+            continue
+        for body in jobs.values():
+            runs = "\n".join(
+                str(step.get("run", ""))
+                for step in (body.get("steps") or [] if isinstance(body, dict) else [])
+                if isinstance(step, dict)
+            )
+            if RERUN_STEP.search(runs) or any(runs_task(runs, task) for task in tasks):
+                return None
+    return (
+        f"`levels.{level}.rerun` asks an independent rerun, but no workflow under .github/workflows runs"
+        " `local-ci --record --rerun` (directly or through a mise task), so the rerun record can't come: add a rerun"
+        f" workflow, or set `levels.{level}.rerun: false` in docs/agents/gatekeeper.md"
+    )
 
 
 def setup_problems(root: Path) -> list[str]:
@@ -6139,6 +6282,14 @@ def setup() -> int:
         print(line)
     if not problems:
         print("setup: the policy parses and the repo's loop steps run the pack's scripts with uv")
+    try:
+        loop = project()[1]
+        # a warning, not a problem: the exit stays as it was, and a repo learns it before its first high-rated PR
+        for level in levels(loop):
+            if line := rerun_workflow_gap(root, loop, level):
+                print(line)
+    except (Refused, OSError, subprocess.CalledProcessError):
+        pass  # the policy's own refusal is already listed above
     for line in session_notice():  # advice, never a problem: the field is optional
         print(line)
     return 1 if problems else 0
@@ -10657,7 +10808,10 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     if estimate is not None:  # no estimate, nothing to compare, and no file to dirty a checkout
         note_run(root, estimate, time.monotonic() - started, code)
     if spent is SPENT:
-        print(over_budget(budget, root, base if written is not None else None), file=sys.stderr)
+        whole = "`Gate: full`" if FULL_GATE.search(text) else "no `Affected tests:` line"
+        print(
+            over_budget(budget, root, base if written is not None else None, whole), file=sys.stderr
+        )
     return code
 
 
@@ -10819,14 +10973,15 @@ def run_budget() -> int:
         return fallback
 
 
-def over_budget(budget: int, root: Path, base: str | None) -> str:
+def over_budget(budget: int, root: Path, base: str | None, whole: str = "`Gate: full`") -> str:
     """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
-    knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
+    knows it (the whole suite, its cause named by `whole`: `Gate: full`, or a loop.md with no `Affected tests:` line
+    (#2361); else unknown, since the project's own command selects, with the
     count of files the change touches against `base`, the selector's input), and that it ran unsharded: this verb runs
     the project's one command, so with `select.shards` above 1 the line names the `shards` verb that splits a selection
     (#2229)."""
     if base is None:
-        size = "the whole suite (`Gate: full`)"
+        size = f"the whole suite ({whole})"
     else:
         try:
             count = str(len(git("-C", str(root), "diff", "--name-only", base, "HEAD").split()))

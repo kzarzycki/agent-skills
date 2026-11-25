@@ -8,6 +8,13 @@ The policy `approvals.py` reads; `docs/agents/loop.md` keeps the loop's other fa
 spec:
   auto: true
 
+levels:
+  # this repo has rerun.yml, which pushes the rerun record: a high or critical head merges only on it
+  high:
+    rerun: true
+  critical:
+    rerun: true
+
 loop:
   # the merge check `local-ci` runs, and `land`'s batch gate where it lands without a queue (with `land.queue: mergify` below no landing runs it): vendor check, lint and the Mergify template drift check, about a minute, no tests: the command `qualify` runs on a PR head, so a worker's `local-ci --record` pass of it is the record CI reads and skips on (tools/pr_head_record.py). Since the Mergify batch's `qualify` runs the tests its combined diff touches (test-batch) once per tree. The nightly run covers the full suite; a red nightly becomes an issue, a bisect over the day's merges, and a revert or fix PR through the loop.
   gate: mise run check-fast

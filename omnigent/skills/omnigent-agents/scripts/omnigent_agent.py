@@ -95,7 +95,7 @@ tool call it answered; exit 1 when none was pending (naming any pending question
 approve is the project's policy, not this script's. ``wait-until`` runs ``<cmd>`` every ``--every`` seconds (at most 60) until it exits 0 (exit 0) or ``--limit``
 seconds pass (exit 6), so a pending condition is one foreground call. ``wait-for`` is how a role
 waits on a run or a PR: it blocks up to ``--budget`` seconds (default 570, under a 10-minute tool
-call; the run's expected length for one call the harness tracks in the background, so the wait wakes once), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300, 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
+call; the run's expected length for one call the harness tracks in the background, so the wait wakes once), prints nothing meanwhile (a log with ``lock <path>`` and no ``locked`` line is waiting on the gate lock: at the budget it prints ``waiting on the gate lock (held by <pid>)`` in place of ``still running``, and a run's own budget starts at ``locked``; past 2 hours there it ends ``gave up waiting on the gate lock``, exit 6, no verdict on the change; a live ``--pid`` run not on the lock whose ``--log`` has not grown for ``--stall`` seconds (default 300; for a gate run, one whose log shows the gate lock, the project's ``timeouts.run`` instead; 0 off) is hung: its process group gets SIGTERM, then SIGKILL after 5 s, unless the pid is not the run's, and the outcome is ``stalled: no output in <log> for <n>s; killed pid <pid>'s group (rerun with a longer --stall, or --stall 0)`` and the log's last 30 lines, exit 1), and ends at the first of: the log's ``exit <n>`` line (the detached
 recipe's), printing it and the line before it (the gate's summary), or on red the last 30 lines, and
 exiting with that code (with ``--pid``, only a line after the ``run <pid>`` marker naming that run,
 which the detached recipe writes first, counts, since a reused log holds the previous run's line); the pid gone (exit 0, or 1 with ``--log`` and no exit line there); PR N's
@@ -737,6 +737,9 @@ LOCK_CEILING = 7200.0  # seconds a run may wait on the gate lock, as long as the
 PID_SLACK = 5.0  # seconds a pid file may be written after its process starts (ps rounds down too)
 KILL_GRACE = 5.0  # seconds a stalled run gets after SIGTERM before SIGKILL
 WAIT_FOR_STALL = 300.0  # seconds of silence in a live run's log that wait-for calls a hang
+CLOUD_RUN_HEARTBEAT = (
+    60.0  # seconds between claude-cloud-run's `still running` lines while its session works (#2510)
+)
 LOG_TAIL = 30  # the lines of a red run's log wait-for prints
 GREEN_CHECKS = ("SUCCESS", "NEUTRAL", "SKIPPED")
 ASKED, GONE, QUEUED = 3, 4, 5  # exit codes: the child asked a question; send found no runner it
@@ -4603,6 +4606,27 @@ def cloud_placement(og: Omnigent) -> tuple[str, str] | None:
     return (placed[0], str(placed[1])) if placed and placed[0] != og.host_id else None
 
 
+def with_heartbeat(launch: Callable[[list[str]], int], argv: list[str]) -> int:
+    """``launch(argv)`` while a line with the elapsed time is printed every ``CLOUD_RUN_HEARTBEAT`` seconds, since a
+    silent run is indistinguishable from a hung one (#2510)."""
+    done, began = threading.Event(), time.monotonic()
+
+    def beat() -> None:
+        while not done.wait(CLOUD_RUN_HEARTBEAT):
+            print(
+                f"claude-cloud-run: still running, {time.monotonic() - began:.0f}s elapsed",
+                flush=True,
+            )
+
+    ticker = threading.Thread(target=beat, daemon=True)
+    ticker.start()
+    try:
+        return launch(argv)
+    finally:
+        done.set()
+        ticker.join()
+
+
 def cloud_run_route(
     root: Path,
     branch: str,
@@ -4650,7 +4674,7 @@ def cloud_run_route(
         "--timeout",
         str(timeout),
     ]
-    code = launch(argv)
+    code = with_heartbeat(launch, argv)
     if code != 0:
         raise cloud_run_failed(
             f"claude-cloud-run: the cloud session gave no result (run exited {code}; its reason is above)",
@@ -6626,20 +6650,40 @@ def stamp(when: str) -> float:
     return datetime.fromisoformat(when.replace("Z", "+00:00")).timestamp()
 
 
+def gate_stall(log: Path, run: str | None) -> float | None:
+    """The stall limit of a gate run, the project's ``timeouts.run`` in seconds, else None (not one, or no policy to
+    read). A gate run is a log that shows the gate lock (``lock <path>``, which ``approvals.py local-ci`` writes), since
+    the project already says how long a gate may take and a second, shorter clock contradicts it (#2510).
+    ponytail: narrower reading of the issue's open question: ``claude-cloud-run`` is no gate run here, its heartbeat
+    keeps its log growing; a gate that never takes the lock keeps the default. Upgrade: a marker line the gate writes."""
+    if not any(line.startswith("lock ") for line in run_lines(log, run) or []):
+        return None
+    gk = _load_gatekeeper()
+    root = checkout_root(str(Path.cwd()))
+    if not gk or not root:
+        return None
+    try:  # the policy as the gatekeeper reads it: gatekeeper.md's `## Policy`, else loop.md's `## Settings`
+        return float(gk.timeouts(gk.tree_policy(Path(root)))["run"])
+    except (
+        gk.Refused
+    ):  # no settings block (a bullet-form loop.md) or a malformed one: the default stands
+        return None
+
+
 def wait_for(
     log: Path | None,
     pid: str | None,
     pr: int | None,
     until: str,
     budget: float,
-    stall: float = 0.0,
+    stall: float | None = None,
     since: float | None = None,
 ) -> tuple[int, str] | None:
     """Block up to ``budget`` seconds on a run's log exit line, its pid, or PR ``pr``'s ``until``
     condition (a ``gate`` or ``verdict`` signal older than ``since`` ignored), printing nothing
     meanwhile; return the exit code and the outcome text: the run's own code (0 or 1 for a PR, 1
     for a pid gone with no exit line or killed for a ``stall`` of silence in its log, 0 turns that
-    off), or None once the budget passes, since a run may itself exit ``LIMIT``."""
+    off, None the default: a gate run's ``timeouts.run``, else ``WAIT_FOR_STALL``), or None once the budget passes, since a run may itself exit ``LIMIT``."""
     deadline = time.monotonic() + budget
     every = WAIT_FOR_PR_EVERY if pr is not None else WAIT_FOR_EVERY
     settled = {"gate": gate_outcome, "verdict": verdict_outcome}.get(until)
@@ -6671,12 +6715,21 @@ def wait_for(
                     f"gave up waiting on the gate lock after {age:.0f}s: the check has not run",
                 )
             return None
-        if not stall or not pid or age <= stall or (target := pid_of(pid)) is None:
+        limit = stall
+        if limit is None:
+            limit = gate_stall(log, run) or WAIT_FOR_STALL
+        if not limit or not pid or age <= limit or (target := pid_of(pid)) is None:
             return None
         kill_group(target)
         tail = (run_lines(log, run) or [])[-LOG_TAIL:]
         return 1, "\n".join(
-            [f"stalled: no output in {log} for {age:.0f}s; killed pid {target}'s group", *tail]
+            [
+                (
+                    f"stalled: no output in {log} for {age:.0f}s; killed pid {target}'s group"
+                    " (rerun with a longer --stall, or --stall 0)"
+                ),
+                *tail,
+            ]
         )
 
     queued = False
@@ -12216,8 +12269,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument(
         "--stall",
         type=float,
-        default=WAIT_FOR_STALL,
-        help=f"with --log and --pid: kill a live run whose log is silent this many seconds, exit 1; 0 is off (default {WAIT_FOR_STALL:.0f})",
+        default=None,
+        help=f"with --log and --pid: kill a live run whose log is silent this many seconds, exit 1; 0 is off (default {WAIT_FOR_STALL:.0f}; a gate run, whose log shows the gate lock, the policy's timeouts.run)",
     )
     p.add_argument(
         "--notify",
