@@ -422,3 +422,39 @@ def test_a_report_on_another_host_is_brought_home_before_it_is_recorded(
     (tmp_path / "x.md").write_text("Head: abc\n")
     omnigent_agent.record_collected(og, "s0", tmp_path / "x.md", 8, far=False)
     assert calls.read_text().startswith("record verdict 8 ")
+
+
+@pytest.mark.parametrize(
+    ("title", "report", "extra"),
+    [
+        ("t", "r.md", ["--same-family"]),
+        ("Fallback verifier for PR 7", "r.md", []),
+        ("t", "verifier-2.md", []),
+    ],
+    ids=["same-family", "title", "report"],
+)
+def test_fallback_verifier_start_without_the_verifier_role_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    title: str,
+    report: str,
+    extra: list[str],
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review")
+    argv = ["start", "claude", title, "b.md", str(tmp_path / report), "--pr", "7", *extra]
+    assert omnigent_agent.main(argv) == 1
+    assert "without --role" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
+def test_worker_start_with_a_pr_is_not_taken_for_a_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = argparse.Namespace(
+        pr=7, same_family=False, title="Fix the parser", report=tmp_path / "worker.md"
+    )
+    assert not omnigent_agent.verifier_without_role(args)

@@ -3619,6 +3619,8 @@ def lands(
         if args[:2] == ("api", "-i"):
             # land --wait's ETag read of a head's checks between rounds (#1915)
             return checks_if_changed(args, pulls)
+        if args[:2] == ("api", "--paginate") and "/commits/main/check-runs" in args[2]:
+            return ""  # the base's push run, which land names when red (#2565): none here
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:
