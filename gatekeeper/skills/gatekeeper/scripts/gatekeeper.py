@@ -9547,6 +9547,13 @@ def merges(
         return
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+    for (
+        pull,
+        _,
+    ) in (
+        done
+    ):  # before drop_records deletes the record, the status that outlives it names it (#2310)
+        unwritten(pull["headRefOid"], LAND, landed_record(pull["headRefOid"]))
     drop_records([pull["headRefOid"] for pull, _ in done])
     numbers = ", ".join(f"#{pull['number']}" for pull, _ in done)
     for pull, tree in done:
@@ -12945,6 +12952,26 @@ def record_commit(record: dict[str, Any]) -> str:
         text=True,
         env=os.environ | RECORDER | (when if record.get("time") else {}),
     ).stdout.strip()
+
+
+LANDED_RECORD = "Landed: record "
+LANDED_NO_RECORD = "Landed: no record"
+
+
+def landed_record(head: str) -> str:
+    """The `land` status description a landed head keeps once drop_records has deleted its record refs (#2310): `Landed:
+    record <name>[, <name>...]`, each name the tail of a `loop-gate/` record branch on the head's tree (`<tree>-<key>`),
+    or `Landed: no record` where origin holds none (or can't be read), so `loop_metrics.py` counts the merges that had
+    none."""
+    held = tree_of(head)
+    try:
+        listed = git("ls-remote", "origin", RECORD_BRANCH.format(f"{held}-*")) if held else ""
+    except (subprocess.CalledProcessError, OSError):
+        listed = ""
+    names = sorted(
+        line.split("\t")[1].rsplit("/", 1)[1] for line in listed.splitlines() if "\t" in line
+    )
+    return (LANDED_RECORD + ", ".join(names))[:140] if names else LANDED_NO_RECORD
 
 
 def drop_records(heads: list[str]) -> None:
