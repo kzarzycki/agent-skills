@@ -545,7 +545,7 @@ section or key it doesn't know or a value of the wrong type is refused, naming t
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
 `short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
 `high` and `critical`, each with `spec` and `merge` (above), and `rerun`, whether `check merge` and `land` need an
-independent rerun of the head's selection on its tree (default false for `low`, true for `high` and `critical`): a
+independent rerun of the head's selection on its tree (default false at every level: a repo turns it on once a workflow pushes the rerun record): a
 record of `local-ci --record --rerun` on origin that an app pushed (a CI run on the head) or that a verifier pass on
 the head names on a `Rerun: <record commit>` line (a fresh session the verifier started), never the worker's own
 record (rerun_gap).
@@ -617,6 +617,7 @@ import ast
 import atexit
 import contextlib
 import contextvars
+import difflib
 import fcntl
 import fnmatch
 import functools
@@ -1130,12 +1131,52 @@ def sections(data: dict[str, Any], file: str) -> dict[str, dict[str, Any]]:
     return data
 
 
+def pack_version() -> str:
+    """The version of the gatekeeper pack running here, from the `.claude-plugin/plugin.json` above this script, else
+    `unversioned`. ponytail: a copy vendored without the manifest (a consumer's `.agents/skills`) names no version."""
+    for folder in Path(__file__).resolve().parents[:6]:
+        manifest = folder / ".claude-plugin" / "plugin.json"
+        if manifest.is_file():
+            try:
+                found = json.loads(manifest.read_text())
+            except (OSError, ValueError):
+                continue
+            if (
+                isinstance(found, dict)
+                and found.get("name") == "gatekeeper"
+                and found.get("version")
+            ):
+                return f"v{found['version']}"
+    return "unversioned"
+
+
+def unknown(file: str, where: str, key: str, known: Any, kind: str = "setting") -> None:
+    """An unknown setting or section: refused when it is a near match to a key `known` holds in the same place (a
+    typo, naming the key it probably meant), else said once per run on stderr and left to the caller to drop, so the
+    run goes on as if it were absent (#2475): a repo's main may set a key only a newer pack knows, and every branch
+    still on an older one would otherwise refuse every command until it merged main."""
+    near = difflib.get_close_matches(key, [k for k in known if isinstance(k, str)], n=1, cutoff=0.8)
+    if near:
+        raise Refused(
+            f"{file} has an unknown {kind} {where}: did you mean `{near[0]}`?"
+            if kind == "setting"
+            else f"{file} has an unknown settings section `{key}`: did you mean `{near[0]}`?"
+        )
+    if where not in DEPRECATED:
+        DEPRECATED.add(where)
+        print(
+            f"{file} sets {where}, which this gatekeeper ({pack_version()}) doesn't know: this repo's policy needs a"
+            " newer pack; merge main",
+            file=sys.stderr,
+        )
+
+
 def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md") -> dict[str, Any]:
     """A section's values checked against its schema (a map of keys, or one type for any key), refusing one that
     doesn't match it and naming the key, so a mistyped setting is never read as a rule nobody wrote. Types match
     exactly, which also refuses what YAML 1.1 reads as another type where a name was meant (`no` as false, `1.10` as
     a float), naming the key, since such a value is never the name written."""
-    for key, value in section.items():
+    for key, value in list(section.items()):
         where = f"`{name}.{key}`"
         if not isinstance(
             key, str
@@ -1143,7 +1184,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             raise Refused(f"{file}'s {where} is no name: quote it")
         kind = schema.get(key) if isinstance(schema, dict) else schema
         if kind is None:
-            raise Refused(f"{file} has an unknown setting {where}")
+            unknown(file, where, key, schema)
+            del section[key]  # as if it were absent
+            continue
         if isinstance(kind, Rows):  # a list of sections, such as `loop.gate_steps`
             if not (
                 isinstance(value, list) and value and all(isinstance(row, dict) for row in value)
@@ -1278,7 +1321,7 @@ def settings(loop: str | None) -> dict[str, Any]:
                 if adapter not in ADAPTERS:
                     raise Refused(unknown_adapter(file, port_name, adapter))
         else:
-            raise Refused(f"{file} has an unknown settings section `{name}`")
+            unknown(file, f"`{name}`", name, SCHEMA, "section")
     return data
 
 
@@ -1317,12 +1360,12 @@ def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
     """docs/agents/issue-tracker.md's settings block, checked against TRACKED: each section's names with their text.
     `components` and `categories` name a label bare (`billing`) or in full (`area:billing`)."""
     data = sections(block(tracker, "issue-tracker.md"), "issue-tracker.md")
-    unknown = [name for name in data if name not in TRACKED]
-    if unknown:
-        raise Refused(f"issue-tracker.md has an unknown settings section `{unknown[0]}`")
+    for name in [name for name in data if name not in TRACKED]:
+        unknown("issue-tracker.md", f"`{name}`", name, TRACKED, "section")
     return {
         name: typed(section, TRACKED[name], name, "issue-tracker.md")
         for name, section in data.items()
+        if name in TRACKED
     }
 
 
@@ -1804,8 +1847,8 @@ def levels(loop: str | None) -> dict[str, dict[str, Any]]:
     needs an independent rerun of the head's selection (`rerun`, rerun_gap): gatekeeper.md's `levels`, each key it
     leaves out at its default, which is the rule before levels existed: `low` {policy, gates}; `high` {policy, go}, or
     under `spec.auto: true` {owner, gates}, since there the owner approved the change before it was built; `critical`
-    {policy, owner}; `rerun` false for `low` and true for `high` and `critical` (#2240), since for a high-risk change
-    a red the nightly finds is found too late."""
+    {policy, owner}; `rerun` false at every level (#2472): a repo opts in once it has a workflow that pushes the rerun record
+    (#2240), since for a high-risk change a red the nightly finds is found too late."""
     high: dict[str, Any] = (
         {"spec": "owner", "merge": "gates"}
         if spec_auto(loop)
@@ -1813,8 +1856,8 @@ def levels(loop: str | None) -> dict[str, dict[str, Any]]:
     )
     table: dict[str, dict[str, Any]] = {
         "low": {"spec": "policy", "merge": "gates", "rerun": False},
-        "high": {**high, "rerun": True},
-        "critical": {"spec": "policy", "merge": "owner", "rerun": True},
+        "high": {**high, "rerun": False},
+        "critical": {"spec": "policy", "merge": "owner", "rerun": False},
     }
     for level, actions in settings(loop).get("levels", {}).items():
         table[level] = {**table[level], **actions}
@@ -2034,7 +2077,7 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
       session it started pushed, in a repo with no CI.
     A record branch someone pushed by hand alone is neither, so the worker's own record never satisfies it, nor does a
     rerun record a person's account pushed unless the verifier names it. The level is the rating's (rating), so a
-    level whose `rerun` is false (by default `low`) keeps the worker's record as the proof (#2143's D1)."""
+    level whose `rerun` is false (by default every level) keeps the worker's record as the proof (#2143's D1)."""
     level = rating(pull, issues, loop).level
     if not levels(loop)[level].get("rerun"):
         return None
@@ -10664,7 +10707,10 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     if estimate is not None:  # no estimate, nothing to compare, and no file to dirty a checkout
         note_run(root, estimate, time.monotonic() - started, code)
     if spent is SPENT:
-        print(over_budget(budget, root, base if written is not None else None), file=sys.stderr)
+        whole = "`Gate: full`" if FULL_GATE.search(text) else "no `Affected tests:` line"
+        print(
+            over_budget(budget, root, base if written is not None else None, whole), file=sys.stderr
+        )
     return code
 
 
@@ -10826,14 +10872,15 @@ def run_budget() -> int:
         return fallback
 
 
-def over_budget(budget: int, root: Path, base: str | None) -> str:
+def over_budget(budget: int, root: Path, base: str | None, whole: str = "`Gate: full`") -> str:
     """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
-    knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
+    knows it (the whole suite, its cause named by `whole`: `Gate: full`, or a loop.md with no `Affected tests:` line
+    (#2361); else unknown, since the project's own command selects, with the
     count of files the change touches against `base`, the selector's input), and that it ran unsharded: this verb runs
     the project's one command, so with `select.shards` above 1 the line names the `shards` verb that splits a selection
     (#2229)."""
     if base is None:
-        size = "the whole suite (`Gate: full`)"
+        size = f"the whole suite ({whole})"
     else:
         try:
             count = str(len(git("-C", str(root), "diff", "--name-only", base, "HEAD").split()))

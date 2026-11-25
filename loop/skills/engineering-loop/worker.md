@@ -97,7 +97,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    check runs only if it can fail because of the change, R1). Your affected-test run on that final head is
    `approvals.py affected-tests --record`, your one recorded test run: it pushes its pass the same way, keyed by the
    tree and the narrowed command, which the merge queue's batch floor reads to leave this PR's own tests out (R6,
-   #2178); a run that fails or can't tell records nothing. Run the acceptance command on the head (SKILL.md,
+   #2178); a run that fails records nothing, nor does a run with no `Affected tests:` line, the opt-out `Gate: full`'s full check or a gate with `gate_steps`; a base git can't resolve records against the merge base. Run the acceptance command on the head (SKILL.md,
    Acceptance checks) once, into a log stamped that way, and hand it over as the spec's proof. Just before the report, run `git status
    --porcelain` and commit or remove what it lists, and the report carries the line `git status
    --porcelain: empty`, since the verifier may review in that tree and an uncommitted check
