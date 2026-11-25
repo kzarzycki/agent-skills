@@ -10529,6 +10529,10 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
     if not commands:
         print("affected-tests: 0 selected: non-product", file=sys.stderr)
         return 0
+    budget = run_budget()
+    deadline: float | None = (
+        None  # the budget runs from the first check's start, all checks together
+    )
     for command in commands:
         _, words, sets = command_line(command, "select.checks")
         print(
@@ -10538,9 +10542,23 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
         )
         try:
             with heavy_slot("affected-tests") as (slot, _):
-                code = run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+                deadline = deadline or time.monotonic() + budget
+                code, spent = run_heavy(
+                    words,
+                    env=env | sets | {SLOT_HELD: slot},
+                    budget=max(deadline - time.monotonic(), 0.001),
+                    cwd=root,
+                )
         except OSError as exc:
             raise Refused(f"`{words[0]}` can't run: {exc}") from None
+        if spent is SPENT:
+            print(
+                f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running"
+                f" `{shlex.join(words)}`: a timeout, not a check failure; raise `timeouts.run` in"
+                " gatekeeper.md or fix the check",
+                file=sys.stderr,
+            )
+            return TIMED_OUT
         if code:
             return code
     return 0
@@ -10552,7 +10570,7 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Where it
     can't tell exactly, it runs the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a
     new branch) selects against the merge base instead, and a loop.md without the line runs gatekeeper.md's `select`
-    cut (non_product_run), then, for a change that cut can't settle, the project's full check, `mise run check`. Zero
+    cut (non_product_run, whose checks stop at `timeouts.run` together, #2346), then, for a change that cut can't settle, the project's full check, `mise run check`. Zero
     runs only for a change `select` finds only non-product paths in, saying `0 selected: non-product`. The opt-out
     `Gate: full` (narrowing), the project's own choice, runs `mise run check` too, with the variable unset. Either
     runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit passes through: a
