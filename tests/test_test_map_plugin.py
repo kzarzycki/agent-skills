@@ -77,6 +77,9 @@ def test_a_skipped_test_is_listed_for_the_map(
 ) -> None:
     listed = tmp_path / "skipped"
     monkeypatch.setenv(plugin.SKIPPED, str(listed))
+    monkeypatch.delenv(
+        plugin.DURATIONS, raising=False
+    )  # the nightly's durations log takes no fake report
     report = type("Report", (), {"skipped": True, "nodeid": "t.py::test_s"})()
     plugin.pytest_runtest_logreport(report)
     plugin.pytest_runtest_logreport(type("Report", (), {"skipped": False, "nodeid": "t.py::x"})())
