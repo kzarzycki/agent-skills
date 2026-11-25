@@ -10916,7 +10916,9 @@ def test_the_cloud_preamble_forbids_a_question_tool_and_a_page() -> None:
     preamble = omnigent_agent.PR_PREAMBLE
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
-    assert "session link" not in preamble
+    # a full session link may be posted (#2571), and the old ban on a session is gone
+    assert "no host or path outside a full Omnigent session link" in preamble
+    assert "no host, path or session" not in preamble
 
 
 def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
