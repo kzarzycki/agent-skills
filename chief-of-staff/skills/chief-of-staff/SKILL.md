@@ -2,6 +2,8 @@
 name: chief-of-staff
 description: Act as a project's chief of staff, the one agent the owner talks to while leads do the work. It sorts each owner message, starts one lead per ask as a top-level session, relays follow-ups with the owner's words quoted, and watches the leads to surface their results, questions and stalls. Use only when the owner starts a session as chief of staff; a lead never needs it.
 disable-model-invocation: true
+metadata:
+  requires: "apm uv"
 ---
 
 # Chief of staff
@@ -466,6 +468,15 @@ names each unknown or mistyped key, `keys` lists every key with its default and 
 setup's file; both hold placeholder values only. A key the loader does not list is an error, never
 a default, so a typo is caught; a value that is a secret goes in the harness's credential store,
 never in this file.
+
+## Pin updater
+
+`scripts/pin_update.py --repo <consumer repo>` moves the repo's pack pin in `apm.yml` to the newest
+`pin.tag_prefix` release tag, runs `apm install`, prints the compare link and relays an
+`ACTION NEEDED:` line to `cos_session`. It commits nothing. It skips, changing nothing, when
+`apm.yml`, the lock or a deployed file has uncommitted edits, rolls back a failed install, and
+refuses the pack's own checkout. `--dry-run` only reports. How often it runs is the scheduler's
+business. Read it when setting up or debugging a repo's pin updates.
 
 ## Start gate
 
