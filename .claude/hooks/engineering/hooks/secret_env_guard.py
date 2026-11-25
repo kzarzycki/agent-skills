@@ -117,8 +117,6 @@ def secret(name: str) -> bool:
     parts = name.split("_")
     if "PUBLIC" in parts:  # PUBLIC_KEY holds no secret
         return False
-    if parts[-1] in {"ID", "NAME", "COUNT", "FILE", "PATH", "LEN", "LENGTH"} and len(parts) > 1:
-        return False  # KEY_ID, TOKEN_COUNT, API_KEY_NAME name or count a secret, not hold one
     return any(p.endswith(SECRET_ENDINGS) or p in SECRET_PARTS for p in name.split("_"))
 
 
