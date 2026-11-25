@@ -353,7 +353,7 @@ whether classic branch protection requires one, so a PR is a candidate there onl
 section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, above);
 a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
 (`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
-`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not on the base's history (an older base commit passes this step, and the drift check above judges its files). `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
 loop.md's `carry_over_main` and `ci` work as below for one more release, each printing one `deprecated:` line on
 stderr. The keys that drove a gate at land, `batch_queue` under `loop` and `land`'s `gate_on`,
 `cloud_gate_timeout_seconds` and `host_gate`, do nothing (#1872): a policy that still sets one parses, with one
@@ -7192,7 +7192,7 @@ def base_drift(base: str, rules: bool = True) -> list[str]:
 
 def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
     """Refuse, naming the files, when the code or policy running here is not `origin/<base>`'s, so the caller runs from
-    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip.
+    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not on the base's history.
     Without `rules`, only the code is compared (base_drift)."""
     if fetch:  # a land has fetched it already
         fetched_base = subprocess.run(
@@ -7234,7 +7234,17 @@ def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
             text=True,
             check=False,
         ).stdout.strip()
-        if tip and tip != git("rev-parse", "HEAD").strip():
+        # ponytail: on the base's history, not its tip (#2464): a base that moved during the job leaves an older base
+        # commit checked out, which is safe to judge from, since base_drift right after refuses when the script or the
+        # rule files differ from the tip's
+        if tip and (
+            subprocess.run(
+                ["git", "-C", str(toplevel()), "merge-base", "--is-ancestor", "HEAD", tip],
+                capture_output=True,
+                check=False,
+            ).returncode
+            != 0
+        ):
             raise Refused(
                 f"the checked-out commit is not origin/{base}'s tip ({tip[:12]}): a workflow that checks out the PR judges"
                 " it by its own rules; check out the base"
