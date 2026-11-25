@@ -492,6 +492,18 @@ def test_every_brief_says_a_message_that_adds_no_task_never_rewrites_the_report(
         assert RELAY_RULE in omnigent_agent.brief_of(report).read_text()
 
 
+def test_a_listed_host_inside_a_session_link_is_denied_only_outside_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deny = tmp_path / "deny.txt"
+    deny.write_text("build-host.local\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    link = "https://build-host.local:8443/c/" + "ab" * 16
+    omnigent_agent.denied(f"Session: {link}\n")
+    with pytest.raises(omnigent_agent.Fail, match="line 2 names `build-host.local`"):
+        omnigent_agent.denied(f"Session: {link}\nran on build-host.local\n")
+
+
 def test_a_held_cloud_worker_with_a_pr_still_gets_the_relay_rule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3865,7 +3877,7 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert "detached" in omnigent_agent.NUDGE and "foreground" not in omnigent_agent.NUDGE
     assert (
         "restart it only if it did not" in omnigent_agent.PR_NUDGE
-        and "foreground" not in omnigent_agent.PR_NUDGE
+        and "foreground" in omnigent_agent.PR_NUDGE
     )
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
@@ -10906,7 +10918,9 @@ def test_the_cloud_preamble_forbids_a_question_tool_and_a_page() -> None:
     preamble = omnigent_agent.PR_PREAMBLE
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
-    assert "session link" not in preamble
+    # a full session link may be posted (#2571), and the old ban on a session is gone
+    assert "no host or path outside a full Omnigent session link" in preamble
+    assert "no host, path or session" not in preamble
 
 
 def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
@@ -11081,9 +11095,9 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
     # the rule the pointer names is there, with both variant conditions
     rule = long_run_rule()
     assert "since macOS has no `setsid` command" in rule
-    assert "Where a foreground command stops at 10 minutes" in rule
-    assert "the run is waited on within the same turn" in rule
-    assert "stops at 10 minutes" in rule
+    assert "is not woken by a finished background task" in rule
+    assert "wait in the same turn with" in " ".join(rule.split())
+    assert "10-minute tool limit" in rule
     assert (
         "Never end a turn saying you wait on a detached run alone, since its end never wakes you"
         in rule
@@ -11493,7 +11507,7 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     flat = " ".join(rule.split())  # the relocated clauses, each the only copy now
     # one wake per run: one tracked wait as long as the run, never a poll loop (waste audit, finding 1)
     assert (
-        "--budget <the run's expected length>` started as a background call your harness tracks"
+        "--budget <the run's expected length>` started as a background call whose exit wakes the session"
         in flat
     )
     assert "Never a short `wait-for`, an `until grep` or a `sleep` loop" in flat
@@ -11503,7 +11517,7 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     )
     assert "starts detached (in its own session)" in flat
     assert (
-        "Where the harness tracks no background call, each foreground `wait-for` blocks close to the tool's limit"
+        "A claude-cloud session (Claude Code in a hosted VM) is not woken by a finished background task"
         in flat
     )
     assert "a gate your role file says to run bare" in flat
@@ -14524,7 +14538,12 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
     ).stdout
     monkeypatch.setattr(omnigent_agent, "pr_head", lambda *a: head.strip())  # the checkout is at it
     argv = ["b.md", "r.md", "--role", role_file(role), "--pr", "7"]
-    assert omnigent_agent.main(["start", agent, "t", *argv, "--same-family"]) == 0
+    assert (
+        omnigent_agent.main(
+            ["start", agent, "t", *argv, *(["--same-family"] if role == "verifier.md" else [])]
+        )
+        == 0
+    )
     sid = next(iter(og.sessions))
     sent = omnigent_agent.text_of(og.sessions[sid][1])
     full = (

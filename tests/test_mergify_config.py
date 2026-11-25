@@ -178,8 +178,8 @@ def test_the_repo_file_is_the_rendered_template_and_the_head_check_catches_drift
 
 
 def test_the_rendered_queue_timeout_follows_timeouts_run() -> None:
-    """#2228: `checks_timeout` is `timeouts.run`; this repo sets none, so it keeps the template's 1 hour."""
-    assert "timeouts" not in policy()
+    """#2228: `checks_timeout` is `timeouts.run`; this repo's block says 60m (#2232), the template's 1 hour."""
+    assert policy()["timeouts"] == {"test": "60s", "run": "60m"}
     [rule] = config()["queue_rules"]
     assert rule["checks_timeout"] == "1 hour"
     policy_text = approvals.Policy(

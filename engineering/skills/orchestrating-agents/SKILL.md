@@ -47,7 +47,7 @@ service that restarts it and survives a reboot (`supervise --registry <file> --i
   background tasks (Claude Code's `run_in_background` or Monitor, Codex's equivalent), a child's
   turn end through the backend, or a message, never for a process it does not track, and a cloud
   session not even for a native subagent it started. So a long
-  build, test, gate or land runs as a harness-tracked background task, whose exit wakes you; or
+  build, test, gate or land runs as a harness-tracked background task, whose exit wakes you (not in a claude-cloud session, which no finished background task wakes: it waits in the foreground); or
   detached with a wrapper that tells you when it ends (the `omnigent-agents` skill's `wait-for
   --notify` with `LOOP_NOTIFY` set); or you wait on it in the same turn (`wait-for --log <log>
   --pid <pid file>`, called again on `still running`, or a cloud subagent's result). Never end a
