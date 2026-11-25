@@ -6245,26 +6245,21 @@ def pr_stall(facts: dict, threshold: float, now: float) -> tuple[float, str | No
 
 def queue_holds(pr: dict, checks: list[dict], statuses: list[dict]) -> bool:
     """Whether the merge queue holds PR ``pr`` (a REST pull) at its head: it carries ``QUEUED_LABEL`` and a queue check
-    (``QUEUE_CHECK``) on the head is still running by its newest run (``checks``, the head's check runs), or a queue
+    (``QUEUE_CHECK``) on the head has any run still running (``checks``, the head's check runs), whichever started last:
+    Mergify has ended the later of two runs a second apart `neutral` and left the earlier one live (#2428); or a queue
     status there is pending by its newest (``statuses``, newest first). Both stall sweeps ask it, so a PR waiting in the
     queue is never reported stalled (#2100). ponytail: from `land`'s label to Mergify's first check (about 40 s) the
     queue holds a PR this misses; the gatekeeper's `queued_here` covers that window, at a run of it per PR."""
     if QUEUED_LABEL not in {str(label.get("name")) for label in pr.get("labels") or []}:
         return False
-    latest: dict[
-        str, dict
-    ] = {}  # each queue check's newest run: Mergify ends an earlier one `neutral`
-    for c in checks:
-        name = str(c.get("name"))
-        if QUEUE_CHECK.search(name) and (c.get("started_at") or "") >= (
-            latest.get(name, {}).get("started_at") or ""
-        ):
-            latest[name] = c
     newest: dict[str, dict] = {}
     for s in statuses:
         newest.setdefault(str(s.get("context")), s)
     return any(
-        c.get("status") != "completed" and not c.get("conclusion") for c in latest.values()
+        QUEUE_CHECK.search(str(c.get("name")))
+        and c.get("status") != "completed"
+        and not c.get("conclusion")
+        for c in checks
     ) or any(QUEUE_CHECK.search(name) and s.get("state") == "pending" for name, s in newest.items())
 
 
