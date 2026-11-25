@@ -238,7 +238,7 @@ The risk of this model is a main that breaks between nightlies: a test the selec
 
 `approvals.py local-ci --record` records a gate pass by tree, for the cases a project still asks one for (a configured `head_proof`, a `host` step of `gate_steps`, the deprecated `check queue`: Where work runs); the loop runs it on a PR head only in those cases and for the one run a worker makes on its head (worker.md, Report), never as a gate, under `ci: false` too; a ready PR's CI reads that record by the head's tree, not the test merge commit's (the project's CI looks it up with `gate-record <head>`). It runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
-to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
+to the base repo as the branch `loop-gate/<tree>-<key>` (a plain git push, so a cloud session records and publishes with no host credential; a project's own gate script never writes a record, it is `gate` and this call runs it, a red run recording nothing), named by its tree and command, so `local-ci <pr>` at landing
 posts that pass rather than running the check again (with no usable pass it refuses, naming the head, tree, record branch and what was wrong with a record found; `--run` runs the check on this host): in this clone for any commit with the same tree and gate
 command (a rebase or reworded commit keeps its tree), in any other, host or cloud session, from that branch, at every
 risk, through the same code. The branch is the one route a pass travels: the `gate` commit status the run and each
