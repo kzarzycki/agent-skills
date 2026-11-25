@@ -64,12 +64,17 @@ INTERPRETERS = re.compile(r"^(python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lu
 CODE_FLAGS = {"-c", "-e", "-p", "-r", "--eval", "--print", "-E"}
 ENV_RUN = re.compile(r"/proc/[^\s'\"]*\benviron\b")  # also /proc/self/task/1/environ
 # code that starts a command that dumps, or opens the file
-# (`set`, `export` and `env` count only as the whole string or list, or before `-p`/`-0`, a pipe, a
-# redirect or `;`: `set -e; make` and `['env', 'FOO=1', 'ls']` run something else, #2429)
+# (`set`, `export` and `env` count only as the whole string or list, with nothing but options and
+# NAME=value words after `env` (no command to run), before `-p`/`-0`, a pipe, a redirect (`2>&1`
+# too) or `;`: `set -e; make` and `['env', 'FOO=1', 'ls']` run something else, #2429)
+ENV_OPT = r"(?:-u\s+\w+|-[^\s'\"]+|\w+=[^\s'\"]*)"
+ENV_ITEM = r"(?:-u['\"]\s*,\s*['\"]\w+|-[^\s'\",]+|\w+=[^'\",]*)"
 CODE_EXEC = re.compile(
     r"(?:popen|system|check_output|check_call|\brun|\bcall|exec\w*|spawn\w*)\(\s*[\[(]?\s*['\"]"
     r"(?:printenv\b"
-    r"|(?:env|set|export)(?:\s*['\"]\s*(?:[\])]|,(?!\s*['\"]))|\s+-[0p]\b|\s*[;&|<>\n]))"
+    rf"|env(?:\s+{ENV_OPT})*\s*['\"]\s*(?:[\])]|,(?!\s*['\"]))"
+    rf"|env['\"]\s*(?:,\s*['\"]{ENV_ITEM}['\"]\s*)*[\])]"
+    r"|(?:env|set|export)(?:\s*['\"]\s*(?:[\])]|,(?!\s*['\"]))|\s+-[0p]\b|\s*(?:\d*[<>]|[;&|\n])))"
 )
 # code that reduces a value to a length, a digest or a test, or only assigns the environment:
 # the parts that leave no value in the output
@@ -312,12 +317,15 @@ def find_commands(rest: list[str]) -> list[str]:
 
 def taint(words: list[str], tainted: frozenset) -> frozenset:
     """``tainted`` plus every name ``words`` assign from a secret variable (``x=$GITHUB_TOKEN``,
-    also after ``export``, ``declare``, ``local`` or ``readonly``)."""
+    also after ``export``, ``declare``, ``local`` or ``readonly``); a name assigned from
+    anything else is no longer tainted."""
     out = set(tainted)
     for word in words:
         m = ASSIGN_VALUE.fullmatch(word)
         if m and names_used([m.group(2)], tainted):
             out.add(m.group(1))
+        elif m:  # a plain reassignment clears the name
+            out.discard(m.group(1))
     return frozenset(out)
 
 
@@ -384,6 +392,8 @@ def judge(command: str, depth: int = 0, tainted: frozenset = frozenset()) -> str
         rest = unwrap(rest)
         if rest and Path(rest[0]).name in ("export", "declare", "typeset", "local", "readonly"):
             tainted = taint(rest[1:], tainted)
+        if rest and Path(rest[0]).name == "unset":
+            tainted = tainted - set(rest[1:])
         if not rest:
             if any(Path(w).name == "env" for w in prefix) and not reduced:
                 return "`env` with no command prints the whole environment"

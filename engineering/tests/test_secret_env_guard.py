@@ -122,6 +122,15 @@ REFUSED_2429 = [
     "python3 -c \"import subprocess; subprocess.run('env', shell=True)\"",
     "python3 -c \"import subprocess; subprocess.run(['env'])\"",
     "python3 -c \"import os; os.system('env > /dev/stdout')\"",
+    # review of #2441: a redirect with an fd, and `env` with options or assignments but no command
+    "python3 -c \"import subprocess; subprocess.run('env 2>&1', shell=True)\"",
+    "python3 -c \"import os; os.system('env 1>&2')\"",
+    "python3 -c \"import os; os.system('env -u HOME')\"",
+    "python3 -c \"import os; os.system('env FOO=1')\"",
+    "python3 -c \"import subprocess; subprocess.run(['env','--null'])\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', '-0'])\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', '-u', 'HOME'])\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', 'FOO=1'])\"",
     "python3 -c \"import subprocess; subprocess.check_output(['printenv', 'GH_TOKEN'])\"",
 ]
 PASSED_2429 = [
@@ -131,6 +140,8 @@ PASSED_2429 = [
     "python3 -c \"import subprocess; subprocess.run(['env', 'FOO=1', 'ls'])\"",
     "python3 -c \"import subprocess; subprocess.run(['env','FOO=1','ls'])\"",
     "python3 -c \"import subprocess; subprocess.check_call('env FOO=1 make', shell=True)\"",
+    "python3 -c \"import os; os.system('env -u HOME make')\"",
+    "python3 -c \"import subprocess; subprocess.run(['env', '-u', 'HOME', 'ls'])\"",
     # the same names that are no dump
     "python3 -c 'from os import environ; print(environ[\"HOME\"])'",
     "python3 -c 'from os import environ; print(len(environ))'",
@@ -143,6 +154,8 @@ PASSED_2429 = [
     "x=$GITHUB_TOKEN; echo $x | wc -c",
     'x=$GITHUB_TOKEN; echo "${#x}"',
     "x=1; echo $x",
+    "x=$GITHUB_TOKEN; x=1; echo $x",
+    "x=$GITHUB_TOKEN; unset x; echo $x",
     "curl -v https://example.invalid",
     'curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://example.invalid',
     'curl --verbose -H "Accept: json" https://example.invalid',
