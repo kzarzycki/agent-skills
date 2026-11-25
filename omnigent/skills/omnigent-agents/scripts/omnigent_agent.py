@@ -8006,6 +8006,12 @@ def apply_route(args: argparse.Namespace) -> None:
     same-family: a fresh session given only the code and the spec is what makes a verifier independent. Refused where
     the route can't run, naming the fix, since a verifier started wrong costs a pass."""
     if args.verifier_route == "gemini":
+        if os.environ.get("CLAUDE_CODE_REMOTE") == "true":
+            raise Fail(
+                "--verifier-route gemini cannot start from a cloud VM: it has no Omnigent server route to drive agy."
+                " The verifier must be started by the coordinator on a host with an Omnigent server route: ask"
+                " your coordinator to start it, or use --verifier-route claude only if it says Gemini can't run (#2572)"
+            )
         if not args.host:
             raise Fail(
                 "--verifier-route gemini runs agy on a host that has it logged in: pass --host"

@@ -332,3 +332,31 @@ def test_a_start_here_sees_a_host_with_room() -> None:
     """This module imports none of test_omnigent_agent's fixtures: a gate's own load once made its starts wait 600 s
     on the real check and fail."""
     assert omnigent_agent.capacity() == (True, "")
+
+
+def test_gemini_route_from_a_cloud_vm_is_refused_naming_the_coordinator(
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review")
+    argv = [
+        "start",
+        "codex",
+        "t",
+        "b.md",
+        str(tmp_path / "r.md"),
+        "--role",
+        role_file("verifier.md"),
+    ]
+    assert omnigent_agent.main([*argv, "--verifier-route", "gemini", "--host", "host"]) == 1
+    err = capsys.readouterr().err
+    assert "started by the coordinator on a host with an Omnigent server route" in err
+    assert og.sessions == {}
+    with pytest.raises(omnigent_agent.Fail, match="coordinator"):
+        omnigent_agent.apply_route(route("gemini", host="kris"))
