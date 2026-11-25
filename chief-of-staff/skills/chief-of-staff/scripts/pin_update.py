@@ -100,6 +100,11 @@ def dirty(repo: Path) -> list[str]:
     return [ln[3:] for ln in out.splitlines()]
 
 
+def modified(repo: Path) -> set[str]:
+    """Tracked files that differ from HEAD (staged or not)."""
+    return set(git(repo, "diff", "HEAD", "--name-only").splitlines())
+
+
 def untracked(repo: Path) -> set[str]:
     return set(git(repo, "ls-files", "--others", "--exclude-standard").splitlines())
 
@@ -194,15 +199,16 @@ def run(args: argparse.Namespace) -> int:
                 f"`ref: {old}` is not on exactly one line of apm.yml. Changes: {link}"
             )
             continue
-        before = untracked(repo)
+        before, was_modified = untracked(repo), modified(repo)
         (repo / "apm.yml").write_text(text.replace(f"ref: {old}", f"ref: {new}"))
         install = subprocess.run(
             [*args.apm.split(), "install"], cwd=repo, capture_output=True, text=True, check=False
         )
         if install.returncode:
-            watched = dirty(repo)
-            if watched:
-                git(repo, "checkout", "--", *watched, check=False)
+            # Restore every tracked file the install or the pin edit changed (the pre-run state of
+            # the watched set was clean), then remove what the install added.
+            if changed := sorted(modified(repo) - was_modified):
+                git(repo, "checkout", "HEAD", "--", *changed)
             for extra in untracked(repo) - before:
                 path = repo / extra
                 if path.is_file() or path.is_symlink():

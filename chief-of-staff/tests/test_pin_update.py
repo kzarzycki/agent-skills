@@ -147,3 +147,12 @@ def test_no_prefix_set_is_a_values_error(world):
 def test_dry_run_changes_nothing(world):
     r = run(world, "ok", "--dry-run")
     assert "would move" in r.stdout and (world["repo"] / "apm.yml").read_text() == APM_YML
+
+
+def test_rollback_survives_a_new_untracked_file_in_the_lock(world):
+    (world["repo"] / "apm.lock.yaml").write_text(LOCK + "  - .agents/skills/added.md\n")
+    sh(world["repo"], "git", "commit", "-qam", "lock lists a file not yet tracked")
+    r = run(world, "bad")
+    assert r.returncode == 1
+    assert (world["repo"] / "apm.yml").read_text() == APM_YML
+    assert not (world["repo"] / ".agents/skills/added.md").exists()
