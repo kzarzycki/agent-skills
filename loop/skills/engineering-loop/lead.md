@@ -11,7 +11,7 @@ Your own check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
 Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent, not a helper, and starts as `brief` describes.
-A cloud lead starts its worker and verifier through the Omnigent session tools the bridge serves in the VM: `sys_session_create` with an explicit `model` (it fails without one), `sys_session_get_history` for a child's reply and `sys_session_close` to end it. `omnigent_agent.py start` needs a server URL and a login the VM lacks, so a cloud lead never calls it.
+A cloud lead starts its worker through the Omnigent session tools the bridge serves in the VM: `sys_session_create` with an explicit `model` (it fails without one), `sys_session_get_history` for a child's reply and `sys_session_close` to end it. It starts no verifier: it ends its turn with `READY FOR VERIFIER: PR #<n> head <sha>`, and the manager that started it runs the verifier and sends back the verdict, which the lead posts (step 7). `omnigent_agent.py start` needs a server URL and a login the VM lacks, so a cloud lead never calls it.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
 edits and commits of a size M or larger change go to a Sonnet worker (an XS or S change stays with you, step 4): your context is re-read on every call (about 150k

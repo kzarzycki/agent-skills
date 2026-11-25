@@ -1024,6 +1024,12 @@ CLOUD_NOTE = (
     " since a write there waits on a permission prompt nobody in the cloud answers; `tmp/loop/` is"
     " scratch, ignored by the repo's `.gitignore`, and never committed.\n"
 )
+# A cloud lead's preamble only (#2610): the VM has no Omnigent client config, so the lead cannot start a verifier.
+CLOUD_LEAD_VERIFIER = (
+    "Your manager, the session that started you, runs your verifier: you cannot start one from this VM. When a PR"
+    " is ready for review, end your turn with one line `READY FOR VERIFIER: PR #<n> head <sha>`; the manager runs the"
+    " verifier and sends back its verdict. Ignore any brief line that tells you to start the verifier yourself.\n"
+)
 # Every acp:claude-cloud session's preamble: the owner's GitHub quota is one bucket every VM and host spends, so each
 # cloud session logs its own gh calls with gh-quota's shim and posts the tally, which no host can read in the VM.
 CLOUD_GH_QUOTA = (
@@ -1186,7 +1192,7 @@ def first_message(
     ):  # a lead's line on whose go may land a PR into the default branch (lead_delegation)
         preamble = preamble.removesuffix("\n") + delegation + "\n"
     if cloud:
-        preamble = cloud_preamble(preamble, pr, brief)
+        preamble = cloud_preamble(preamble, pr, brief, lead=top_level)
     elif not top_level:
         preamble = preamble.removesuffix("\n") + HOST_RUN_NOTE + "\n"
     return (
@@ -1229,10 +1235,10 @@ def pack_line(brief: str) -> str:
     )
 
 
-def cloud_preamble(preamble: str, pr: int | None, brief: str = "") -> str:
+def cloud_preamble(preamble: str, pr: int | None, brief: str = "", lead: bool = False) -> str:
     """``preamble`` for an ``acp:claude-cloud`` session: its detach sentence replaced by
     ``CLOUD_RUN_LINE``, ``CLOUD_NOTE``, ``CLOUD_HELPER``, ``CLOUD_BRANCHES``, ``CLOUD_NO_PUSH``, ``CLOUD_GH_QUOTA`` and
-    ``pack_line(brief)`` before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
+    ``pack_line(brief)`` (with ``CLOUD_LEAD_VERIFIER`` before ``CLOUD_NO_PUSH`` for a ``lead``) before its closing blank line, and without ``pr`` each report-file line in its ``CLOUD_REPLIES`` form."""
     if not pr:
         for old, new in CLOUD_REPLIES.items():
             preamble = preamble.replace(old, new)
@@ -1242,6 +1248,7 @@ def cloud_preamble(preamble: str, pr: int | None, brief: str = "") -> str:
         + CLOUD_NOTE
         + CLOUD_HELPER
         + CLOUD_BRANCHES
+        + (CLOUD_LEAD_VERIFIER if lead else "")
         + CLOUD_NO_PUSH
         + CLOUD_GH_QUOTA
         + pack_line(brief).replace("{", "{{").replace("}", "}}")  # the preamble is format()ted
