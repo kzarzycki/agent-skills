@@ -23,6 +23,7 @@ it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged 
 | `land [--wait]` | every merge proof, then marks the PR ready and merges it, pinned to the head |
 | `report [--json]` | reads a verifier report as the gatekeeper does; `--json` prints its facts |
 | `delegate` | the delegated approver's `approved:merge`, feature branch only |
+| `timeouts [--json\|--mergify\|--check]` | every time limit the policy's `timeouts` derive; `--mergify` renders `.mergify.yml`, `--check` exits 1 where it is out of step |
 
 Exit codes, for every verb: `0` allowed or done; `1` refused, with one line per missing
 proof; `3` waiting (pending checks, a forge state not computed yet): run it again. The
@@ -43,6 +44,7 @@ label: `loop:hold` is a lead's hold, or another coordinator's claim, and its PR 
   (`emit`, `read`, `wait`, `clear`), which the gatekeeper reads and the loop and a runner write.
   events.md has the kinds, states, beat intervals and `event.json` fields; read it to write or
   read an event.
+- `scripts/loop_metrics.py`: `loop-metrics <owner/repo>... --since <date>` prints one read-only line per repo for the week: merged PRs, median ready->merged time, runner-minutes per merged PR, reverts and red nights, with the week before beside them (`merged with no record` prints `not measured yet (#2310)`). Run it for the weekly numbers; its docstring holds the quota it spends.
 - `scripts/acceptance.py`: runs one spec's acceptance checks from a folder of executables, and
   the gatekeeper's `check` reads the evidence it leaves.
 - [policy.md](policy.md): every policy key, its type and default, the rules the policy
@@ -94,9 +96,12 @@ shape (anything else in it is prose the review carries):
   up to the next heading outside a code fence. Any other `### ` heading is a sub-heading;
 - at the end, `Head: <sha>`, the full commit reviewed, then `VERDICT: <n> blocker, <n>
   major, <n> minor`, `SATISFIED: yes|no` and `Risk: low — <reason>` or `Risk: high —
-  <reason>`.
+  <reason>`;
+- where it started the independent rerun a high-risk head needs, after the `Head:` line, a line `Rerun: <commit>`, the
+  full commit of the record branch that rerun pushed ([policy.md](policy.md), Independent rerun), which the review
+  carries.
 
-It refuses a report without the `Head:`, `Verifier:` or `Risk:` line, a `### ` heading with a
+It refuses a report without the `Head:`, `Verifier:` or `Risk:` line, a `Rerun:` line naming no full commit, a `### ` heading with a
 `(<severity>)` it can't read, and finding headings that don't add up to the `VERDICT:`
 counts. A question for the owner goes in `<report>.question` beside it, which `report --json`
 prints.

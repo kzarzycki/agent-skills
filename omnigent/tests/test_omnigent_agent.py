@@ -341,13 +341,6 @@ def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def no_loop_events(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No loop events on origin: the supervisor's `ls-remote` is a real git call whose time would move these tests'
-    clocks (#1377; test_omnigent_agent_events.py reads a bare remote)."""
-    monkeypatch.setattr(omnigent_agent, "read_loop_events", lambda cwd=None: None)
-
-
-@pytest.fixture(autouse=True)
 def no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The small model faked: never a real call. Each event it is asked about is recorded, and
     it answers ``none`` (mid-work)."""
@@ -3689,8 +3682,6 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    # the checkout's own policy delegates (#1551): the plain wording is what a policy without it gets
-    monkeypatch.setattr(omnigent_agent, "lead_delegation", lambda *_: "")
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )
@@ -14680,6 +14671,54 @@ def test_a_done_of_a_session_the_notified_session_already_archived_gets_no_act_l
     assert acts_of(lead_done(tmp_path, monkeypatch, None, archived=True), COS) == []
 
 
+def test_a_followed_sessions_leads_registry_makes_its_bare_done_no_act_line_2309(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``leads=`` field of a registry line reaches ``route`` as ``coordinator``: a manager's bare ``DONE`` raises
+    nothing, the same turn from a followed lead with no registry is told."""
+    text = "Nothing to do on #667. It isn't my PR.\n\nDONE"
+
+    def run(sub: str, extra: str) -> list[str]:
+        base = tmp_path / sub
+        base.mkdir()
+        (base / "leads.registry").write_text("")
+        registry = base / "registry"
+        registry.write_text(f"a={base / 'a.md'}\t{base / 'a.md.brief'}\tfollow{extra}\n")
+        og = Lead(told("brief", 900), ending("working", 600), ending(text, 400))
+        og.snap = {"status": "idle"}
+        supervised(og, registry, monkeypatch, 2, notify=COS, console=True)
+        return acts_of(og, COS)
+
+    assert run("lead", "")  # the control: a lead's bare DONE is told
+    assert run("manager", f"\tleads={tmp_path / 'manager' / 'leads.registry'}") == []
+
+
+def test_a_managers_prose_result_over_a_bare_done_still_tells_the_lead_waiting_on_it_2309(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Option (a) of #2309: a manager's ``PR #5 merged as abc1234.`` above a bare ``DONE`` wakes no notified session, and
+    the lead registered ``after=`` it is told; the manager's ``leads=`` field is read from the real registry line."""
+    leads = tmp_path / "leads.registry"
+    leads.write_text("")
+    registry = tmp_path / "registry"
+    registry.write_text(
+        f"m={tmp_path / 'm.md'}\tfollow\tleads={leads}\nb={tmp_path / 'b.md'}\tfollow\tafter=m\n"
+    )
+    og = Leads(
+        m=[told("brief", 60)],
+        b=[told("brief", 60), ending("STILL WORKING: waiting on lead m", 5)],
+    )
+
+    def done(poll: int) -> None:
+        if poll == 1:
+            og.histories["m"].append(ending("PR #5 merged as abc1234.\n\nDONE", 0))
+
+    supervised(og, registry, monkeypatch, 3, done, notify="cos", console=True)
+    assert acts_of(og, "cos") == [] and posted(og) == []
+    assert [(s, t) for s, t in og.inbox if s == "b" and "the lead you wait on, ended" in t]
+    assert "m" in state_of(registry)["leads"]  # still followed
+
+
 def test_a_send_that_is_not_the_result_leaves_the_done_an_act_line_2090(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -14747,3 +14786,50 @@ def test_several_waits_on_one_pr_read_it_once(
     monkeypatch.setattr(omnigent_agent, "gh", pr_rest(calls))
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert len([c for c in calls if c[-1].endswith("/pulls/976")]) == 1
+
+
+def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    fake_gh(monkeypatch, {"42": on_pr(7, "done")})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "fix.md").write_text("fix it")
+    listed, unlisted, forced = (og.create("claude", t) for t in ("a", "b", "c"))
+    og.archived += [listed, unlisted, forced]
+    registry = tmp_path / "leads.registry"
+    registry.write_text(f"{listed}=old.md\n")
+    send = [
+        "send",
+        "fix.md",
+        "tmp/loop/r.md",
+        "--pr",
+        "7",
+        "--registry",
+        str(registry),
+        "--confirm-seconds",
+        "0",
+    ]
+    assert omnigent_agent.main(["send", listed, *send[1:]]) == 0
+    assert listed not in og.archived
+    assert any("fix it" in omnigent_agent.text_of(i) for i in og.sessions[listed])
+    assert omnigent_agent.main(["send", unlisted, *send[1:]]) == omnigent_agent.GONE
+    assert unlisted in og.archived and f"session {unlisted} is archived" in capsys.readouterr().err
+    assert (
+        omnigent_agent.main(["send", forced, "fix.md", "tmp/loop/c.md", *send[3:], "--unarchive"])
+        == 0
+    )
+    assert forced not in og.archived
+    # the registry named by the environment lists a session as well as --registry
+    via_env = og.create("claude", "d")
+    og.archived.append(via_env)
+    registry.write_text(f"{via_env}=old.md\n")
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    assert (
+        omnigent_agent.main(
+            ["send", via_env, "fix.md", "tmp/loop/d.md", "--pr", "7", "--confirm-seconds", "0"]
+        )
+        == 0
+    )
+    assert via_env not in og.archived
