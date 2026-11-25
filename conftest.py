@@ -12,6 +12,9 @@ from typing import Any
 # the same to the scripts the tests run as subprocesses (#1022).
 sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+# The pack's own tests run its scripts from this checkout, which the installed-copy resolver otherwise never
+# searches (#2485); tests/test_installed_pack.py unsets it to prove that.
+os.environ["AGENT_SKILLS_CHECKOUT"] = "1"
 
 import pytest
 

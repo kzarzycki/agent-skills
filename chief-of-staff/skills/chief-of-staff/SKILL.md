@@ -76,7 +76,8 @@ epic's sub-issues.
   is only told about, and stops to ask the owner. A pack script the brief names is the copy
   installed in the lead's repo (`.claude/skills/…` or `.agents/skills/…`), else your own
   installed copy, never a developer checkout of the pack: one can sit on any branch, and a
-  stale `approvals.py` there fails every land. State the outcome, scope, limits and the evidence
+  stale `approvals.py` there fails every land. The pack's scripts themselves resolve the installed copy and never search a checkout, unless
+  `AGENT_SKILLS_CHECKOUT` is set, which only the pack's own tests do. State the outcome, scope, limits and the evidence
   of done, and leave the method to the lead: a command is a starting hint, the lead works through
   ordinary obstacles itself and comes back only for a decision, a permission or a limit it would
   have to cross, and you course-correct from your wider context, not by dictating steps.
