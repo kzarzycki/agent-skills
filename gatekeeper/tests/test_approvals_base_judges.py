@@ -139,6 +139,43 @@ def test_check_merge_under_actions_at_the_base_tip_judges(
     approvals.judge_with_base("main")
 
 
+def moved_base(judging: dict[str, Any], name: str) -> str:
+    """The base moves on after the job's checkout: a commit changing `name` lands on origin's main. Returns the commit
+    the checkout was at, the base's older one."""
+    work = judging["work"]
+    old = git_in(work, "rev-parse", "HEAD").strip()
+    (work / name).parent.mkdir(parents=True, exist_ok=True)
+    (work / name).write_text(
+        ((work / name).read_text() if (work / name).exists() else "") + "\nmoved\n"
+    )
+    git_in(work, "add", "-A")
+    git_in(work, "commit", "-qm", "the base moves on")
+    git_in(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git_in(work, "fetch", "-q", "origin")
+    git_in(work, "switch", "-q", "--detach", old)
+    return old
+
+
+def test_check_merge_under_actions_at_an_older_base_commit_with_the_same_rules_judges(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2464: the base moved during the job, and the checkout is an older commit of its history."""
+    judging["open"](7, {"7.txt": "7\n"})
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    moved_base(judging, "unrelated.txt")
+    approvals.judge_with_base("main")
+
+
+def test_check_merge_under_actions_at_an_older_base_commit_with_other_rules_is_drift(
+    judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    judging["open"](7, {"7.txt": "7\n"})
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    moved_base(judging, LOOP)
+    with pytest.raises(approvals.Drifted, match=LOOP):
+        approvals.judge_with_base("main")
+
+
 def test_outside_actions_a_head_that_is_not_the_base_tip_is_no_refusal(
     judging: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

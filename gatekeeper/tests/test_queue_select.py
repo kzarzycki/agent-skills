@@ -141,10 +141,13 @@ def test_a_pr_with_no_record_runs_its_own_affected_tests_from_its_branch_point(b
     assert batch["ran"]()[before:] == [f"mise run test:affected base={point}"]
 
 
-def test_a_batch_with_nothing_to_run_and_a_pr_without_a_record_is_refused(batch) -> None:
-    batch["loop"]("# Loop\n")
+def test_a_project_with_no_affected_tests_line_still_gets_a_floor_for_a_pr_with_no_record(
+    batch,
+) -> None:
+    point = batch["loop"]("# Loop\n")
     batch["build"](1)
     done = batch["run"]("queue-select", "main")
-    assert done.returncode == 1, done.stdout
-    assert done.stdout == ""
-    assert "queue-select: refused: nothing to run, and #1 has no record" in done.stderr
+    assert done.returncode == 0, done.stdout + done.stderr
+    lines = done.stdout.splitlines()
+    assert len(lines) == 1 and lines[0].endswith(f"affected-tests --base {point}"), done.stdout
+    assert "PR #1: no record, so its own affected tests run" in done.stderr

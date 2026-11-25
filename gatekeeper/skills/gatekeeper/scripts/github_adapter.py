@@ -1247,6 +1247,112 @@ def comment(number: int, body: str) -> str:
     ).strip()
 
 
+# the repository's text issue fields, which its owner's account defines; ponytail: the first 100
+TEXT_FIELDS = "issueFields(first: 100) { nodes { ... on IssueFieldText { id name } } }"
+
+
+def issue_field(number: int, name: str) -> tuple[str | None, str]:
+    """(the id of the repository's text issue field `name`, None when the account defines none by that name; issue
+    `number`'s node id), in one GraphQL read. Issue fields are GitHub's own, outside the tracker port, like the board."""
+    found = _graphql(_repository(f"{TEXT_FIELDS} issue(number: $n) {{ id }}"), n=number)
+    fields = ((found.get("issueFields") or {}).get("nodes")) or []
+    ids = [field["id"] for field in fields if field and field.get("name") == name]
+    return (ids[0] if ids else None), found["issue"]["id"]
+
+
+def set_issue_field(issue: str, field: str, text: str) -> None:
+    """Set the text issue field `field` (its id) on the issue whose node id is `issue`; GitHub sends no notification
+    and leaves the issue's body alone."""
+    gh(
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($issue: ID!, $field: ID!, $text: String!) { setIssueFieldValue(input: {issueId: $issue,"
+        " issueFields: [{fieldId: $field, textValue: $text}]}) { clientMutationId } }",
+        "-f",
+        f"issue={issue}",
+        "-f",
+        f"field={field}",
+        "-f",
+        f"text={text}",
+        "--silent",
+    )
+
+
+# the REST version whose issues carry `issue_field_values`, the one GitHub's issue field docs name
+FIELDS_VERSION = "X-GitHub-Api-Version: 2026-03-10"
+
+
+def rest_has_issue_field(name: str) -> bool:
+    """Whether the repository has the issue field `name`, from REST: GitHub answers a list filtered on a field it has
+    (`issue_field_values=<slug>:<value>`) and refuses one it lacks with a 422. One call, for a token GraphQL refuses."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    try:
+        gh(
+            "api",
+            "-X",
+            "GET",
+            "-H",
+            FIELDS_VERSION,
+            "repos/{owner}/{repo}/issues",
+            "-f",
+            f"issue_field_values={slug}:-",
+            "-f",
+            "per_page=1",
+            "--silent",
+        )
+    except subprocess.CalledProcessError as exc:
+        if "HTTP 422" in (exc.stderr or ""):
+            return False
+        raise
+    return True
+
+
+def rest_issue_field_id(name: str) -> int | None:
+    """The database id of the issue field `name`, read off the newest 100 issues updated, which REST shows only on an
+    issue carrying a value: no REST route lists a personal account's fields. None when none of them carries it."""
+    found = json.loads(
+        gh(
+            "api",
+            "-X",
+            "GET",
+            "-H",
+            FIELDS_VERSION,
+            "repos/{owner}/{repo}/issues",
+            "-f",
+            "state=all",
+            "-f",
+            "sort=updated",
+            "-f",
+            "per_page=100",
+        )
+    )
+    ids = [
+        value["issue_field_id"]
+        for item in found
+        for value in item.get("issue_field_values") or []
+        if value.get("issue_field_name") == name
+    ]
+    return int(ids[0]) if ids else None
+
+
+def rest_set_issue_field(number: int, field: int, text: str) -> None:
+    """Set the text issue field whose database id is `field` on issue `number`, over REST (POST adds or replaces this
+    field's value and leaves the issue's other fields)."""
+    gh(
+        "api",
+        "-X",
+        "POST",
+        "-H",
+        FIELDS_VERSION,
+        f"repos/{{owner}}/{{repo}}/issues/{number}/issue-field-values",
+        "--input",
+        "-",
+        "--silent",
+        data=json.dumps({"issue_field_values": [{"field_id": field, "value": text}]}),
+    )
+
+
 def minimize(comment_id: str) -> None:
     """Collapse a comment on GitHub as outdated; it stays readable, and the gate still reads it."""
     gh(

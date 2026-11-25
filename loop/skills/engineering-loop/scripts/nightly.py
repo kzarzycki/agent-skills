@@ -348,8 +348,8 @@ def red(args: argparse.Namespace) -> int:
 #   schedule  skip when the newest successful scheduled run on the default branch (`GITHUB_REF_NAME`, else `main`)
 #             ran `GITHUB_SHA` itself.
 #   tag       skip when any successful scheduled run of the nightly workflow (`GITHUB_WORKFLOW_REF` names the tag
-#             check's workflow there, so the nightly is named: `engineering-ci.yml`) ran `GITHUB_SHA`, the tagged commit
-#             (#2264): one runs call filtered by `event=schedule`, `status=success` and `head_sha`, checked again here.
+#             check's workflow there, so the nightly is named: `engineering-ci.yml`, or `--nightly <file>`) ran
+#             `GITHUB_SHA`, the tagged commit (#2264): one runs call filtered by `event=schedule`, `status=success` and `head_sha`, checked again here.
 # Any forge or API failure reads as "nothing found": the run goes ahead.
 BATCHES = {  # land.queue -> (the batch branches' prefix, the event of the run that tests them)
     "mergify": ("mergify/merge-queue/", "pull_request"),
@@ -496,7 +496,7 @@ def moved(args: argparse.Namespace, api: Api = forge) -> int:
                 api, repo, workflow, os.environ.get("GITHUB_REF_NAME") or "main", sha
             )
         else:
-            found = nightly_ran(api, repo, NIGHTLY, sha)
+            found = nightly_ran(api, repo, getattr(args, "nightly", None) or NIGHTLY, sha)
     except FORGE_ERRORS as error:
         print(f"nightly: forge read failed ({error}); running as usual", file=sys.stderr)
         found = None
@@ -526,6 +526,12 @@ def main(argv: list[str] | None = None) -> int:
         help="skip=true|false to GITHUB_OUTPUT: has a push, scheduled or tag-check run anything to run",
     )
     skipping.add_argument("mode", choices=tuple(LINES))
+    skipping.add_argument(
+        "--nightly",
+        default=NIGHTLY,
+        metavar="FILE",
+        help=f"`tag` only: the workflow file of the project's nightly (default {NIGHTLY})",
+    )
     args = parser.parse_args(argv)
     try:
         return moved(args) if args.verb == "moved" else red(args)

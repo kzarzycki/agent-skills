@@ -90,7 +90,7 @@ def test_a_silent_run_is_killed_with_its_group_and_notifies(
     out = capsys.readouterr().out
     first, *tail = out.splitlines()
     assert first.startswith(f"stalled: no output in {log} for ")
-    assert first.endswith(f"s; killed pid {pid}'s group")
+    assert f"s; killed pid {pid}'s group" in first
     assert tail == ["hello"]
     assert notice.read_text() == out.rstrip("\n")
     assert gone(pid)

@@ -271,8 +271,9 @@ def test_the_pack_registers_the_hook_on_bash_for_claude() -> None:
     hooks = json.loads((HOOKS / "hooks-claude.json").read_text())
     (group,) = hooks["hooks"]["PreToolUse"]
     assert group["matcher"] == "Bash"
-    (hook,) = group["hooks"]
+    hook, secrets = group["hooks"]  # the secret-env guard rides beside it (#2359)
     assert hook["command"] == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/heavy_run_guard.py"'
+    assert secrets["command"] == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/secret_env_guard.py"'
     # no plugin.json "hooks" field: APM would then deploy the hook to every target, Codex too
     plugin = json.loads((HOOKS.parent / ".claude-plugin" / "plugin.json").read_text())
     assert "hooks" not in plugin

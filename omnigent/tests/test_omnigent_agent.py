@@ -341,13 +341,6 @@ def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def no_loop_events(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No loop events on origin: the supervisor's `ls-remote` is a real git call whose time would move these tests'
-    clocks (#1377; test_omnigent_agent_events.py reads a bare remote)."""
-    monkeypatch.setattr(omnigent_agent, "read_loop_events", lambda cwd=None: None)
-
-
-@pytest.fixture(autouse=True)
 def no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The small model faked: never a real call. Each event it is asked about is recorded, and
     it answers ``none`` (mid-work)."""
@@ -3691,8 +3684,6 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    # the checkout's own policy delegates (#1551): the plain wording is what a policy without it gets
-    monkeypatch.setattr(omnigent_agent, "lead_delegation", lambda *_: "")
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )
@@ -11462,17 +11453,17 @@ def test_a_cloud_worker_s_delivered_brief_freezes_its_branch_after_hand_off(
 def test_the_lead_preamble_points_heavy_runs_to_the_placement_rule() -> None:
     """A lead brief naming a host worktree for a test run is read against the one rule (#1119)."""
     rule = (
-        "Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes"
-        " where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud"
+        "Every run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes"
+        " where engineering-loop's SKILL.md, Where work runs says, by default a Claude cloud"
         " session: a host worktree this brief names for a test run says where the code is, not"
         " where the run goes.\n"
     )
     lead = omnigent_agent.LEAD_PREAMBLE.format(report="r.md", role="")
     assert lead.count(rule) == 1
     assert rule in omnigent_agent.cloud_preamble(omnigent_agent.LEAD_PREAMBLE, None)
-    assert "Where heavy steps run" not in omnigent_agent.PREAMBLE  # a child's brief says its run
+    assert "Where work runs" not in omnigent_agent.PREAMBLE  # a child's brief says its run
     skill = (VERIFIER_MD.parent / "SKILL.md").read_text()
-    assert "\n## Where heavy steps run\n" in skill  # the section the line names
+    assert "\n## Where work runs\n" in skill  # the section the line names
 
 
 def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> None:
@@ -12818,7 +12809,7 @@ def test_supervise_install_writes_a_restarting_service_per_registry(
     assert plist["Label"] == "omnigent.supervise." + name.rsplit("-", 1)[1]
     assert plist["ProgramArguments"] == argv and plist["KeepAlive"] and plist["RunAtLoad"]
     assert plist["StandardOutPath"] == plist["StandardErrorPath"] == str(log)
-    assert plist["EnvironmentVariables"] == env
+    assert plist["EnvironmentVariables"] == {**env, "OMNIGENT_SERVICE": f"launchd:{plist['Label']}"}
     assert name.startswith("omnigent-supervise-") and name != omnigent_agent.service_name(two)
     assert omnigent_agent.service_name(tmp_path / "x" / ".." / "a.registry") == name
 
@@ -12840,6 +12831,41 @@ def test_supervise_install_writes_a_restarting_service_per_registry(
     label = omnigent_agent.service_label(one)
     assert [c[:2] for c in calls] == [["launchctl", "bootout"], ["launchctl", "bootstrap"]]
     assert calls[0][2].endswith(f"/{label}") and calls[1][3].endswith(f"/{label}.plist")
+
+
+def test_supervise_service_logs_a_stop_and_restart_hint_first_and_a_hand_run_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2350: a kill of the service-run supervisor restarts it. The unit and plist mark the service
+    in the environment; a supervisor seeing the mark logs the stop and restart commands first."""
+    reg = tmp_path / "a.registry"
+    name, label = omnigent_agent.service_name(reg), omnigent_agent.service_label(reg)
+    unit = omnigent_agent.systemd_unit(["x"], tmp_path / "l", name, {}, tmp_path)
+    assert f'Environment="OMNIGENT_SERVICE=systemd:{name}"' in unit
+    plist = omnigent_agent.launchd_plist(["x"], tmp_path / "l", label, {}, tmp_path)
+    assert plist["EnvironmentVariables"]["OMNIGENT_SERVICE"] == f"launchd:{label}"
+
+    linux = omnigent_agent.service_hint({"OMNIGENT_SERVICE": f"systemd:{name}"})
+    assert linux and f"systemctl --user stop {name}" in linux
+    assert f"systemctl --user restart {name}" in linux and "kill" in linux
+    mac = omnigent_agent.service_hint({"OMNIGENT_SERVICE": f"launchd:{label}"}, uid=501)
+    assert mac and f"launchctl bootout gui/501/{label}" in mac
+    assert f"launchctl kickstart -k gui/501/{label}" in mac
+    assert omnigent_agent.service_hint({}) is None
+
+    class Stop(Exception): ...
+
+    def first_line(env: dict[str, str]) -> str:
+        monkeypatch.delenv("OMNIGENT_SERVICE", raising=False)
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.setattr(omnigent_agent, "Uncarded", lambda og: (_ for _ in ()).throw(Stop()))
+        with pytest.raises(Stop):
+            omnigent_agent.supervise_registry(object(), reg)  # type: ignore[arg-type]
+        return capsys.readouterr().out
+
+    assert f"systemctl --user stop {name}" in first_line({"OMNIGENT_SERVICE": f"systemd:{name}"})
+    assert first_line({}) == ""
 
 
 def test_supervise_install_arms_its_pairs_and_uninstall_removes_the_service(
@@ -14797,3 +14823,50 @@ def test_several_waits_on_one_pr_read_it_once(
     monkeypatch.setattr(omnigent_agent, "gh", pr_rest(calls))
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert len([c for c in calls if c[-1].endswith("/pulls/976")]) == 1
+
+
+def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    fake_gh(monkeypatch, {"42": on_pr(7, "done")})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "fix.md").write_text("fix it")
+    listed, unlisted, forced = (og.create("claude", t) for t in ("a", "b", "c"))
+    og.archived += [listed, unlisted, forced]
+    registry = tmp_path / "leads.registry"
+    registry.write_text(f"{listed}=old.md\n")
+    send = [
+        "send",
+        "fix.md",
+        "tmp/loop/r.md",
+        "--pr",
+        "7",
+        "--registry",
+        str(registry),
+        "--confirm-seconds",
+        "0",
+    ]
+    assert omnigent_agent.main(["send", listed, *send[1:]]) == 0
+    assert listed not in og.archived
+    assert any("fix it" in omnigent_agent.text_of(i) for i in og.sessions[listed])
+    assert omnigent_agent.main(["send", unlisted, *send[1:]]) == omnigent_agent.GONE
+    assert unlisted in og.archived and f"session {unlisted} is archived" in capsys.readouterr().err
+    assert (
+        omnigent_agent.main(["send", forced, "fix.md", "tmp/loop/c.md", *send[3:], "--unarchive"])
+        == 0
+    )
+    assert forced not in og.archived
+    # the registry named by the environment lists a session as well as --registry
+    via_env = og.create("claude", "d")
+    og.archived.append(via_env)
+    registry.write_text(f"{via_env}=old.md\n")
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    assert (
+        omnigent_agent.main(
+            ["send", via_env, "fix.md", "tmp/loop/d.md", "--pr", "7", "--confirm-seconds", "0"]
+        )
+        == 0
+    )
+    assert via_env not in og.archived

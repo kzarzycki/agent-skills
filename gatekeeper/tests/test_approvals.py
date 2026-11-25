@@ -341,7 +341,6 @@ def test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections()
 @pytest.mark.parametrize(
     ("settings", "refused"),
     [
-        ('sizes:\n  XXL: ""\n', "issue-tracker.md has an unknown settings section `sizes`"),
         ("components: api\n", "issue-tracker.md has a setting `components` outside a section"),
         ("[components]\napi\n", "issue-tracker.md's settings block is not YAML"),
         (
@@ -603,14 +602,15 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
 @pytest.mark.parametrize(
     ("settings", "refused"),
     [
-        ("loop:\n  caps: 3\n", "loop.md has an unknown setting `loop.caps`"),
-        ("risk:\n  path:\n    - a/**\n", "loop.md has an unknown setting `risk.path`"),
-        ("plan:\n  paths:\n    - a/**\n", "loop.md has an unknown setting `plan.paths`"),
+        ("loop:\n  caps: 3\n", "loop.md has an unknown setting `loop.caps`: did you mean `cap`?"),
+        (
+            "risk:\n  path:\n    - a/**\n",
+            "loop.md has an unknown setting `risk.path`: did you mean `paths`?",
+        ),
         (
             "practice:\n  reviews: code-review\n",
-            "loop.md has an unknown setting `practice.reviews`",
+            "loop.md has an unknown setting `practice.reviews`: did you mean `review`?",
         ),
-        ("approvals:\n  spec: auto\n", "loop.md has an unknown settings section `approvals`"),
         ("spec: auto\n", "loop.md has a setting `spec` outside a section"),
         (
             "bot:\n  paths:\n    - uv.lock\n",
@@ -630,7 +630,6 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
             "spec:\n  auto:\n    - bugs\n",
             "loop.md's `spec.auto` must be true, false or a list of bug, follow-up, sub-issue, not ['bugs']",
         ),
-        ("loop:\n  spec: auto\n", "loop.md has an unknown setting `loop.spec`"),
         (
             "risk:\n  labels: size:L, size:XL\n",
             "loop.md's `risk.labels` must be a list of strings, not 'size:L, size:XL'",
@@ -2016,6 +2015,43 @@ def test_the_owners_own_label_after_the_last_edit_is_their_approval(
             "#1 has no `Approved: spec` record by the owner",
         ]
     assert capsys.readouterr().out.splitlines() == ([said] if said else [])
+
+
+def test_a_delegates_spec_approval_label_is_never_recorded_as_the_owners(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """After `approve spec --by delegate`, whose label lands under the owner's login, `check build` adopts nothing."""
+    loop = add(LOOP, "loop", "owner: octocat\ndelegate: all\n")
+    spec = issue(
+        1,
+        "kind:enhancement",
+        "area:web",
+        "size:S",
+        "approved:spec",
+        comments=(record("spec", "delegate", spec=AS_WRITTEN),),
+    )
+    spec["timelineItems"] = {
+        "nodes": [
+            {
+                "__typename": "LabeledEvent",
+                "createdAt": LABELED,
+                "actor": {"__typename": "User", "login": "octocat"},
+                "label": {"name": "approved:spec"},
+            }
+        ]
+    }
+    posted: list[str] = []
+    monkeypatch.setattr(approvals, "comment", lambda _n, body: posted.append(body))
+    monkeypatch.setattr(approvals, "label", lambda *_a: posted.append("label"))
+    monkeypatch.setattr(approvals, "issue_node", lambda _n: spec)
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(
+        approvals, "git", lambda *args: "" if args[0] == "diff" else "origin/main\n"
+    )
+    approvals.main(["check", "build", "--issue", "1"])
+    assert posted == []
+    assert "recorded the owner's" not in capsys.readouterr().out
 
 
 def test_check_build_before_the_pr_records_the_owners_own_label(

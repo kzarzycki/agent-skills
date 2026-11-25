@@ -32,6 +32,17 @@ script's docstring is the manual: every proof each verb checks and every record 
 A PR carrying `needs-owner` or `loop:hold` is refused at merge, by `land` and `check merge` alike, with a line naming the
 label: `loop:hold` is a lead's hold, or another coordinator's claim, and its PR comment says who and why.
 
+The session that holds an issue: under Omnigent, `check build`'s claim adds `Session: <server>/c/<lead's session id>`
+to the issue's `Assigned:` record and sets the issue's `Session` issue field to the same link, so an issue, and a PR
+through the issue it closes, leads to its lead and the lead's children. The field is optional: the account's owner
+creates it once, as a text field, in the account's issue settings, since the loop's token can't. An account without
+it uses the gatekeeper unchanged: every command works, the record still carries the link, and the missing field costs
+one lookup and one informational line a run, never an error or a non-zero exit. Outside Omnigent neither is written.
+Where GitHub refuses GraphQL, REST checks the field exists and sets it, reading the field's id off an issue that
+already carries a value, since no REST route lists a personal account's fields: until one does, the run says so in its
+one line. `check setup` reports a missing field in one line, with the steps to create it on GitHub (Settings >
+Planning > Issue fields > New field, name `Session`, type Text), and exits as it would without it.
+
 ## Files
 
 - `scripts/gatekeeper.py`: the CLI, the policy reader and the gate.
@@ -67,6 +78,15 @@ the key, a section or key it doesn't know and a value of the wrong type, so a mi
 setting is never read as a rule nobody wrote. [policy.md](policy.md) has every key, with an
 example block, and `SCHEMA` in `gatekeeper.py` is the same list as code. Label names come
 from `docs/agents/issue-tracker.md`'s settings block (policy.md, Tracker settings).
+
+A `gate_steps` step marked `on_demand: true` is no part of the gate: `local-ci` and `local-ci --record` skip it,
+each saying so in one line, `land` reads only the other steps' records, and the gate's pass never needs it, since
+every other step runs on each PR
+whose tree has no pass of it, and a check too costly for every PR (an hours-long run against a paid system) would
+then cost hours or go red without its credential. It runs only when named, `local-ci --record --step <name>`, and
+its pass is keyed by its `paths`, recorded, published and reused like any step's, so a spec that needs it asks for
+its pass on the head's inputs key, and an unchanged input never runs it again. A `gate_steps` whose every step is
+on demand is refused, since its gate would have no step and pass every head with no run.
 
 ## Specs
 
