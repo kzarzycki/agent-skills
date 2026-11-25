@@ -1,0 +1,55 @@
+# Sample values file for a setup whose home is a project checkout, with delegation and nightly jobs.
+# Placeholder values only; it holds just what differs from the pack defaults (scripts/cos_values.py keys).
+server: https://agents.example.invalid
+cos_session: session-cos-2
+registry: leads/leads.registry
+reports_dir: reports
+delegation:
+  on: true
+  max_risk: high
+owner_only: [publish, send, delete, credentials, public-packages]
+releases: continuous
+agents:
+  default: claude-cloud
+  fallback: claude
+harness:
+  default: {repo-a: claude, repo-b: codex}
+  codex_opt_in: [repo-b]
+models:
+  tiers:
+    lead: model-large
+    scheduled: {model: model-small, until: 2030-01-31}
+scheduled:
+  cap_usd: 2
+budget:
+  weekly_limit: 50
+  until: 2030-01-31
+parked: [{item: nightly-x, until: 2030-01-31}]
+lead:
+  context_limit: 200000
+prompts:
+  cos_approves: [read-only-shell]
+decisions:
+  file: log/decisions.md
+  cos_line: "Chief of staff session: session-cos-2"
+hygiene:
+  repos: [owner-a/repo-a]
+  board_max_kb: 8
+  retention_days: 30
+pin:
+  tag_prefix: pack-v
+  notify: session-cos-2
+  schedule: "0 6 * * *"
+deps:
+  repos: [owner-a/repo-a]
+  schedule: "0 3 * * *"
+bridge:
+  channel: file-inbox
+  peer_server: https://peer.example.invalid
+  peer_session: session-cos-1
+  inbox_dir: inbox
+  log: log/bridge.log
+  never_crosses: [client-data]
+data:
+  allowed_hosts: [host-1]
+drafts_dir: drafts
