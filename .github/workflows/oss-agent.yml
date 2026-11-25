@@ -31,6 +31,9 @@
 # The fork needs Actions enabled and "Allow GitHub Actions to create and approve pull requests"
 # on (Settings, Actions, General) for the draft PR. A PR opened with the job token starts no
 # workflow on the fork, and a patch that changes .github/workflows cannot be pushed with it.
+# If the fork has a ruleset that restricts branch creation, its rules must let the Actions token
+# create refs/heads/oss-agent/**: exclude that pattern from the ruleset, or the publish job's push
+# fails with GH013 after the agent job has spent its run.
 name: OSS agent
 
 on:
@@ -258,7 +261,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
           git am "$RUNNER_TEMP/patch/agent.patch"
-          git push origin "HEAD:refs/heads/$BRANCH"
+          status=0
+          push="$(git push origin "HEAD:refs/heads/$BRANCH" 2>&1)" || status=$?
+          echo "$push"
+          if [[ $push == *GH013* ]]; then
+            echo "::error::GH013, the caller repo restricts branch creation. Its rulesets must let the Actions token create refs/heads/oss-agent/** (here $BRANCH): exclude that pattern from the creation-restricting ruleset."
+          fi
+          exit "$status"
 
       - name: Open the draft PR
         id: pr

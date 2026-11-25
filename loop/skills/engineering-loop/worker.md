@@ -74,8 +74,9 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    may outlast one tool call (a test run, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
    with its log, pid and exit code in files, and is waited on with one wake, as that section says: one
    `wait-for --log <log> --pid <pid> --budget <the run's expected length>` (a PR's checks: `wait-for --pr <n>`) as a
-   background call your harness tracks, never a short `wait-for`, `until grep` or `sleep` loop, since each return
-   re-reads your whole context; never end a turn waiting on a detached run alone, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
+   background call whose exit wakes the session (a host's; a claude-cloud session is not woken by a background task, so it
+   runs the foreground `wait-for`, each call under 10 minutes, in the same turn), never a short `wait-for`, `until grep` or
+   `sleep` loop, since each return re-reads your whole context; never end a turn waiting on a detached run alone, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
    Any other pending condition (a queued run, a free device, an unlocked screen) is waited on the
    same way, in the foreground, with `scripts/omnigent_agent.py wait-until
    --every <s> --limit <s> -- <check>`, each call under the tool timeout: the

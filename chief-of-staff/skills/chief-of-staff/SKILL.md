@@ -2,6 +2,8 @@
 name: chief-of-staff
 description: Act as a project's chief of staff, the one agent the owner talks to while leads do the work. It sorts each owner message, starts one lead per ask as a top-level session, relays follow-ups with the owner's words quoted, and watches the leads to surface their results, questions and stalls. Use only when the owner starts a session as chief of staff; a lead never needs it.
 disable-model-invocation: true
+metadata:
+  requires: "apm uv"
 ---
 
 # Chief of staff
@@ -334,6 +336,9 @@ manager per project, each a node.
   other directly about a bug that crosses their projects.
 - **Leads.** Each manager's leads are in its own registry, followed by its own supervisor
   (Follow).
+- **The manager's role file.** Read `roles/pm.md` when you start a project manager or run as one:
+  the shared role, its hard limits with their reasons, and where a project's own numbers go.
+  A project with one registry needs no manager, so the file is optional reading.
 - **Decision log.** While the owner is away, each decision taken for them goes in the node's
   decision log with how to undo it. A morning digest is drafted from it and the board's
   `## Needs the owner`, and sent by hand, never by a scheduled send. `scripts/decisions.py`
@@ -446,6 +451,10 @@ buys nothing, but a lead missing from the board is one a successor never finds:
   state, since that is what the file saves; read one only when a lead's notice or the
   owner's question needs it.
 
+## Hygiene scan
+
+`scripts/hygiene.py` is the nightly scan, run as the account that owns the setup and reading `hygiene.repos`, the registries and the board through the values file. It reports the board when it is over 4 KB (never rewriting it, since the board is the owner's), archives a report older than 14 days that no registry or state file names (a live lead's report is never moved), names a `budget`, `parked` or `models.tiers` entry past its end date or with none, names each host whose installed package is behind the pack's latest release, and names a setup file that copies a pack sentence. It ends with the hosts and repos it did not reach, because a skipped one looks the same as a clean one. Read it when setting up or reading the nightly run; its header holds the options.
+
 ## Values file
 
 A setup's own settings (server, sessions, hosts, delegation, models, budgets, hygiene) live in one YAML file, `cos-values.yml`, in the setup's home folder: never in a
@@ -459,6 +468,19 @@ names each unknown or mistyped key, `keys` lists every key with its default and 
 setup's file; both hold placeholder values only. A key the loader does not list is an error, never
 a default, so a typo is caught; a value that is a secret goes in the harness's credential store,
 never in this file.
+
+## Pin updater
+
+`scripts/pin_update.py --repo <consumer repo>` moves the repo's pack pin in `apm.yml` to the newest
+`pin.tag_prefix` release tag, runs `apm install`, prints the compare link and relays an
+`ACTION NEEDED:` line to `cos_session`. It commits nothing. It skips, changing nothing, when
+`apm.yml`, the lock or a deployed file has uncommitted edits, rolls back a failed install, and
+refuses the pack's own checkout. `--dry-run` only reports. How often it runs is the scheduler's
+business. Read it when setting up or debugging a repo's pin updates.
+
+## Start gate
+
+Before starting a lead, run `python3 <this skill's folder>/scripts/start_gate.py check --repo <repo> --host <host> [--owner-requested] [--registry <name>]`; exit 0 allows the start and exit 1 refuses it, printing each reason. It reads `hosts.table`, `hosts.owner_requested_only` and `managers` and refuses a host the table does not list for the repo, an owner-requested-only host when the owner did not ask, and a managed repo started outside its manager's registry. With no table it allows any host; the capacity check (`omnigent_agent.py capacity`) still judges memory and CPU.
 
 ## Memory
 
