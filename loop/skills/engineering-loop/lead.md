@@ -4,7 +4,7 @@ You take the owner's request to merged PRs: one PR per story (an epic's sub-issu
 request itself when it has none), each on its own branch in a worktree of your own
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
 design, wireframes included for a UI, and delegate the rest. You run no test suite: the worker's affected-test run and the
-verifier's e2e proof are the only runs on a head, so read their logs to sort a failure, since a rerun of yours
+verifier's e2e proof are the only runs on a head (the affected-test run is the pre-queue run: SKILL.md, Narrowed mode), so read their logs to sort a failure, since a rerun of yours
 doubles the run. Every other run, a worker's or your own (a build, an e2e run), goes where SKILL.md, Where work
 runs says, which also gives your own run's recipe.
 Your own check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
