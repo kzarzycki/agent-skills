@@ -188,3 +188,24 @@ def test_cli(tmp_path, monkeypatch, capsys):
     assert cv.main(["--home", str(tmp_path), "check"]) == 1
     assert "relaeses: unknown key" in capsys.readouterr().err
     assert cv.main(["keys"]) == 0
+
+
+def test_wrong_type_string_is_named(tmp_path):
+    _write(tmp_path, "server: 5\ncos_session: ''\n")
+    with pytest.raises(cv.ValuesError) as e:
+        cv.load(home=tmp_path)
+    assert set(e.value.keys) == {"server", "cos_session"}
+
+
+def test_group_name_is_not_called_a_typo_of_itself(tmp_path):
+    with pytest.raises(cv.ValuesError, match=r"hosts: unknown key \(a group, not a key") as e:
+        cv.load(home=tmp_path).get("hosts")
+    assert "did you mean" not in str(e.value)
+
+
+def test_relative_home_resolves_to_absolute(tmp_path, monkeypatch):
+    (tmp_path / "h").mkdir()
+    monkeypatch.chdir(tmp_path)
+    v = cv.load(home="h")
+    monkeypatch.chdir("/")
+    assert v.path("registry") == tmp_path / "h/tmp/loop/leads.registry"

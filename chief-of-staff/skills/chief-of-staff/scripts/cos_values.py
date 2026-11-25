@@ -29,6 +29,9 @@ The file's keys are nested as the dotted names read (``hosts.table`` is ``hosts:
 typo would otherwise look like a default. Defaults hold no private name, host or secret: this
 repo is public.
 
+A YAML date (``until: 2030-01-31``) arrives as a ``datetime.date``, not a string; ``budget`` and
+``parked`` hold free-form entries the loader does not check.
+
     cos_values.py [--file <path>] [--home <dir>] check | show | keys | get <key>
 """
 
@@ -403,6 +406,9 @@ def _check_key(key: Key, v: Any, errors: list[tuple[str, str]]) -> None:
 
 
 def _near(name: str) -> str:
+    if name in _GROUPS:
+        subs = ", ".join(k for k in KEYS if k.startswith(f"{name}."))
+        return f" (a group, not a key; its keys are {subs})"
     hit = difflib.get_close_matches(name, [*KEYS, *_GROUPS], n=1, cutoff=0.6)
     return f"; did you mean `{hit[0]}`?" if hit else ""
 
@@ -497,6 +503,7 @@ def load(path: str | os.PathLike | None = None, *, home: str | os.PathLike | Non
     """Load the setup's values; raises ``ValuesError`` naming each bad key."""
     file = find(path, home=home)
     base = Path(home).expanduser() if home else (file.parent if file else Path.cwd())
+    base = base.resolve()
     if file is None:
         return Values({}, None, base)
     try:

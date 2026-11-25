@@ -33,7 +33,8 @@ Gate = tuple[dict[str, Any], list[tuple[int, str]]]
 REAL_GAP, REAL_PUSH = approvals.rerun_gap, approvals.push_record
 RERUN_REF = f"refs/heads/loop-gate/{TREE}-111111111111"
 RERUN_COMMIT = "c" * 40
-GATES = "risk:\n  verifier: true\nlevels:\n  high:\n    merge: gates\n"
+ON = "levels:\n  high:\n    rerun: true\n  critical:\n    rerun: true\n"  # the repo opts in (#2472: off by default)
+GATES = "risk:\n  verifier: true\nlevels:\n  high:\n    merge: gates\n    rerun: true\n"
 ASKED = "PR #7 is rated high, and `levels.high.rerun` asks an independent rerun of its selection on its head:"
 
 
@@ -187,7 +188,7 @@ def test_each_level_takes_its_own_rerun_option(
     gating: Gate, forge: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     state, _ = gating
-    policy(GATES + "    rerun: false\n")
+    policy(GATES.replace("rerun: true", "rerun: false"))
     state["pull"] = judged_pr(judging("low — fine"), labels=("risk:high",))
     assert check_merge(capsys) == (0, [])
     policy("risk:\n  verifier: true\nlevels:\n  low:\n    rerun: true\n")
@@ -374,7 +375,7 @@ def brief(
 def test_with_no_ci_the_verifiers_brief_says_to_start_the_rerun_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    [line] = brief("loop:\n  ci: false\n", monkeypatch, tmp_path, capsys)
+    [line] = brief("loop:\n  ci: false\n" + ON, monkeypatch, tmp_path, capsys)
     assert line.startswith(
         "- Rerun: this repo has no CI, and gatekeeper.md's `levels` asks an independent rerun for a high or critical"
         " head; where the head rates so (your own `Risk: high` makes it high), start a fresh cloud session that runs `uv run "
@@ -531,8 +532,8 @@ def test_report_json_names_the_rerun_and_a_malformed_line_is_refused(
 @pytest.mark.parametrize(
     ("settings", "risk", "rerun", "warned"),
     [
-        ("loop:\n  ci: false\n", "high — a gate change", None, True),
-        ("loop:\n  ci: false\n", "high — a gate change", RERUN_COMMIT, False),
+        ("loop:\n  ci: false\n" + ON, "high — a gate change", None, True),
+        ("loop:\n  ci: false\n" + ON, "high — a gate change", RERUN_COMMIT, False),
         ("loop:\n  ci: false\n", "low — fine", None, False),
         ("", "high — a gate change", None, False),
         ("loop:\n  ci: false\nlevels:\n  high:\n    rerun: false\n", "high — x", None, False),
@@ -647,7 +648,7 @@ def test_a_far_brief_names_the_rerun_script_on_the_verifiers_host(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(approvals, "pull_request", lambda _n: pull(body="Closes #12.\n"))
     monkeypatch.setattr(approvals, "merge_base", lambda base, head: "b" * 40)
-    monkeypatch.setattr(approvals, "project", lambda: (None, loop_md("loop:\n  ci: false\n")))
+    monkeypatch.setattr(approvals, "project", lambda: (None, loop_md("loop:\n  ci: false\n" + ON)))
     root = Path(approvals.__file__).resolve().parents[4]
     monkeypatch.setattr(approvals, "toplevel", lambda: root)
     assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
@@ -666,14 +667,12 @@ def flat(path: str) -> str:
 def test_the_skills_state_the_option_its_defaults_and_the_report_line() -> None:
     loop_skill = flat("loop/skills/engineering-loop/SKILL.md")
     assert (
-        "gatekeeper.md `levels.<level>.rerun` is on (by default `high` and `critical`)"
-        in loop_skill
+        "gatekeeper.md `levels.<level>.rerun` is on (off by default at every level)" in loop_skill
     )
     assert "(the gatekeeper skill's policy.md, Independent rerun)" in loop_skill
     policy_md = (SKILLS / "gatekeeper/skills/gatekeeper/policy.md").read_text()
-    assert "    rerun: false   # the worker's record is the proof\n" in policy_md
-    assert policy_md.count("    rerun: true") == 2
-    assert "`low` {policy, gates, rerun false}" in policy_md
+    assert policy_md.count("    rerun: false") == 3 and "    rerun: true" not in policy_md
+    assert "`rerun` false at every level" in policy_md
     assert "## Independent rerun" in policy_md
     gate_skill = flat("gatekeeper/skills/gatekeeper/SKILL.md")
     assert "after the `Head:` line, a line `Rerun: <commit>`" in gate_skill
@@ -686,7 +685,7 @@ def test_verdict_warns_as_report_does_and_still_posts(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     state, _ = gating
-    policy("loop:\n  ci: false\n")
+    policy("loop:\n  ci: false\n" + ON)
     state["pull"] = judged_pr()
     assert approvals.main(["verdict", "7", str(report_file(tmp_path, "high — a gate change"))]) == 0
     assert "names no `Rerun: <commit>`" in capsys.readouterr().err
@@ -761,3 +760,14 @@ def test_the_read_only_adoption_is_the_same_decision_without_the_write(
     capsys.readouterr()
     assert approvals.adopting([spec], loop, record=False) == [spec]
     assert (recorded, capsys.readouterr().out) == ([], "")
+
+
+def test_every_level_defaults_to_no_rerun() -> None:
+    """#2472: a repo opts in once a workflow pushes the rerun record, so a default never needs one."""
+    for loop in (loop_md(), loop_md("spec:\n  auto: true\n"), loop_md("risk:\n  verifier: true\n")):
+        assert {level: rules["rerun"] for level, rules in approvals.levels(loop).items()} == {
+            "low": False,
+            "high": False,
+            "critical": False,
+        }
+    assert approvals.levels(loop_md(ON))["high"]["rerun"] is True
