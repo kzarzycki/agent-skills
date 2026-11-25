@@ -42,7 +42,8 @@ def test_a_failed_selection_fails_without_running_pytest(tmp_path: Path) -> None
 
 
 def test_an_empty_selection_runs_nothing_says_so_and_passes(tmp_path: Path) -> None:
-    """#1872: a selector that can't tell runs nothing, never the whole suite."""
+    """The selector prints nothing for a batch whose PRs all have a record and share no test, or that changes only
+    non-product paths (#2217): pytest given no targets would run the whole suite."""
     done = run_step(tmp_path, "exit 0")
     assert done.returncode == 0, done.stderr
     assert "selected nothing, so no tests run" in done.stderr
@@ -55,7 +56,7 @@ def test_a_selection_runs_pytest_on_its_targets(tmp_path: Path) -> None:
     [line] = (tmp_path / "ran.log").read_text().splitlines()
     assert line.endswith(
         "pytest -q -m not live_agent and not slow -p tools.gate_workers -n auto --dist loadfile"
-        " tests/test_a.py tests/test_b.py"
+        " --junitxml=.qualify/junit.xml tests/test_a.py tests/test_b.py"
     )
 
 

@@ -146,7 +146,7 @@ run = """unkeyed=$(mktemp)
 targets=$(uv run python -m tools.cross_change_tests --unkeyed-out "$unkeyed" "${GATE_BASE:-origin/main}") || { echo 'error: tools/cross_change_tests.py failed or refused' >&2; exit 1; }
 while IFS= read -r check; do sh -c "$check" || { echo "error: the unkeyed check failed: $check" >&2; exit 1; }; done < "$unkeyed"
 [ -n "$targets" ] || { echo 'test-batch: tools/cross_change_tests.py selected nothing, so no tests run, never the whole suite' >&2; exit 0; }
-uv run python tools/gate_slot.py pytest -q -m 'not live_agent and not slow' -p tools.gate_workers -n auto --dist loadfile $targets"""
+uv run python tools/gate_slot.py pytest -q -m 'not live_agent and not slow' -p tools.gate_workers -n auto --dist loadfile --junitxml=.qualify/junit.xml $targets"""
 
 [tasks.check]
 description = "Nightly in CI: vendor-engineering-check, lint and the full suite, slow tests included: the one run of the whole suite (#1872)"

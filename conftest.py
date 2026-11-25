@@ -40,6 +40,8 @@ from approvals_harness import (  # noqa: F401
     refs,
     repo_template,
     required,
+    reran,
+    session_fields,
 )
 
 # No test reaches GitHub through the real `gh` (tools/gh_trap.py, #2035); the trap folder this process made is removed
@@ -104,6 +106,14 @@ def no_origin(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
 def _no_wait_place(monkeypatch: pytest.MonkeyPatch) -> None:
     """A test that mocks the rerun's execv leaves the wait's place in the environment; the next land would resume it."""
     monkeypatch.delenv("LOOP_LAND_WAIT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _not_in_the_merge_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The merge queue's batch run sets GITHUB_HEAD_REF to `mergify/merge-queue/...`, which makes the test selector read
+    its queue policy (tools/affected_tests.py, #2445): a test of the selector sees the queue only when it sets it."""
+    monkeypatch.delenv("GITHUB_HEAD_REF", raising=False)
+    monkeypatch.delenv("GATE_IN_QUEUE", raising=False)
 
 
 _Environ = type(os.environ)
@@ -256,6 +266,20 @@ def _no_loop_events_read(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     module = sys.modules.get("omnigent_agent")
     if module and request.module.__name__ not in READS_LOOP_EVENTS:
         monkeypatch.setattr(module, "read_loop_events", lambda cwd=None: None)
+
+
+# The one module that runs land's `own-pr` start for real, against a fake script.
+STARTS_OWN_PR = {"test_approvals_own_prs"}
+
+
+@pytest.fixture(autouse=True)
+def _no_own_pr_start(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """land starts omnigent_agent.py `own-pr` for each PR it names (#2161): a test of land starts none."""
+    if request.module.__name__ in STARTS_OWN_PR:
+        return
+    from approvals_harness import approvals
+
+    monkeypatch.setattr(approvals, "own_prs", lambda pulls: None)
 
 
 @pytest.fixture(autouse=True)

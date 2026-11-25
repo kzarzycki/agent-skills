@@ -53,3 +53,5 @@ per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39", "gatek
 "gatekeeper/tests/test_approvals_*.py" = ["F811"]
 # likewise a module that takes test_mutate.py's `repo` fixture by name
 "loop/tests/test_mutate_*.py" = ["F811"]
+# and the queue's tests, which take test_approvals_select.py's `worker` fixture
+"tests/test_cross_change_tests.py" = ["F811"]

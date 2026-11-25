@@ -77,6 +77,9 @@ def test_a_skipped_test_is_listed_for_the_map(
 ) -> None:
     listed = tmp_path / "skipped"
     monkeypatch.setenv(plugin.SKIPPED, str(listed))
+    monkeypatch.delenv(
+        plugin.DURATIONS, raising=False
+    )  # the nightly's durations log takes no fake report
     report = type("Report", (), {"skipped": True, "nodeid": "t.py::test_s"})()
     plugin.pytest_runtest_logreport(report)
     plugin.pytest_runtest_logreport(type("Report", (), {"skipped": False, "nodeid": "t.py::x"})())
@@ -115,3 +118,22 @@ def test_addopts_is_back_after_a_test(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(StopIteration):
         hook.send(True)
     assert os.environ["PYTEST_ADDOPTS"] == "-q"
+
+
+def test_the_durations_file_gets_one_durations_line_per_phase(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """#2445: with TEST_DURATIONS set, each test phase's time is appended in `pytest --durations=0`'s format."""
+    listed = tmp_path / "durations.log"
+    monkeypatch.setenv(plugin.DURATIONS, str(listed))
+    report = pytest.TestReport(
+        "tests/test_x.py::test_a",
+        ("tests/test_x.py", 1, "test_a"),
+        {},
+        "passed",
+        None,
+        "call",
+        duration=1.5,
+    )
+    plugin.pytest_runtest_logreport(report)
+    assert listed.read_text() == "1.500s call tests/test_x.py::test_a\n"
