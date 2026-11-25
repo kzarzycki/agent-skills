@@ -186,3 +186,29 @@ def test_a_checkout_behind_its_base_reads_the_workflow_the_base_has(
     assert (
         approvals.rerun_workflow_gap(clone, ON, "high") is not None
     )  # the working tree's own scan (check setup)
+
+
+def test_rerun_gap_in_a_clone_with_no_working_tree_reads_the_base_workflow(
+    gating: Gate,
+    forge: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The call site, not only the helper: rerun_gap passes the policy's ref, so a `--no-checkout` clone whose origin's
+    main has the rerun workflow gets today's wait, never the false "can't come" line (pass 2's F1)."""
+    state, _ = gating
+    bare = origin_with(tmp_path, {RERUN_FLOW: DIRECT})
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--no-checkout", str(bare), str(clone)], check=True)
+    monkeypatch.chdir(clone)
+    state["pull"] = judged_pr(judging("low — fine"), labels=("risk:high",))
+    line = approvals.rerun_gap(state["pull"], [], loop_md(GATES))
+    assert line is not None
+    assert line.startswith(f"{ASKED} origin holds no rerun record on tree {TREE}.")
+    assert "can't come" not in line
+    # and where the base has no such workflow, the same call says so
+    other = origin_with(tmp_path / "o", {".github/workflows/ci.yml": OTHER_FLOW})
+    bare_clone = tmp_path / "bare-clone"
+    subprocess.run(["git", "clone", "-q", "--no-checkout", str(other), str(bare_clone)], check=True)
+    monkeypatch.chdir(bare_clone)
+    assert "can't come" in (approvals.rerun_gap(state["pull"], [], loop_md(GATES)) or "")
