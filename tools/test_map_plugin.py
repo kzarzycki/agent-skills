@@ -13,6 +13,9 @@
   configuration this can't read is left as it is: the child is then measured as before.
 - A test the run skips leaves no context, so with SKIPPED set (the nightly sets it to `.test-map/skipped`) each skipped
   test's node id goes there, one per line, and the selector runs those beside the map's tests.
+- With TEST_DURATIONS set (the nightly sets it to `.test-map/durations.log`) each test phase's time is appended as one
+  `--durations=0` line, across the nightly's several pytest runs; `gatekeeper.py durations --record` turns the file
+  into the durations file `shards --durations` and `affected-tests`' estimate read (#2445).
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ import pytest
 
 CONFIG = "COVERAGE_PROCESS_CONFIG"
 SKIPPED = "TEST_MAP_SKIPPED"
+DURATIONS = "TEST_DURATIONS"
 
 
 def with_context(serialized: str, context: str) -> str | None:
@@ -60,3 +64,6 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.skipped and (path := os.environ.get(SKIPPED)):
         with open(path, "a") as out:
             out.write(f"{report.nodeid}\n")
+    if path := os.environ.get(DURATIONS):
+        with open(path, "a") as out:
+            out.write(f"{report.duration:.3f}s {report.when} {report.nodeid}\n")

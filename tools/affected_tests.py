@@ -13,7 +13,7 @@ its file name); a file no test names runs its package's tests, else the tests of
 (home_tests). A skill's prose, which the repo-wide checks `tests/test_skill_*.py` read, runs those. Zero tests run only
 when every changed path is non-product (NON_PRODUCT) and no test reads it, and the run says `0 selected: non-product`.
 In the merge queue (`GITHUB_HEAD_REF` under `mergify/merge-queue/`, or `GATE_IN_QUEUE=1`) a build input selects the whole
-suite only under `select.build_inputs_in_queue: full` in docs/agents/gatekeeper.md; under `floor`, the default there,
+suite only under `select.build_inputs_in_queue: full` in docs/agents/gatekeeper.md; under `floor`, which a project opts into once its nightly records durations,
 it selects the other changed files' tests, and for a changed `uv.lock` the tests that import a package whose version
 changed (#2445). The nightly and a push to main, which touch a build input, run the whole suite after the merge.
 A selection of over half the test files runs as picked (#1872): only the nightly runs the whole suite.
@@ -86,16 +86,16 @@ def changed(base: str) -> list[str] | None:
 
 def queue_build_inputs() -> str:
     """`floor` or `full`: what a build input selects here. Outside the merge queue it is `full`, as ever; inside it is
-    gatekeeper.md's `select.build_inputs_in_queue`, `floor` when unset."""
+    gatekeeper.md's `select.build_inputs_in_queue`, `full` when unset: a project opts into `floor`."""
     head = os.environ.get("GITHUB_HEAD_REF", "")
     if not (head.startswith("mergify/merge-queue/") or os.environ.get("GATE_IN_QUEUE") == "1"):
         return "full"
     try:
         text = Path("docs/agents/gatekeeper.md").read_text()
     except OSError:
-        return "floor"
+        return "full"
     found = re.search(r"^[ \t]+build_inputs_in_queue:[ \t]*(floor|full)\b", text, re.MULTILINE)
-    return found[1] if found else "floor"
+    return found[1] if found else "full"
 
 
 def locked(base: str | None, ref: str) -> dict[str, str]:
@@ -113,25 +113,30 @@ def locked(base: str | None, ref: str) -> dict[str, str]:
 
 
 def import_names(package: str) -> set[str]:
-    """The names a package is imported by: its normalized name, and its distribution's top-level modules when it is
-    installed."""
-    names = {re.sub(r"[-.]+", "_", package).lower()}
-    try:
-        top = importlib.metadata.distribution(package).read_text("top_level.txt") or ""
-        names |= set(top.split())
-    except importlib.metadata.PackageNotFoundError:
-        pass
-    return names
+    """The names a package is imported by, from the top-level modules its installed distribution provides (`pyyaml` is
+    imported as `yaml`), read from the distributions' files, not a `top_level.txt` a wheel may lack. Empty when no
+    installed distribution provides one: the name is not known."""
+    wanted = re.sub(r"[-_.]+", "-", package).lower()
+    return {
+        module
+        for module, dists in importlib.metadata.packages_distributions().items()
+        if any(re.sub(r"[-_.]+", "-", dist).lower() == wanted for dist in dists)
+    }
 
 
-def lock_floor(base: str | None, tests: list[Path], sources: dict[Path, str]) -> set[str]:
-    """The test files that import a package `uv.lock` adds, removes or moves to another version since `base`."""
+def lock_floor(base: str | None, tests: list[Path], sources: dict[Path, str]) -> set[str] | None:
+    """The test files that import a package `uv.lock` adds, removes or moves to another version since `base`; None
+    when a moved package maps to no import name (not installed here), since the floor can't tell what imports it."""
     before, after = locked(base, base or "HEAD"), locked(base, "HEAD")
-    moved = {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
-    said = sorted(moved)
+    said = sorted(
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    )
     picked: set[str] = set()
     for package in said:
-        for name in import_names(package):
+        if not (names := import_names(package)):
+            say(f"uv.lock: {package} maps to no import name: the whole suite")
+            return None
+        for name in names:
             use = re.compile(rf"^\s*(?:import|from)\s+{re.escape(name)}\b", re.MULTILINE)
             picked |= {str(t) for t in tests if use.search(sources[t])}
     say(f"uv.lock moved {len(said)} packages: {len(picked)} test files import them")
@@ -363,7 +368,10 @@ def targets(
     )
     if inputs:
         product = True
-        picked |= lock_floor(base, tests, sources) if lock_moved else set()
+        if lock_moved:
+            if (found := lock_floor(base, tests, sources)) is None:
+                return list(ALL)
+            picked |= found
         say(f"{inputs[0]}: a build input: the floor, the whole suite runs after the merge")
     ran: set[str] = set()
     moved = moved_since(mapped[0], base) if mapped else set()

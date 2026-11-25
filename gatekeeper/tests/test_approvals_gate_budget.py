@@ -32,6 +32,10 @@ def budget(
 
     def record(**seconds: float) -> None:
         durations.write_text(json.dumps({f"tests/{name}.py": s for name, s in seconds.items()}))
+        for name in seconds:
+            if name != "gone":
+                (worker["repo"] / "tests").mkdir(exist_ok=True)
+                (worker["repo"] / "tests" / f"{name}.py").write_text("")
 
     return {**worker, "record": record}
 
@@ -191,3 +195,8 @@ def test_build_inputs_in_queue_takes_floor_or_full_and_nothing_else() -> None:
         )
     with pytest.raises(approvals.Refused, match="build_inputs_in_queue"):
         approvals.settings(approvals.Policy(policy_md("select:\n  build_inputs_in_queue: some\n")))
+
+
+def test_a_deleted_test_file_is_no_part_of_the_estimate(budget: dict[str, Any]) -> None:
+    budget["record"](a=300, gone=900)  # `gone` no longer exists: 300 seconds, not 1200
+    assert approvals.main(["affected-tests"]) == 0

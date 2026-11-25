@@ -1035,8 +1035,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         unkeyed=list,
         # how many shards a whole-suite selection splits into (shard_selections), 1 or absent is one
         shards=int,
-        # what the merge queue's selection does with a build input (#2445): `floor`, the default, the other changed
-        # files' tests plus a lockfile's importers; `full`, the whole suite
+        # what the merge queue's selection does with a build input (#2445): `full`, the default, the whole suite; `floor`
+        # (opt in), the other changed files' tests plus a lockfile's importers
         build_inputs_in_queue=Choice(("floor", "full")),
         optional=("build_inputs", "checks", "unkeyed", "shards", "build_inputs_in_queue"),
     ),
@@ -10690,6 +10690,10 @@ def read_estimate(root: Path, shards: int) -> tuple[float | None, str]:
         setup = float(os.environ.get("GATE_SETUP_SECONDS") or (root / SETUP_FILE).read_text())
     except (OSError, ValueError):
         setup = 0.0
+    # a test file deleted since the nightly recorded it is no part of the run: a stale file must not over-estimate
+    durations = {
+        item: secs for item, secs in durations.items() if (root / item.split("::")[0]).exists()
+    }
     found = estimate_seconds(list(durations), durations, workers, setup, shards)
     return found, "no recorded durations" if found is None else ""
 
