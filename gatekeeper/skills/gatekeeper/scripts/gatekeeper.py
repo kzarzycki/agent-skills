@@ -7202,6 +7202,9 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         )
     with policy_from(base):
         tracker, loop = project()
+        host_takes_pre_land(
+            loop
+        )  # before any lock, draft or step: a host that can't run it refuses up front (#2577)
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
         watched["required"] = set(rules) - OWN
@@ -8539,6 +8542,20 @@ def pre_land_run(pull: dict[str, Any], work: Path, loop: str | None) -> PreLand 
     except OSError as exc:
         raise Refused(f"loop.md's `pre_land` {command!r} can't run: {exc}") from None
     return PreLand(command, tip, code, output or "")
+
+
+def host_takes_pre_land(loop: str | None) -> None:
+    """Refuse, before `land` starts any step, a loop.md `pre_land` this host's policy file forbids (host_forbids, the
+    check run_heavy makes at each step): the same rule, said up front as a land run in the wrong place, never as a step's
+    refusal midway or a machine fault (`machine_exit`)."""
+    if not (written := settings(loop).get("pre_land")):
+        return
+    command, words, _ = command_line(written, "pre_land")
+    if rule := host_forbids(words):
+        raise Refused(
+            f"land runs loop.md's `pre_land` {command!r}, which is on this host's {HOST_COMMANDS} ({rule!r}), so this"
+            " host can't land: run land from a cloud session or a host that can take it"
+        )
 
 
 def pre_landed(
