@@ -101,6 +101,17 @@ owner. The gate takes the row line as a claim and the verifier checks it against
 that adds scope. `check` prints `#141: covered by #140's approved spec (row "pack pin")` for a row it credits, and
 the missing piece for one it doesn't.
 
+## A PR waiting on another team's go
+
+A PR that waits on another team (its go, a decision) carries a `Waiting on:` record, so the wait is on GitHub and not
+in a message. `record waiting <pr> --on "<what>" [--within <span>]` posts it: the first line `Waiting on: <what>`, a
+`Deadline:` line under it (default `24h` on, or the span given), and nothing else: no session, host or name.
+`record waiting <pr> --clear` posts the same line with `Cleared:` in place of the deadline; the newest record decides.
+Past the deadline with no clearing record, the supervisor of the team that owns the PR (its `Owner:` record, see
+`omnigent-agents`) raises one event to the owner; the other team's supervisor, which does not list that session,
+raises none. A project with no such record has nothing read or raised. The gate does not read the record: it lets no
+PR merge and holds none.
+
 ## Verifier report
 
 `record verdict` posts a verifier's report as one PR review on the commit it names, and
