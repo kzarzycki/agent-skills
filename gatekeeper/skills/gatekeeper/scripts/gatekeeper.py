@@ -29,7 +29,7 @@
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
     uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1, one line each, when .mergify.yml, a marked workflow job's `timeout-minutes`, loop.md's `Wall-clock variable:`, a hand-set `land.wait` or the nightly's push paths (against `select.build_inputs`) is out of step
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
-    uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.build_inputs` file) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
+    uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
     uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
@@ -1051,7 +1051,11 @@ SCHEMA: dict[str, dict[str, Any]] = {
         # what the merge queue's selection does with a build input (#2445): `floor`, the default, the other changed
         # files' tests plus a lockfile's importers; `full`, the whole suite
         build_inputs_in_queue=Choice(("floor", "full")),
+        # the build inputs whose change selects the whole test root (#2621): globs, a subset of `build_inputs` in
+        # practice; where CI is the merge proof, `affected-tests` runs no test for one (ci_runs_whole_suite)
+        whole_suite=list,
         optional=(
+            "whole_suite",
             "build_inputs",
             "non_product",
             "checks",
@@ -10866,10 +10870,8 @@ def narrowed_gate(
         # no build input changed (select): the run is affected-tests' own cut, keyed by the checks it runs; a whole-suite
         # selection CI runs (#2621) is that cut too, keyed `select.checks: ci`, so its record is the head's tests pass
         said = shlex.join(
-            ["select.checks:", "ci"]
-            if ci_whole
-            else ["select.checks:", *cut[1]]
-            if cut[1]
+            ["select.checks:", *cut[1], *(["ci"] if ci_whole else [])]
+            if cut[1] or ci_whole
             else ["select.checks:", "none"]
         )
         words = [
@@ -10955,27 +10957,22 @@ def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[
 
 
 def whole_suite_inputs(inputs: list[str], select: dict[str, Any]) -> list[str]:
-    """The build inputs among `inputs` the project declares as ones that run the whole suite (`select.build_inputs`, or
-    the selection's own policy files), not the paths it merely can't judge (classify): a project's `Affected tests:`
-    command may narrow those."""
-    declared = select.get("build_inputs", [])
-    return [
-        path
-        for path in inputs
-        if path in SELECTION_FILES or any(fnmatch.fnmatch(path, glob) for glob in declared)
-    ]
+    """The build inputs among `inputs` the project declares as selecting the whole test root (`select.whole_suite`),
+    not the ones its `Affected tests:` command narrows (a source dir) or the pack can't judge (classify)."""
+    declared = select.get("whole_suite", [])
+    return [path for path in inputs if any(fnmatch.fnmatch(path, glob) for glob in declared)]
 
 
-# set by `affected-tests --local`: run a whole-suite selection here though CI runs it (ci_runs_whole_suite)
-FORCE_LOCAL: contextvars.ContextVar[bool] = contextvars.ContextVar("FORCE_LOCAL", default=False)
+# `affected-tests --local` sets it, so the run runs a whole-suite selection here though CI runs it, in a child run too
+LOCAL_VAR = "AFFECTED_TESTS_LOCAL"
 
 
 def ci_runs_whole_suite(base: str, head: str | None = None) -> str | None:
-    """The first declared build input of the change since `base` when it selects the whole test root and the project's
-    CI is the merge proof (`loop.ci` is not false) and `--local` is not given, else None (#2621). The worker's
-    affected-tests run then records `whole suite selected; CI runs it` and runs no test: the merge queue or the required
-    check runs the same selection, sharded."""
-    if FORCE_LOCAL.get() or no_ci(project()[1]):
+    """The first `select.whole_suite` file of the change since `base`, when the project's CI is the merge proof
+    (`loop.ci` is not false), else None (#2621): the narrowed gate keys its record `select.checks: ... ci` then, and the
+    run (non_product_run) runs no test unless `--local` is given: the merge queue or the required check runs the
+    whole suite, sharded."""
+    if no_ci(project()[1]):
         return None
     cut = selected(base, head)
     if cut is None:
@@ -11017,19 +11014,20 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
     if (cut := selected(base)) is None:
         return None
     inputs, commands = cut
-    if inputs and (whole := ci_runs_whole_suite(base)) is not None:
-        print(
-            f"affected-tests: whole suite selected; CI runs it (build input {whole}; `--local` runs it here)",
-            file=sys.stderr,
-        )
-        return 0
-    if inputs:
+    whole = ci_runs_whole_suite(base) if inputs and not os.environ.get(LOCAL_VAR) else None
+    if inputs and whole is None:
         print(
             f"affected-tests: build input {inputs[0]}: the cut can't settle it",
             file=sys.stderr,
         )
         return None
     if not commands:
+        if whole is not None:
+            print(
+                f"affected-tests: whole suite selected; CI runs it (build input {whole}; `--local` runs it here)",
+                file=sys.stderr,
+            )
+            return 0
         print("affected-tests: 0 selected: non-product", file=sys.stderr)
         return 0
     budget = run_budget()
@@ -11064,6 +11062,11 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
             return TIMED_OUT
         if code:
             return code
+    if whole is not None:  # the checks ran here; the whole suite is CI's
+        print(
+            f"affected-tests: whole suite selected; CI runs it (build input {whole}; `--local` runs it here)",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -14241,11 +14244,13 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "report":  # reads a local file only, so no remote needs choosing
         return report_json(args.report) if args.json else report_check(args.report)
     if args.command == "affected-tests":
-        token = FORCE_LOCAL.set(args.local)
+        if args.local:
+            os.environ[LOCAL_VAR] = "1"
         try:
             return affected_tests(args.base, args.record)
         finally:
-            FORCE_LOCAL.reset(token)
+            if args.local:
+                os.environ.pop(LOCAL_VAR, None)
     if args.command == "shards":
         return sharded(args)
     if (
