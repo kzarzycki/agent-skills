@@ -52,6 +52,18 @@ REFUSED = [
     "python3 -c \"import os; print(os.environ['MY_TOKEN'])\"",
     "node -e 'console.log(process.env)'",
     "node -e 'console.log(process.env.NPM_TOKEN)'",
+    # review of #2363: indirection through wrappers, substitutions, stdin code and readers
+    "cat <(env)",
+    "echo `env`",
+    "nice env",
+    "nice -n 5 printenv",
+    "busybox env",
+    "eval env",
+    "eval 'echo $GITHUB_TOKEN'",
+    "grep TOKEN /proc/self/environ",
+    "awk 'BEGIN{for(k in ENVIRON)print k,ENVIRON[k]}'",
+    "python3 <<X\nimport os;print(os.environ)\nX",
+    "python3 - <<X\nprint(os.environ['API_KEY'])\nX",
 ]
 PASSED = [
     "env FOO=1 cmd",
@@ -87,6 +99,19 @@ PASSED = [
     'python3 -c \'import os; print(len(os.environ.get("API_KEY", "")))\' ',
     "node -e 'console.log(process.env.HOME)'",
     "python3 script.py",
+    # review of #2363: text that only mentions the files and names is data
+    'git commit -m "$(cat <<EOF\nrefuse < /proc/1/environ\nEOF\n)"',
+    'echo "see /proc/self/environ"',
+    'git commit -m "guard reads /proc/self/environ and printenv"',
+    "git log -- /proc/self/environ",
+    "grep -q TOKEN /proc/self/environ",
+    'echo "${GH_TOKEN:+set}"',
+    'echo "${GH_TOKEN+set}"',
+    'echo "$TOKENIZER"',
+    "python3 <<X\nimport sys;print(sys.argv)\nX",
+    "awk '{print ENVIRON[\"HOME\"]}' f",
+    "nice make",
+    "eval echo hi",
     "",
 ]
 

@@ -41,21 +41,27 @@ from heavy_run_guard import (
     strip_leading,
 )
 
-# a name that holds a secret: AUTHOR (git's) and SSH_AUTH_SOCK (a socket path) do not
-SECRET_NAME = re.compile(
-    r"^[A-Z0-9_]*(TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH(?!OR|_SOCK)|APIKEY|API_KEY|PRIVATE_KEY|_KEY$)"
-    r"[A-Z0-9_]*$|^KEY$"
-)
+# a name holds a secret when one of its `_`-parts is, or ends in, one of these words (so GH_TOKEN,
+# GITHUBTOKEN, CODEX_AUTH_JSON and AWS_SECRET_ACCESS_KEY do; TOKENIZER, AUTHOR and SSH_AUTH_SOCK do not)
+SECRET_ENDINGS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "CREDENTIALS", "APIKEY")
+SECRET_PARTS = {"KEY", "AUTH", "AUTHORIZATION", "OAUTH"}
+NOT_SECRET = {"SSH_AUTH_SOCK"}
 # a command that reduces its input to a length or a digest, or only tests it: no value comes out
 REDUCERS = {"wc", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "shasum", "md5sum"}
 REDUCERS |= {"cksum", "b3sum"}
 QUIET_GREP = {"-q", "-c", "--quiet", "--silent", "--count", "-l", "-L"}
 PRINTERS = {"echo", "printf", "print"}
-SEARCHERS = {"grep", "egrep", "fgrep", "rg", "ag", "ack", "find", "ls", "stat", "test", "["}
+# programs that print what they read; a command that only names /proc/<pid>/environ (echo, git,
+# ls, a quiet grep) shows none of it
+READERS = {"cat", "tac", "less", "more", "head", "tail", "strings", "xxd", "od", "hexdump", "tr"}
+READERS |= {"cut", "paste", "sort", "uniq", "nl", "base64", "xargs", "awk", "gawk", "sed", "rev"}
+READERS |= {"cp", "dd", "tee", "grep", "egrep", "fgrep", "rg", "ag", "ack", "column", "fold"}
+# programs that run the rest of the line as a command, which strip_leading does not know
+EXTRA_WRAPPERS = {"nice", "ionice", "stdbuf", "busybox", "setsid", "builtin", "chrt", "taskset"}
 INTERPRETERS = re.compile(r"^(python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lua)$")
 CODE_FLAGS = {"-c", "-e", "-p", "-r", "--eval", "--print", "-E"}
 ENV_RUN = re.compile(r"/proc/[^/\s'\"]+/environ\b")
-ENV_REDIRECT = re.compile(r"<\s*['\"]?/proc/[^/\s'\"]+/environ\b")
+AWK_ENV = re.compile(r"\bENVIRON\b(?!\s*\[\s*[\"'])")
 # the whole environment inside code: os.environ / process.env / ENV / %ENV not indexed or looked up
 CODE_WHOLE = re.compile(
     r"\bos\.environ\b(?!\s*(?:\[|\.get\b|\.setdefault\b|\.pop\b))"
@@ -65,7 +71,11 @@ CODE_WHOLE = re.compile(
 )
 CODE_NAMED = re.compile(r"(?:environ|getenv|process\.env|ENV|env\.get)\W{1,4}([A-Za-z0-9_]+)")
 CODE_PRINTS = re.compile(r"print|console\.|echo|puts|write|say\b|dump|stringify|log\b|inspect")
-VAR_USE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?|\$\{!?([A-Za-z_][A-Za-z0-9_]*)")
+# $NAME and ${NAME}, with ${NAME:-x}, ${NAME#x} and the like (which can print the value); not
+# ${#NAME} (a length) nor ${NAME:+x} / ${NAME+x} (which print x, never the value)
+VAR_USE = re.compile(
+    r"\$([A-Za-z_][A-Za-z0-9_]*)|\$\{!?([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_]|:?\+)"
+)
 
 HOW = (
     "Check a variable without printing it: `printenv NAME | wc -c` (its length), `printenv NAME |"
@@ -76,34 +86,48 @@ HOW = (
 
 
 def secret(name: str) -> bool:
-    return bool(SECRET_NAME.match(name))
+    if name in NOT_SECRET:
+        return False
+    if name != name.upper():  # environment names are upper case; `$key` is a loop variable
+        return False
+    return any(p.endswith(SECRET_ENDINGS) or p in SECRET_PARTS for p in name.split("_"))
 
 
-def pipelines(command: str) -> list[tuple[list[str], str]]:
-    """Each simple command's words with the separator that follows it ("" at the end), split as
-    ``heavy_run_guard.segments`` splits them. Raises ValueError on a quote it can't close."""
-    lex = shlex.shlex(drop_heredocs(command), posix=True, punctuation_chars="();<>|&\n")
+def pipelines(command: str) -> list[tuple[list[str], str, list[str]]]:
+    """Each simple command's words, the separator that follows it ("" at the end) and the files it
+    reads with ``<``, split as ``heavy_run_guard.segments`` splits them (a backtick substitution
+    is a ``( … )`` group, a ``<(`` or ``$(`` token a separator). Raises ValueError on a quote it
+    can't close."""
+    text = re.sub(r"`([^`]*)`", r" ( \1 ) ", drop_heredocs(command))
+    lex = shlex.shlex(text, posix=True, punctuation_chars="();<>|&\n")
     lex.whitespace = " \t\r"
     lex.whitespace_split = True
     lex.commenters = "#"
     parts: list[list[str]] = [[]]
+    reads: list[list[str]] = [[]]
     seps: list[str] = []
-    target = False
+    target = ""  # "<" or ">" while the next word is a redirection's file
     for token in lex:
-        if token in SEPARATORS or (token and set(token) <= set(";&|\n")):
+        punct = bool(token) and set(token) <= set("();<>|&\n")  # an operator, never a quoted word
+        if token in SEPARATORS or (
+            punct and (set(token) <= set(";&|\n") or set(token) & set("()"))
+        ):
             seps.append(token)
             parts.append([])
-            target = False
+            reads.append([])
+            target = ""
         elif token and set(token) <= set("<>&") and set(token) & set("<>"):
             if parts[-1] and parts[-1][-1].isdigit():
                 parts[-1].pop()
-            target = True
+            target = "<" if token.endswith("<") and "<<" not in token else ">"
         elif target:
-            target = False
+            if target == "<":
+                reads[-1].append(token)
+            target = ""
         else:
             parts[-1].append(token)
     seps.append("")
-    return [(p, s) for p, s in zip(parts, seps) if p]
+    return [(p, s, r) for p, s, r in zip(parts, seps, reads) if p or r]
 
 
 def reduces(words: list[str]) -> bool:
@@ -133,14 +157,23 @@ def names_used(words: list[str]) -> list[str]:
     return found
 
 
-def judge_words(rest: list[str], reduced: bool) -> str | None:
+def judge_words(rest: list[str], reduced: bool, stdin: str = "") -> str | None:
     """The refusal for one command (its leading words stripped), else None. ``reduced``: its output
-    goes into a hasher or counter."""
+    goes into a hasher or counter; ``stdin``: the whole command line, the code an interpreter with
+    no script reads from a here-document."""
     prog, args = Path(rest[0]).name, rest[1:]
     plain = [a for a in args if not a.startswith("-")]
     flags = "".join(a[1:] for a in args if re.fullmatch(r"-[A-Za-z]+", a))
-    if ENV_RUN.search(" ".join(args)) and prog not in SEARCHERS and not reduced:
-        return "it reads a process's whole environment (/proc/<pid>/environ)"
+    # a search's first plain word is its pattern, which names no file it reads
+    files = plain[1:] if prog in ("grep", "egrep", "fgrep", "rg", "ag", "ack") else args
+    if ENV_RUN.search(" ".join(files)) and prog in READERS and not reduced:
+        quiet = prog in ("grep", "egrep", "fgrep", "rg") and any(
+            a in QUIET_GREP or re.fullmatch(r"-[a-zA-Z]*[qc][a-zA-Z]*", a) for a in args
+        )
+        if not quiet:
+            return "it reads a process's whole environment (/proc/<pid>/environ)"
+    if prog in ("awk", "gawk") and not reduced and AWK_ENV.search(" ".join(args)):
+        return f"`{prog}` prints the whole environment (ENVIRON)"
     if prog == "printenv":
         if reduced:
             return None
@@ -165,40 +198,62 @@ def judge_words(rest: list[str], reduced: bool) -> str | None:
     if prog in PRINTERS and not reduced and (bad := names_used(args)):
         return f"`{prog}` prints ${bad[0]}, which looks like a secret"
     if INTERPRETERS.match(prog) and not reduced:
+        code = ""
         for i, a in enumerate(args):
             if a in CODE_FLAGS or re.fullmatch(r"-[a-zA-Z]*[ceE]", a):
                 code = " ".join(args[i + 1 :])
-                if CODE_PRINTS.search(code):
-                    if CODE_WHOLE.search(code):
-                        return f"`{prog}` code prints the whole environment"
-                    if any(secret(n) for n in CODE_NAMED.findall(code)):
-                        return f"`{prog}` code prints a variable that looks like a secret"
                 break
+        else:
+            if not plain:  # no script file: it reads its code from stdin (a heredoc or a pipe)
+                code = stdin
+        if code and CODE_PRINTS.search(code):
+            if CODE_WHOLE.search(code):
+                return f"`{prog}` code prints the whole environment"
+            if any(secret(n) for n in CODE_NAMED.findall(code)):
+                return f"`{prog}` code prints a variable that looks like a secret"
     return None
+
+
+def unwrap(rest: list[str]) -> list[str]:
+    """``rest`` without leading wrappers ``strip_leading`` does not know (``nice``, ``busybox``),
+    with their options."""
+    while rest and Path(rest[0]).name in EXTRA_WRAPPERS:
+        i = 1
+        while i < len(rest) and (rest[i].startswith("-") or rest[i].isdigit()):
+            i += 1
+        rest = rest[i:]
+        if rest and Path(rest[0]).name != "env":  # `nice env` is a dump, judged as `env`
+            rest, _, _ = strip_leading(rest, None)
+    return rest
 
 
 def judge(command: str, depth: int = 0) -> str | None:
     """The reason ``command`` is refused, else None."""
-    if ENV_REDIRECT.search(command):
-        return "it reads a process's whole environment (/proc/<pid>/environ)"
     items = pipelines(command)
-    for i, (words, sep) in enumerate(items):
+    for i, (words, _sep, reads) in enumerate(items):
         # a segment whose output a later segment of its pipeline reduces to a length or a digest
         j, reduced = i, False
         while j < len(items) and items[j][1] in ("|", "|&"):
             j += 1
             reduced = reduced or reduces(items[j][0])
+        if not reduced and any(ENV_RUN.search(r) for r in reads):
+            return "it reads a process's whole environment (/proc/<pid>/environ)"
         rest, _, _ = strip_leading(words, None)
         prefix = words[: len(words) - len(rest)]
+        rest = unwrap(rest)
         if not rest:
             if any(Path(w).name == "env" for w in prefix) and not reduced:
                 return "`env` with no command prints the whole environment"
+            continue
+        if Path(rest[0]).name == "eval":
+            if depth < SHELL_DEPTH and (why := judge(" ".join(rest[1:]), depth + 1)):
+                return why
             continue
         if (inner := shell_string(rest)) is not None:
             if depth < SHELL_DEPTH and (why := judge(inner, depth + 1)):
                 return why
             continue
-        if why := judge_words(rest, reduced):
+        if why := judge_words(rest, reduced, command):
             return why
     return None
 
