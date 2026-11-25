@@ -266,3 +266,21 @@ def test_a_keep_list_that_cannot_be_read_fails_the_sweep_and_archives_nothing(
     monkeypatch.setattr("sys.argv", ["omnigent_agent.py", "sweep", "--keep-file", str(keep)])
     assert omnigent_agent.main() == 1
     assert og.archived == [] and "can't be read" in capsys.readouterr().err
+
+
+def test_an_idle_parent_is_archived_while_its_fresh_kept_and_talked_children_stay(
+    og: Swept,
+) -> None:
+    """The lead's F1 case: parent idle 30 h; (a) idle 2 h, (b) idle 30 h on the keep list, (c) idle 30 h owner-talked."""
+    og.add("parent")
+    og.add("a", parent_session_id="parent", idle_hours=2)
+    og.add("b", parent_session_id="parent")
+    og.add("c", parent_session_id="parent", history=[typed()])
+    _, talked, failed = run(og, keep={"b"})
+    assert og.archived == ["parent"] and not failed
+    assert talked == [{"id": "c", "title": "t-c"}]
+    card = omnigent_agent.sweep_card(og.base, talked)
+    assert card is not None and [o["label"] for o in card["questions"][0]["options"]] == [
+        "Archive all (Recommended)",
+        "Keep t-c (c)",
+    ]
