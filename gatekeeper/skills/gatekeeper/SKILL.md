@@ -79,12 +79,14 @@ setting is never read as a rule nobody wrote. [policy.md](policy.md) has every k
 example block, and `SCHEMA` in `gatekeeper.py` is the same list as code. Label names come
 from `docs/agents/issue-tracker.md`'s settings block (policy.md, Tracker settings).
 
-A `gate_steps` step marked `on_demand: true` is no part of the gate: `local-ci`, `local-ci --record` and `land`
-skip it, each saying so in one line, and the gate's pass never needs it, since every other step runs on each PR
+A `gate_steps` step marked `on_demand: true` is no part of the gate: `local-ci` and `local-ci --record` skip it,
+each saying so in one line, `land` reads only the other steps' records, and the gate's pass never needs it, since
+every other step runs on each PR
 whose tree has no pass of it, and a check too costly for every PR (an hours-long run against a paid system) would
 then cost hours or go red without its credential. It runs only when named, `local-ci --record --step <name>`, and
 its pass is keyed by its `paths`, recorded, published and reused like any step's, so a spec that needs it asks for
-its pass on the head's inputs key, and an unchanged input never runs it again.
+its pass on the head's inputs key, and an unchanged input never runs it again. A `gate_steps` whose every step is
+on demand is refused, since its gate would have no step and pass every head with no run.
 
 ## Specs
 

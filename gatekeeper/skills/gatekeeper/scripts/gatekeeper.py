@@ -385,8 +385,9 @@ origin's record branches of that command, and the step's line says `<step>: reus
 found record counts only when today's `paths` give its own tree the same key, so one whose tree holds other inputs
 counts for nothing. A step without `paths`, with an empty list, or whose paths match no file in the tree is keyed by
 the tree, as above; a change to `gate_steps` changes every keyed step's key. A step may set `on_demand: true` (#2295),
-for a check too costly to run on every PR (an hours-long run against a paid external system): `local-ci`, `local-ci
---record` and `land` skip it, each saying `<step>: skipped, on demand`, and the gate's pass never needs it, since a
+for a check too costly to run on every PR (an hours-long run against a paid external system): `local-ci` and
+`local-ci --record` skip it, each saying `<step>: skipped, on demand`, `land` reads only the other steps' records, and
+the gate's pass never needs it, since a
 gate step runs on every PR whose tree has no pass of it. `local-ci --record --step <name>` (repeatable, with
 `--record` alone; a name `gate_steps` lacks is refused) runs those steps alone and records, publishes and reuses each
 pass as any step's, by its inputs key, so an unchanged input never runs it again; it writes no `gate` status or event,
@@ -10039,7 +10040,8 @@ def gate_plan(
     so a step that passed on a tree anywhere is not run again; a project without `gate_steps` keeps one record. A
     policy setting both is refused, since two sources of the gate would drift. A step `on_demand` marks (#2295) is in
     the plan only with `every` (a lookup of its pass, or run_steps, which says it skipped it) or when ASKED names it:
-    the gate's pass never needs it. With ASKED (`--step`), the plan is the steps it names alone."""
+    the gate's pass never needs it. With ASKED (`--step`), the plan is the steps it names alone. A `gate_steps` whose
+    every step is on demand is refused, since its gate would have no step and pass every head with no run."""
     loop = settings(project()[1])
     written = loop.get("gate_steps")
     unkeyed = set(loop.get("select", {}).get("unkeyed", []))
@@ -10080,6 +10082,11 @@ def gate_plan(
                 "unkeyed": bool({step["name"], step["command"], command} & unkeyed),
                 "on_demand": bool(step.get("on_demand")),
             }
+        )
+    if all(step["on_demand"] for step in plan):
+        raise Refused(
+            f"{source(project()[1])}: every `gate_steps` step sets `on_demand: true`, so the gate would have no step"
+            " and pass every head with no run: list the merge check as a step without `on_demand`"
         )
     if asked := ASKED.get():
         return [step for step in plan if step["name"] in asked]

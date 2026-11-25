@@ -273,3 +273,15 @@ def test_a_named_run_writes_no_gate_event_and_the_gate_does(
     assert events == []
     assert approvals.main(["local-ci", "--record"]) == 0
     assert events[-1] == ("gate", "ok")
+
+
+def test_a_gate_whose_every_step_is_on_demand_is_refused(demand: dict[str, Any]) -> None:
+    # an empty gate would let `gate-record <head>` and land's record check pass a head with no run at all
+    text = gatekeeper_md(
+        "loop:\n  gate_steps:\n"
+        "    - name: reference\n      command: echo ref\n      where: any\n      on_demand: true\n"
+    )
+    (demand["repo"] / POLICY).write_text(text)
+    for every in (False, True):
+        with pytest.raises(approvals.Refused, match="no step"):
+            approvals.gate_plan(every=every)
