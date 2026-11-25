@@ -449,9 +449,9 @@ LEAD_NUDGE_CLOUD = (
 LEAD_UNTRACKED = (
     "Supervisor: your turn ended waiting on something that does not wake you when it ends (a pid,"
     " a log, or a background subagent in a cloud session). Check whether it has ended; if not, wait"
-    " on it with one harness-tracked background `omnigent_agent.py wait-for --log <log> --pid <pid file>"
-    " --budget <its expected length>` (or the subagent's own result), or restart it detached with"
-    " LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
+    " on it in the foreground with `omnigent_agent.py wait-for --log <log> --pid <pid file> --budget 570`, called"
+    " again on `still running` (or the subagent's own result), since a claude-cloud session is not woken by a"
+    " finished background task, or restart it detached with LOOP_NOTIFY set. Then end your turn with DONE, STILL WORKING naming"
     " what wakes you, or USER NEEDED."
 )
 UNTRACKED_WHY = "waits on what does not wake it"

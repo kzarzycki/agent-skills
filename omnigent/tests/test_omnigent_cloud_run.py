@@ -166,4 +166,8 @@ def test_no_pack_text_tells_a_cloud_session_a_background_task_wakes_it() -> None
     ):
         if "changelog" in path.name.lower() or "CHANGELOG" in str(path):
             continue
-        assert "harness tracks" not in " ".join(path.read_text().split()), path
+        flat = " ".join(path.read_text().split())
+        assert "harness tracks" not in flat, path
+    # the nudge every lead gets, a cloud one included, names no tracked background wait either
+    assert "harness-tracked" not in omnigent_agent.LEAD_UNTRACKED
+    assert "in the foreground" in omnigent_agent.LEAD_UNTRACKED
