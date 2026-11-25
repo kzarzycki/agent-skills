@@ -146,9 +146,8 @@ the branch's name starts a segment with (`loop/329-fix`), the same way, and clai
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in gatekeeper.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
-`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
-workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
-prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
+`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop, naming the proofs it lacks, and exits 1, as `land` does for the same PR (one rule, `outside`): `land`
+never takes it into a batch, and named, prints the same line and exits 1, so the loop never merges it and its author merges it their usual way. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
 repository's default branch, through one of three merge queues, picked by the base's rules (`required_checks`) and the
@@ -476,7 +475,7 @@ a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` 
 naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
 any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
-variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
+variable `LOOP_DENY_LIST` names (denied): a line naming a listed term, outside an Omnigent session link, refuses the post before any call to GitHub.
 `verdict` posts a report in the verifier role's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
 (a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
@@ -617,6 +616,7 @@ import ast
 import atexit
 import contextlib
 import contextvars
+import difflib
 import fcntl
 import fnmatch
 import functools
@@ -1038,6 +1038,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
     # the narrowed gate's first cut (classify): the project's build inputs, and the checks a non-product path still gets
     "select": Table(
         build_inputs=list,
+        # globs of config the project says no build or test reads (#2511): non-product, as `docs/*` is, so a docs and
+        # config diff selects no suite; a build input or a check's `paths` still wins
+        non_product=list,
         checks=Rows(paths=list, command=str, unique=("command",)),
         # the checks whose pass is never reused (#2183): each a gate step's name or command, or `gate`'s command
         unkeyed=list,
@@ -1046,7 +1049,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
         # what the merge queue's selection does with a build input (#2445): `floor`, the default, the other changed
         # files' tests plus a lockfile's importers; `full`, the whole suite
         build_inputs_in_queue=Choice(("floor", "full")),
-        optional=("build_inputs", "checks", "unkeyed", "shards", "build_inputs_in_queue"),
+        optional=(
+            "build_inputs",
+            "non_product",
+            "checks",
+            "unkeyed",
+            "shards",
+            "build_inputs_in_queue",
+        ),
     ),
     # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
     "timeouts": Table(test=str, run=str, optional=("test", "run")),
@@ -1130,12 +1140,52 @@ def sections(data: dict[str, Any], file: str) -> dict[str, dict[str, Any]]:
     return data
 
 
+def pack_version() -> str:
+    """The version of the gatekeeper pack running here, from the `.claude-plugin/plugin.json` above this script, else
+    `unversioned`. ponytail: a copy vendored without the manifest (a consumer's `.agents/skills`) names no version."""
+    for folder in Path(__file__).resolve().parents[:6]:
+        manifest = folder / ".claude-plugin" / "plugin.json"
+        if manifest.is_file():
+            try:
+                found = json.loads(manifest.read_text())
+            except (OSError, ValueError):
+                continue
+            if (
+                isinstance(found, dict)
+                and found.get("name") == "gatekeeper"
+                and found.get("version")
+            ):
+                return f"v{found['version']}"
+    return "unversioned"
+
+
+def unknown(file: str, where: str, key: str, known: Any, kind: str = "setting") -> None:
+    """An unknown setting or section: refused when it is a near match to a key `known` holds in the same place (a
+    typo, naming the key it probably meant), else said once per run on stderr and left to the caller to drop, so the
+    run goes on as if it were absent (#2475): a repo's main may set a key only a newer pack knows, and every branch
+    still on an older one would otherwise refuse every command until it merged main."""
+    near = difflib.get_close_matches(key, [k for k in known if isinstance(k, str)], n=1, cutoff=0.8)
+    if near:
+        raise Refused(
+            f"{file} has an unknown {kind} {where}: did you mean `{near[0]}`?"
+            if kind == "setting"
+            else f"{file} has an unknown settings section `{key}`: did you mean `{near[0]}`?"
+        )
+    if where not in DEPRECATED:
+        DEPRECATED.add(where)
+        print(
+            f"{file} sets {where}, which this gatekeeper ({pack_version()}) doesn't know: this repo's policy needs a"
+            " newer pack; merge main",
+            file=sys.stderr,
+        )
+
+
 def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md") -> dict[str, Any]:
     """A section's values checked against its schema (a map of keys, or one type for any key), refusing one that
     doesn't match it and naming the key, so a mistyped setting is never read as a rule nobody wrote. Types match
     exactly, which also refuses what YAML 1.1 reads as another type where a name was meant (`no` as false, `1.10` as
     a float), naming the key, since such a value is never the name written."""
-    for key, value in section.items():
+    for key, value in list(section.items()):
         where = f"`{name}.{key}`"
         if not isinstance(
             key, str
@@ -1143,7 +1193,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             raise Refused(f"{file}'s {where} is no name: quote it")
         kind = schema.get(key) if isinstance(schema, dict) else schema
         if kind is None:
-            raise Refused(f"{file} has an unknown setting {where}")
+            unknown(file, where, key, schema)
+            del section[key]  # as if it were absent
+            continue
         if isinstance(kind, Rows):  # a list of sections, such as `loop.gate_steps`
             if not (
                 isinstance(value, list) and value and all(isinstance(row, dict) for row in value)
@@ -1278,7 +1330,7 @@ def settings(loop: str | None) -> dict[str, Any]:
                 if adapter not in ADAPTERS:
                     raise Refused(unknown_adapter(file, port_name, adapter))
         else:
-            raise Refused(f"{file} has an unknown settings section `{name}`")
+            unknown(file, f"`{name}`", name, SCHEMA, "section")
     return data
 
 
@@ -1317,12 +1369,12 @@ def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
     """docs/agents/issue-tracker.md's settings block, checked against TRACKED: each section's names with their text.
     `components` and `categories` name a label bare (`billing`) or in full (`area:billing`)."""
     data = sections(block(tracker, "issue-tracker.md"), "issue-tracker.md")
-    unknown = [name for name in data if name not in TRACKED]
-    if unknown:
-        raise Refused(f"issue-tracker.md has an unknown settings section `{unknown[0]}`")
+    for name in [name for name in data if name not in TRACKED]:
+        unknown("issue-tracker.md", f"`{name}`", name, TRACKED, "section")
     return {
         name: typed(section, TRACKED[name], name, "issue-tracker.md")
         for name, section in data.items()
+        if name in TRACKED
     }
 
 
@@ -2073,6 +2125,8 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
         if found
         else f"origin holds no rerun record on tree {held}"
     )
+    if missing := rerun_workflow_gap(toplevel(), loop, level, policy_tree(toplevel())):
+        return f"{asked} {said}; {missing}"
     return (
         f"{asked} {said}. Where the repo has CI, a CI run on the head runs `local-ci --record --rerun` and pushes its"
         f" record; with no CI, the verifier starts a fresh session that runs it on the head and names the record's"
@@ -2368,12 +2422,25 @@ SESSION_FIELD = "Session"
 unfielded: str | None = None
 
 
+# the variable a cloud lead, with no server variables, sets to its own session link, and the form that link must have
+SESSION_LINK_ENV = "OMNIGENT_SESSION_LINK"
+SESSION_LINK_FORM = re.compile(
+    r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._~-]+)*/c/[A-Za-z0-9_-]+"
+)
+
+
 def session_link() -> str | None:
     """The lead's Omnigent session link, `<server>/c/<session id>`; None outside Omnigent. The lead's id names the
     lead inside its workers and verifiers too, since they run as its children."""
     lead = os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "").strip()
     server = os.environ.get("RUNNER_SERVER_URL", "").strip().rstrip("/")
-    return f"{server}/c/{lead}" if lead and server else None
+    if lead and server:
+        return f"{server}/c/{lead}"
+    # ponytail: epic #2458 open question "how a cloud lead learns its own link", narrower reading: the host cannot
+    # put the link atop a cloud brief (the session's id exists only after the session does), so the lead exports its
+    # own link (nothing in the cloud brief says so yet: a follow-up), and this reads it when the server variables are absent (a cloud VM has none)
+    given = os.environ.get(SESSION_LINK_ENV, "").strip().rstrip("/")
+    return given if SESSION_LINK_FORM.fullmatch(given) else None
 
 
 def issue_field(number: int, name: str) -> tuple[str | None, str]:
@@ -2513,6 +2580,34 @@ def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
                 f"PR #{pull['number']}: could not assign @{login} ({(exc.stderr or '').strip() or exc})"
             )
     return found
+
+
+# the first line of the record `check build` leaves on a PR: `Owner: <the lead's session link>`, and nothing else
+OWNER = "Owner: "
+
+
+def owner_record(pull: dict[str, Any]) -> list[str]:
+    """Several agent trees (independent groups of agents) work one repo and align only through GitHub, so `check build`
+    writes one `Owner:` record on the PR: the lead's session link (session_link). A line when it cannot write the
+    record, which `check build` counts as a failure; nothing is written again while the PR's last `Owner:` record
+    already says the same.
+    ponytail: the record is written whenever the run has a session to name, and a run with no session at all (a
+    project that does not use sessions) writes none and is not refused, so a single-user project changes nothing; the
+    epic left open what turns the record on, and the owner chose this reading (#2458)."""
+    link = session_link()
+    if not link:
+        return []
+    body = f"{OWNER}{link}\n"
+    kept = [n for n in notes(pull) if n["body"].startswith(OWNER)]
+    if kept and kept[-1]["body"].strip() == body.strip():
+        return []
+    try:
+        comment(pull["number"], body)
+    except subprocess.CalledProcessError as exc:
+        return [
+            f"PR #{pull['number']}: could not write the `Owner:` record ({(exc.stderr or '').strip() or exc})"
+        ]
+    return []
 
 
 def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
@@ -3871,7 +3966,7 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
             return None
     return (
         f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
-        " revert or bot exemption): its author merges it"
+        " revert or bot exemption): land refuses it, and its author merges it"
     )
 
 
@@ -4092,6 +4187,46 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
     except (subprocess.CalledProcessError, OSError) as exc:
         return f"git failed reading {commit}: {exc}"
     return found
+
+
+def pipeline_down(run: int) -> bool:
+    """Whether a job of Actions run `run` shows CI down: cancelled, timed out, never started, or with no steps, so no test
+    ran (breakglass_verify's `infra`, and red_base's refusal)."""
+    broken = {"cancelled", "timed_out", "startup_failure"}
+    return any(job.get("conclusion") in broken or not job.get("steps") for job in run_jobs(run))
+
+
+def red_base(base: str, loop: str | None = None) -> tuple[list[str], list[str]]:
+    """What `base`'s latest push run, the checks on its tip, tells a lander (#2565): (advice, refusals). A required check
+    that failed is advice, with the run's link, since the lander can stop or fix before stacking more onto a red base and
+    a flaky test must not block every landing. It is a refusal when the run's own jobs show the pipeline down, as
+    breakglass_verify reads them: a job cancelled, timed out or never started, or one with no steps, so no test ran. A
+    forge read that fails is one advice line saying so, never silence and never a refusal, and it leaves the refusals
+    already found."""
+    advice: list[str] = []
+    refusals: list[str] = []
+    try:
+        checks = commit_checks(base)
+        wanted = required_checks(base) - OWN
+    except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+        return [
+            f"{base}'s latest push run could not be read from the forge ({err}): check it before landing"
+        ], []
+    for name, run in sorted(checks.items()):
+        if run["conclusion"] not in RED or name in OWN or (wanted and name not in wanted):
+            continue
+        where = f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}"
+        number = re.search(r"/actions/runs/(\d+)", run["url"])
+        try:
+            down = number is not None and pipeline_down(int(number[1]))
+        except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+            advice.append(f"{where}; its jobs could not be read ({err})")
+            continue
+        if down:
+            refusals.append(f"{where}; its jobs show the pipeline down, so no test ran")
+        else:
+            advice.append(f"{where}; fix it or stop before landing more onto it")
+    return advice, refusals
 
 
 def unforced(pull: dict[str, Any]) -> str | None:
@@ -4896,11 +5031,7 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
                 f" ({', '.join(sorted(required))})"
             )
         got = tests(failed["id"])
-        broken = {"cancelled", "timed_out", "startup_failure"}
-        down = any(
-            job.get("conclusion") in broken or not job.get("steps")
-            for job in run_jobs(failed["id"])
-        )
+        down = pipeline_down(failed["id"])
         if got is None and not down:
             why.append(
                 f"{where}: run {failed['id']} published no `{cfg['artifact']}` artifact and no job shows CI down:"
@@ -5314,25 +5445,12 @@ DENY_LIST = "LOOP_DENY_LIST"
 
 
 def denied(text: str) -> None:
-    """Refuse to post `text` when it names a term of the local deny list: the file `LOOP_DENY_LIST` names, one term per
-    line (a name, a repo slug, a hostname; `#` starts a comment), matched ignoring case at word boundaries, since a
-    public repo's comment keeps its first text in GitHub's edit history for good. Without the variable nothing is
-    checked; a list it names that can't be read refuses, since an unread list would let every post through."""
-    if not (where := os.environ.get(DENY_LIST)):
-        return
+    """Refuse to post `text` when it names a term of the local deny list (denylist.py, which has the format and the
+    one allowance: an Omnigent session link); a refusal exits 1 like any other."""
     try:
-        listed = Path(where).expanduser().read_text().splitlines()
-    except OSError as exc:
-        raise Refused(
-            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
-        ) from exc
-    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
-    for number, line in enumerate(text.splitlines(), 1):
-        for term in terms:
-            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
-                raise Refused(
-                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
-                )
+        denylist.check(text)
+    except denylist.Denied as exc:
+        raise Refused(str(exc)) from exc
 
 
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5454,6 +5572,7 @@ def sibling(name: str) -> ModuleType:
 github = sibling("github_adapter")
 # every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
 folding = sibling("folding")
+denylist = sibling("denylist")
 fold, machine = folding.fold, folding.machine
 # the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
@@ -5633,6 +5752,16 @@ def shown_at(root: Path, ref: str, path: Path) -> bytes | None:
         check=False,
     )
     return found.stdout if found.returncode == 0 else None
+
+
+def policy_tree(root: Path) -> str | None:
+    """The ref whose files the policy is read from (policy_file): origin's default branch in a clone with no working
+    tree (policy_ref), else `origin/<base>` of the PR the run acts on (policy_from); None where the policy is the
+    working tree's, which has no such ref."""
+    if (ref := policy_ref(root)) is not None:
+        return ref
+    found = policy_base(str(root), POLICY_BASE.get())
+    return found[1] if found else None
 
 
 def policy_bytes(root: Path, path: Path) -> bytes | None:
@@ -6014,8 +6143,38 @@ MISE_CONFIGS = (
 MISE_TASK_DIRS = ("mise-tasks", ".mise-tasks", ".mise/tasks", ".config/mise/tasks", "mise/tasks")
 
 
-def mise_files(root: Path) -> list[Path]:
-    """The mise configs and file tasks of the repo, in every place mise reads them."""
+def tree_names(root: Path, ref: str) -> list[str]:
+    """Every file path `ref` holds, relative to the repo root; none where git can't list it."""
+    found = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return found.stdout.splitlines() if found.returncode == 0 else []
+
+
+def text_at(root: Path, ref: str | None, path: Path) -> str:
+    """`path`'s text in the working tree, or at `ref` (empty where the ref holds no such file)."""
+    if ref is None:
+        return read(path)
+    return (shown_at(root, ref, path.relative_to(root)) or b"").decode(errors="replace")
+
+
+def mise_files(root: Path, ref: str | None = None) -> list[Path]:
+    """The mise configs and file tasks of the repo, in every place mise reads them: the working tree's, or those `ref`
+    holds."""
+    if ref is not None:
+        names = tree_names(root, ref)
+        return sorted(
+            root / name
+            for name in names
+            if any(
+                fnmatch.fnmatchcase(name, pattern) and name.count("/") == pattern.count("/")
+                for pattern in MISE_CONFIGS
+            )
+            or any(name.startswith(f"{folder}/") for folder in MISE_TASK_DIRS)
+        )
     configs = {path for pattern in MISE_CONFIGS for path in root.glob(pattern) if path.is_file()}
     tasks = {path for name in MISE_TASK_DIRS for path in (root / name).rglob("*") if path.is_file()}
     return sorted(configs | tasks)
@@ -6033,17 +6192,17 @@ def runs_task(text: str, task: str) -> bool:
     return bool(re.search(rf"mise run\b[^\n;&|]*[ '\"]{re.escape(task)}\b", text))
 
 
-def pack_tasks(root: Path) -> set[str]:
-    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does:
-    `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named by their path, `/` as `:`).
-    Needs tomllib (Python 3.11+), imported here so the other commands still start on the pack's 3.9."""
+def task_bodies(root: Path, ref: str | None = None) -> dict[str, str]:
+    """Each mise task's command text by name: `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named
+    by their path, `/` as `:`). Needs tomllib (Python 3.11+), imported here so the other commands still start on the
+    pack's 3.9."""
     import tomllib
 
     bodies: dict[str, str] = {}
-    for path in mise_files(root):
+    for path in mise_files(root, ref):
         if path.suffix == ".toml":
             try:
-                tasks = tomllib.loads(read(path)).get("tasks") or {}
+                tasks = tomllib.loads(text_at(root, ref, path)).get("tasks") or {}
             except tomllib.TOMLDecodeError:
                 continue
             for task, body in tasks.items():
@@ -6051,16 +6210,74 @@ def pack_tasks(root: Path) -> set[str]:
         else:
             folder = next(d for d in MISE_TASK_DIRS if (root / d) in path.parents)
             task = ":".join(path.relative_to(root / folder).parts)
-            bodies[task] = bodies.get(task, "") + read(path)
+            bodies[task] = bodies.get(task, "") + text_at(root, ref, path)
+    return bodies
+
+
+def tasks_matching(bodies: dict[str, str], found: Callable[[str], bool]) -> set[str]:
+    """The tasks whose text `found` accepts, directly or through `mise run <task>` of one that does."""
     named: set[str] = set()
     while grew := {
         task
         for task, body in bodies.items()
-        if task not in named
-        and (PACK_SCRIPT.search(body) or any(runs_task(body, other) for other in named))
+        if task not in named and (found(body) or any(runs_task(body, other) for other in named))
     }:
         named |= grew
     return named
+
+
+def pack_tasks(root: Path) -> set[str]:
+    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does."""
+    return tasks_matching(task_bodies(root), lambda body: bool(PACK_SCRIPT.search(body)))
+
+
+RERUN_STEP = re.compile(r"\blocal-ci\b[^\n;&|]*--rerun\b")
+
+
+def rerun_workflow_gap(
+    root: Path, loop: str | None, level: str, ref: str | None = None
+) -> str | None:
+    """A line, or None: `levels.<level>.rerun` is on, the repo has CI (`loop.ci` is not false), and no workflow under
+    .github/workflows runs `local-ci --record --rerun`, in a step or through a mise task a step runs, so the rerun
+    record `rerun_gap` waits on can never come: a setup problem, not a wait. ponytail: a text scan of the workflows and
+    of mise's tasks, as setup_problems reads them (#2473's open question); where mise's TOML can't be read (Python
+    before 3.11) the tasks are not scanned, so a rerun run only through a task reads as present, never as missing.
+    With `ref` the files are read from that ref, as the policy is (policy_tree), so a clone with no working tree sees
+    the base's workflows; a ref git can't list reads as present too, since nothing then shows one missing."""
+    if no_ci(loop) or not levels(loop)[level].get("rerun"):
+        return None
+    flows = sorted((root / ".github" / "workflows").glob("*.y*ml")) if ref is None else []
+    if ref is not None:
+        names = tree_names(root, ref)
+        if not names:
+            return None
+        flows = [
+            root / name
+            for name in names
+            if fnmatch.fnmatchcase(name, ".github/workflows/*.y*ml") and name.count("/") == 2
+        ]
+    try:
+        tasks = tasks_matching(task_bodies(root, ref), lambda body: bool(RERUN_STEP.search(body)))
+    except ImportError:
+        return None
+    for path in flows:
+        try:
+            jobs = (yaml.safe_load(text_at(root, ref, path)) or {}).get("jobs") or {}
+        except (yaml.YAMLError, AttributeError):
+            continue
+        for body in jobs.values():
+            runs = "\n".join(
+                str(step.get("run", ""))
+                for step in (body.get("steps") or [] if isinstance(body, dict) else [])
+                if isinstance(step, dict)
+            )
+            if RERUN_STEP.search(runs) or any(runs_task(runs, task) for task in tasks):
+                return None
+    return (
+        f"`levels.{level}.rerun` asks an independent rerun, but no workflow under .github/workflows runs"
+        " `local-ci --record --rerun` (directly or through a mise task), so the rerun record can't come: add a rerun"
+        f" workflow, or set `levels.{level}.rerun: false` in docs/agents/gatekeeper.md"
+    )
 
 
 def setup_problems(root: Path) -> list[str]:
@@ -6139,6 +6356,14 @@ def setup() -> int:
         print(line)
     if not problems:
         print("setup: the policy parses and the repo's loop steps run the pack's scripts with uv")
+    try:
+        loop = project()[1]
+        # a warning, not a problem: the exit stays as it was, and a repo learns it before its first high-rated PR
+        for level in levels(loop):
+            if line := rerun_workflow_gap(root, loop, level):
+                print(line)
+    except (Refused, OSError, subprocess.CalledProcessError):
+        pass  # the policy's own refusal is already listed above
     for line in session_notice():  # advice, never a problem: the field is optional
         print(line)
     return 1 if problems else 0
@@ -6211,14 +6436,17 @@ def checked(point: str, pull: dict[str, Any]) -> int:
         )
         return 1 if found else 0
     if point == "merge" and (why := outside(pull, loop)):
+        # land refuses this PR on the same rule (proof_gaps), so the check says so now, never green (#2576)
         print(why)
-        return 0
+        return 1
     if point == "merge":
         base = pull["baseRefName"]
         judge_with_base(base, fetch=True)
     found, issues = gated(point, pull, tracker, loop)
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
+    if point == "build" and not found:
+        found = owner_record(pull)
     covered = breakglass_cover(pull, loop, ran(pull)) if point == "merge" else Covered([], [])
     waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
@@ -6236,9 +6464,13 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     )
     # what land's pre-land check would refuse, after the rest, so check merge never calls clear a PR land leaves out
     waiting += pre_land_holds(pull, loop, bool(found or waiting)) if point == "merge" else []
-    for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
+    red: list[str] = []
+    if point == "merge":
+        said, red = red_base(pull["baseRefName"], loop)
+        advice += said
+    for line in holds(pull, issues, loop) + found + waiting + after + used + advice + red:
         print(line)
-    return 1 if found else WAITING if waiting else 0
+    return 1 if found or red else WAITING if waiting else 0
 
 
 def unopened() -> dict[str, Any]:
@@ -7013,6 +7245,9 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         )
     with policy_from(base):
         tracker, loop = project()
+        host_takes_pre_land(
+            loop
+        )  # before any lock, draft or step: a host that can't run it refuses up front (#2577)
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
         watched["required"] = set(rules) - OWN
@@ -7083,6 +7318,11 @@ def landing_here(
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
     required = rules - OWN
+    said, red = red_base(base, loop)
+    for line in said:
+        print(line)
+    if red:
+        raise Refused("\n".join(red))
     queue = held_by(loop, rules)  # before readied, so a refused policy touches no PR
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:
@@ -8347,6 +8587,20 @@ def pre_land_run(pull: dict[str, Any], work: Path, loop: str | None) -> PreLand 
     return PreLand(command, tip, code, output or "")
 
 
+def host_takes_pre_land(loop: str | None) -> None:
+    """Refuse, before `land` starts any step, a loop.md `pre_land` this host's policy file forbids (host_forbids, the
+    check run_heavy makes at each step): the same rule, said up front as a land run in the wrong place, never as a step's
+    refusal midway or a machine fault (`machine_exit`)."""
+    if not (written := settings(loop).get("pre_land")):
+        return
+    command, words, _ = command_line(written, "pre_land")
+    if rule := host_forbids(words):
+        raise Refused(
+            f"land runs loop.md's `pre_land` {command!r}, which is on this host's {HOST_COMMANDS} ({rule!r}), so this"
+            " host can't land: run land from a cloud session or a host that can take it"
+        )
+
+
 def pre_landed(
     pull: dict[str, Any], base: str, work: Path, loop: str | None, failed: set[int]
 ) -> bool:
@@ -8781,6 +9035,34 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
     return tracker, loop, rules - OWN, queue
 
 
+# the label `land` puts on a PR whose test selection is the whole suite, before QUEUED: `.mergify.yml`'s `solo` queue
+# rule (batch_size 1) takes a PR with it, and the `default` rule one without it, so a slow run never holds or fails a
+# batch of quick PRs while the queue keeps one ordering (#2553)
+SOLO = "loop:solo"
+
+
+def whole_suite(pull: dict[str, Any]) -> str | None:
+    """Why the project's own selection makes this PR's test run the whole suite, None when it is an affected-tests
+    run: loop.md's opt-out `Gate: full`, a loop.md with no `Affected tests:` selector, or a changed build input under
+    gatekeeper.md's `select.build_inputs_in_queue: full`. Only the project's settings decide, never a path or name
+    the pack knows."""
+    text = loop_md()
+    if FULL_GATE.search(text):
+        return "loop.md's `Gate: full`"
+    if narrowing(text) is None:
+        return "loop.md names no `Affected tests:` selector"
+    select = None
+    with contextlib.suppress(Refused):
+        select = settings(project()[1]).get("select")
+    if select and "build_inputs" in select and select.get("build_inputs_in_queue") == "full":
+        head = pull["headRefOid"]
+        point = merge_base_of(pull["baseRefName"], head)
+        cut = selected(point, head) if point else None
+        if cut and cut[0]:
+            return f"build input {cut[0][0]} under `select.build_inputs_in_queue: full`"
+    return None
+
+
 def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1), unless its queue check
@@ -8856,6 +9138,16 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
             label(number, DEQUEUED, add=False)
         queued = QUEUED in labels and ours
         if not queued:
+            # the solo label first: the queue rule that matches QUEUED must already see which rule is the PR's
+            alone = whole_suite(pull)
+            if alone and SOLO not in labels:
+                label(number, SOLO, add=True)
+            elif not alone and SOLO in labels:
+                label(number, SOLO, add=False)
+            if alone:
+                print(
+                    f"{where}: its selection is the whole suite ({alone}): queued in a batch of its own"
+                )
             refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
             if QUEUED not in labels:
                 label(number, QUEUED, add=True)
@@ -9547,6 +9839,13 @@ def merges(
         return
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+    for (
+        pull,
+        _,
+    ) in (
+        done
+    ):  # before drop_records deletes the record, the status that outlives it names it (#2310)
+        unwritten(pull["headRefOid"], LAND, landed_record(pull["headRefOid"]))
     drop_records([pull["headRefOid"] for pull, _ in done])
     numbers = ", ".join(f"#{pull['number']}" for pull, _ in done)
     for pull, tree in done:
@@ -9564,16 +9863,34 @@ def merges(
 
 def installed_scripts(skill: str) -> Path | None:
     """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
-    skill folder (APM's one skills directory), a sibling plugin's (this repo, or a marketplace Claude Code loads in
-    place), else the newest version of a plugin in Claude Code's cache (`<marketplace>/<plugin>/<version>/`) that
-    no update has orphaned. None when none holds it."""
-    # ponytail: three layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    skill folder (APM's one skills directory), a sibling plugin's (a marketplace Claude Code loads in place), a
+    native plugin APM deployed to the project's `.agents/plugins/`, else the newest version of a plugin in Claude
+    Code's cache (`<marketplace>/<plugin>/<version>/`, beside the script or in `~/.claude/plugins/cache`) that no
+    update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
+    searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
+    tests set it, or the checkout is the GITHUB_WORKSPACE of the CI job running there. None when none holds it."""
+    # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    import os
+
     own = Path(__file__).resolve().parents[1]
     plugin = own.parent.parent
-    cached = plugin.parent.parent.glob(f"[!.]*/[!.]*/skills/{skill}")
+    root = plugin.parent
+    checkout = (root / ".git").exists() and (root / ".claude-plugin" / "marketplace.json").is_file()
+    # the pack's own CI runs in the workspace its job checked out: that checkout is the repo it runs in, not a stale clone
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    laid = (
+        not checkout
+        or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
+        or bool(workspace and Path(workspace).resolve() == root)
+    )
+    cached = [
+        *(root.parent.glob(f"[!.]*/[!.]*/skills/{skill}") if laid else []),
+        *(Path.home() / ".claude" / "plugins" / "cache").glob(f"[!.]*/[!.]*/[!.]*/skills/{skill}"),
+    ]
     for folder in [
-        own.parent / skill,
-        *sorted(plugin.parent.glob(f"[!.]*/skills/{skill}")),
+        *([own.parent / skill] if laid else []),
+        *(sorted(root.glob(f"[!.]*/skills/{skill}")) if laid else []),
+        *(sorted(root.glob(f".agents/plugins/*/skills/{skill}")) if laid else []),
         *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
     ]:
         if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
@@ -10464,13 +10781,15 @@ SELECTION_FILES = (str(POLICY), str(LOOP))
 def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[str]]:
     """The narrowed gate's first cut, by gatekeeper.md's `select`: the changed `files` that are build inputs, and the
     `checks` commands the rest touch. A file is a build input when it matches `build_inputs`, is the selection's own
-    policy (SELECTION_FILES), or matches neither NON_PRODUCT nor a check's `paths`: a path whose effect on the build
-    is unclear tests. Without `select` every file is one, as before the setting."""
+    policy (SELECTION_FILES), or matches none of NON_PRODUCT, the project's `non_product` globs (#2511) and a check's
+    `paths`: a path whose effect on the build is unclear tests. A path in `non_product` is no build input, so a docs and
+    config diff selects only the checks its files can fail; a path in `build_inputs` or a check's `paths` still counts. Without `select` every file is one, as before the setting."""
     if "build_inputs" not in (
         select or {}
     ):  # no declaration: every file tests, as before the setting
         return list(files), []
     checks = select.get("checks", [])
+    quiet = (*NON_PRODUCT, *select.get("non_product", []))
     inputs, commands = [], []
     for path in files:
         hit = [
@@ -10481,7 +10800,7 @@ def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[
         if (
             path in SELECTION_FILES
             or any(fnmatch.fnmatch(path, glob) for glob in select["build_inputs"])
-            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in NON_PRODUCT))
+            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in quiet))
         ):
             inputs.append(path)
         commands += [command for command in hit if command not in commands]
@@ -10529,6 +10848,10 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
     if not commands:
         print("affected-tests: 0 selected: non-product", file=sys.stderr)
         return 0
+    budget = run_budget()
+    deadline: float | None = (
+        None  # the budget runs from the first check's start, all checks together
+    )
     for command in commands:
         _, words, sets = command_line(command, "select.checks")
         print(
@@ -10538,9 +10861,23 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
         )
         try:
             with heavy_slot("affected-tests") as (slot, _):
-                code = run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+                deadline = deadline or time.monotonic() + budget
+                code, spent = run_heavy(
+                    words,
+                    env=env | sets | {SLOT_HELD: slot},
+                    budget=max(deadline - time.monotonic(), 0.001),
+                    cwd=root,
+                )
         except OSError as exc:
             raise Refused(f"`{words[0]}` can't run: {exc}") from None
+        if spent is SPENT:
+            print(
+                f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running"
+                f" `{shlex.join(words)}`: a timeout, not a check failure; raise `timeouts.run` in"
+                " gatekeeper.md or fix the check",
+                file=sys.stderr,
+            )
+            return TIMED_OUT
         if code:
             return code
     return 0
@@ -10552,7 +10889,7 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Where it
     can't tell exactly, it runs the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a
     new branch) selects against the merge base instead, and a loop.md without the line runs gatekeeper.md's `select`
-    cut (non_product_run), then, for a change that cut can't settle, the project's full check, `mise run check`. Zero
+    cut (non_product_run, whose checks stop at `timeouts.run` together, #2346), then, for a change that cut can't settle, the project's full check, `mise run check`. Zero
     runs only for a change `select` finds only non-product paths in, saying `0 selected: non-product`. The opt-out
     `Gate: full` (narrowing), the project's own choice, runs `mise run check` too, with the variable unset. Either
     runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit passes through: a
@@ -10657,7 +10994,10 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     if estimate is not None:  # no estimate, nothing to compare, and no file to dirty a checkout
         note_run(root, estimate, time.monotonic() - started, code)
     if spent is SPENT:
-        print(over_budget(budget, root, base if written is not None else None), file=sys.stderr)
+        whole = "`Gate: full`" if FULL_GATE.search(text) else "no `Affected tests:` line"
+        print(
+            over_budget(budget, root, base if written is not None else None, whole), file=sys.stderr
+        )
     return code
 
 
@@ -10819,14 +11159,15 @@ def run_budget() -> int:
         return fallback
 
 
-def over_budget(budget: int, root: Path, base: str | None) -> str:
+def over_budget(budget: int, root: Path, base: str | None, whole: str = "`Gate: full`") -> str:
     """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
-    knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
+    knows it (the whole suite, its cause named by `whole`: `Gate: full`, or a loop.md with no `Affected tests:` line
+    (#2361); else unknown, since the project's own command selects, with the
     count of files the change touches against `base`, the selector's input), and that it ran unsharded: this verb runs
     the project's one command, so with `select.shards` above 1 the line names the `shards` verb that splits a selection
     (#2229)."""
     if base is None:
-        size = "the whole suite (`Gate: full`)"
+        size = f"the whole suite ({whole})"
     else:
         try:
             count = str(len(git("-C", str(root), "diff", "--name-only", base, "HEAD").split()))
@@ -12501,8 +12842,13 @@ def mergify_rendered(policy: str | None) -> str:
         ("checks_timeout", said_span(timeouts(policy)["run"])),
     ):
         if value is not None:
+            # the default rule is the first; `checks_timeout` is every queue rule's (the solo one too)
             text, found = re.subn(
-                rf"^(\s+{key}:) .*$", rf"\g<1> {value}", text, count=1, flags=re.MULTILINE
+                rf"^(\s+{key}:) .*$",
+                rf"\g<1> {value}",
+                text,
+                count=0 if key == "checks_timeout" else 1,
+                flags=re.MULTILINE,
             )
             if not found:
                 raise Refused(f"{MERGIFY_TEMPLATE} has no `{key}` line to render")
@@ -12945,6 +13291,26 @@ def record_commit(record: dict[str, Any]) -> str:
         text=True,
         env=os.environ | RECORDER | (when if record.get("time") else {}),
     ).stdout.strip()
+
+
+LANDED_RECORD = "Landed: record "
+LANDED_NO_RECORD = "Landed: no record"
+
+
+def landed_record(head: str) -> str:
+    """The `land` status description a landed head keeps once drop_records has deleted its record refs (#2310): `Landed:
+    record <name>[, <name>...]`, each name the tail of a `loop-gate/` record branch on the head's tree (`<tree>-<key>`),
+    or `Landed: no record` where origin holds none (or can't be read), so `loop_metrics.py` counts the merges that had
+    none."""
+    held = tree_of(head)
+    try:
+        listed = git("ls-remote", "origin", RECORD_BRANCH.format(f"{held}-*")) if held else ""
+    except (subprocess.CalledProcessError, OSError):
+        listed = ""
+    names = sorted(
+        line.split("\t")[1].rsplit("/", 1)[1] for line in listed.splitlines() if "\t" in line
+    )
+    return (LANDED_RECORD + ", ".join(names))[:140] if names else LANDED_NO_RECORD
 
 
 def drop_records(heads: list[str]) -> None:

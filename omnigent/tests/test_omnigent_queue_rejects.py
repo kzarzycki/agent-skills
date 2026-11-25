@@ -75,6 +75,9 @@ class GitHub:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.comments: list[dict] = []
         self.logs: dict[int, str] = {}
+        self.pr_comments: dict[
+            int, list[dict]
+        ] = {}  # a PR's own comments, where its Owner record sits (#2496)
         self.calls: list[tuple[str, ...]] = []
         self.down = ""
         self.pulls_down = False
@@ -95,7 +98,10 @@ class GitHub:
                 self.log_limit -= 1
                 raise omnigent_agent.RateLimited("gh api: API rate limit exceeded", 0.0)
             return self.logs.get(int(job[1]), "no tests ran\n")
-        if path.startswith("repos/o/r/pulls?"):
+        if own := re.fullmatch(r"repos/o/r/issues/(\d+)/comments\?.*", path):
+            rows = self.pr_comments.get(int(own[1]), [])
+            out = json.dumps(rows if "page=1" in path else [])
+        elif path.startswith("repos/o/r/pulls?"):
             out = "[]"
         elif path.startswith("repos/o/r/issues/comments?"):
             since = unquote(re.search(r"since=([^&]+)", path)[1])
@@ -410,6 +416,56 @@ def test_a_followed_lead_whose_wait_names_the_pr_owns_it(tmp_path, monkeypatch) 
     gh.comments.append(comment(100, 12, jobs=(7,)))
     run(og, registry, monkeypatch, 2)
     assert [s for s, _ in relays(og, 12)] == ["a"]
+
+
+def owner_comment(session: str) -> dict:
+    """The record gatekeeper's `check build` leaves on a PR: `Owner: <the lead's session link>`, one line."""
+    body = f"Owner: https://x.test/c/{session}\n"
+    return {"id": 1, "body": body, "user": {"login": "ci-account"}}
+
+
+def test_a_record_naming_an_unknown_session_is_owned_elsewhere_and_raises_no_event(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Another agent tree's PR: its Owner record names a session this server does not list. One info line, no relay and
+    no manager event, however many polls (#2496)."""
+    registry, og = fleet(tmp_path)
+    og.snaps["a"] = {
+        "labels": {"omni.pr": "o/r#12", "omni.role": "lead"}
+    }  # even a label would not make it ours
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    gh.pr_comments[12] = [owner_comment("gone-session")]
+    run(og, registry, monkeypatch, 3)
+    assert not relays(og, 12) and not acts(og, "o/r#12")
+    assert not [e for e in events_of(registry) if e["kind"] == "dequeued"]
+    assert capsys.readouterr().out.count("o/r#12 left the merge queue: owned elsewhere") == 1
+
+
+def test_a_record_naming_a_known_session_relays_to_that_lead(tmp_path, monkeypatch) -> None:
+    """The record, not a label or a report, names the lead: its session is listed, so it is told."""
+    registry, og = fleet(tmp_path, k={"labels": {"omni.role": "lead"}})
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    gh.pr_comments[12] = [
+        owner_comment("old"),
+        owner_comment("k"),
+    ]  # the last record counts
+    run(og, registry, monkeypatch, 3)
+    assert [s for s, _ in relays(og, 12)] == ["k"]
+    assert not acts(og, "o/r#12")
+    assert [r for r in gh.calls if any("issues/12/comments" in a for a in r)]  # read, once
+    assert len([a for c in gh.calls for a in c if "issues/12/comments" in a]) == 1
+
+
+def test_owner_record_reads_the_session_in_the_last_record() -> None:
+    assert omnigent_agent.owner_record([owner_comment("s1")]) == "s1"
+    assert omnigent_agent.owner_record([owner_comment("s1"), owner_comment("s2")]) == "s2"
+    assert (
+        omnigent_agent.owner_record([{"body": "Assigned: @x"}, {"body": "Owner: elsewhere\n"}])
+        == ""
+    )
+    assert omnigent_agent.owner_record([{"body": "no record"}]) is None
 
 
 @pytest.mark.parametrize("failure", ["no lead", "unarchive", "relay"])

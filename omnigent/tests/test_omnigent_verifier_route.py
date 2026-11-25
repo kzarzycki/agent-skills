@@ -332,3 +332,157 @@ def test_a_start_here_sees_a_host_with_room() -> None:
     """This module imports none of test_omnigent_agent's fixtures: a gate's own load once made its starts wait 600 s
     on the real check and fail."""
     assert omnigent_agent.capacity() == (True, "")
+
+
+def test_gemini_route_from_a_cloud_vm_is_refused_naming_the_coordinator(
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review")
+    argv = [
+        "start",
+        "codex",
+        "t",
+        "b.md",
+        str(tmp_path / "r.md"),
+        "--role",
+        role_file("verifier.md"),
+    ]
+    assert omnigent_agent.main([*argv, "--verifier-route", "gemini", "--host", "host"]) == 1
+    err = capsys.readouterr().err
+    assert "started by the coordinator on a host with an Omnigent server route" in err
+    assert og.sessions == {}
+    with pytest.raises(omnigent_agent.Fail, match="coordinator"):
+        omnigent_agent.apply_route(route("gemini", host="kris"))
+
+
+def fake_gatekeeper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, said: str = ""
+) -> Path:
+    """An installed gatekeeper that logs its arguments and exits ``code``; the log is returned."""
+    folder = tmp_path / "gk"
+    folder.mkdir(exist_ok=True)
+    calls = tmp_path / "gk-calls"
+    monkeypatch.setattr(omnigent_agent, "installed", lambda skill: folder)
+    real = subprocess.run
+
+    def run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if cmd[:2] == ["uv", "run"]:
+            calls.write_text(" ".join(cmd[cmd.index("record") :]))
+            return subprocess.CompletedProcess(cmd, code, "", said)
+        return real(cmd, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(omnigent_agent.subprocess, "run", run)
+    return calls
+
+
+def test_record_verdict_posts_the_report_through_record_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = fake_gatekeeper(tmp_path, monkeypatch, 0)
+    report = tmp_path / "r.md"
+    report.write_text("Head: abc\nSATISFIED: yes\n")
+    omnigent_agent.record_verdict(7, report)
+    assert calls.read_text() == f"record verdict 7 {report}"
+    assert "BLOCKED" not in report.read_text()
+
+
+def test_record_verdict_that_fails_says_so_on_the_report_and_to_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_gatekeeper(tmp_path, monkeypatch, 1, "refused: no Head: line")
+    report = tmp_path / "r.md"
+    report.write_text("SATISFIED: yes\n")
+    with pytest.raises(omnigent_agent.Fail, match="^record verdict BLOCKED: exit 1: refused"):
+        omnigent_agent.record_verdict(7, report)
+    assert report.read_text().splitlines()[-1].startswith("record verdict BLOCKED:")
+
+
+def test_gemini_route_run_records_its_verdict_like_every_route(
+    tmp_path: Path,
+    role_file: Callable[[str], str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    og = FakeOmnigent(reply="done")
+    og.harnesses = {"antigravity-native-ui": "antigravity-native"}
+    og.host = lambda n: {"host": og.host_id}[n]  # type: ignore[method-assign]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    for name in ("check_out_head", "refuse_stale_workspace"):
+        monkeypatch.setattr(omnigent_agent, name, lambda *a, **k: None)
+    (tmp_path / "b.md").write_text("review")
+    done = "Head: abc\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\n"
+
+    def wait(og_: object, sid: str, report: Path, *a: object, **k: object) -> str:
+        report.write_text(done)
+        return str(report)
+
+    monkeypatch.setattr(omnigent_agent, "wait", wait)
+    calls = fake_gatekeeper(tmp_path, monkeypatch, 0)
+    argv = ["run", "codex", "t", "b.md", str(tmp_path / "r.md"), "--confirm-seconds", "0"]
+    argv += ["--role", role_file("verifier.md"), "--pr", "7"]
+    argv += ["--verifier-route", "gemini", "--host", "host"]
+    assert omnigent_agent.main(argv) == 0
+    assert calls.read_text() == f"record verdict 7 {tmp_path / 'r.md'}"
+
+
+def test_a_report_on_another_host_is_brought_home_before_it_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The step `run` and `wait` share: a remote host's report is read through its file API, written here,
+    and only then recorded, where recording it in place would find no file."""
+    og = FakeOmnigent()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        omnigent_agent, "file_text", lambda og_, sid, path, far=False: "Head: abc\nSATISFIED: yes\n"
+    )
+    calls = fake_gatekeeper(tmp_path, monkeypatch, 0)
+    omnigent_agent.record_collected(og, "s0", Path("/there/r.md"), 7, far=True)
+    assert calls.read_text() == "record verdict 7 tmp/loop/r.md"
+    assert (tmp_path / "tmp/loop/r.md").read_text().startswith("Head: abc")
+    # on this host the report is recorded where it is
+    (tmp_path / "x.md").write_text("Head: abc\n")
+    omnigent_agent.record_collected(og, "s0", tmp_path / "x.md", 8, far=False)
+    assert calls.read_text().startswith("record verdict 8 ")
+
+
+@pytest.mark.parametrize(
+    ("title", "report", "extra"),
+    [
+        ("t", "r.md", ["--same-family"]),
+        ("Fallback verifier for PR 7", "r.md", []),
+        ("t", "verifier-2.md", []),
+    ],
+    ids=["same-family", "title", "report"],
+)
+def test_fallback_verifier_start_without_the_verifier_role_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    title: str,
+    report: str,
+    extra: list[str],
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review")
+    argv = ["start", "claude", title, "b.md", str(tmp_path / report), "--pr", "7", *extra]
+    assert omnigent_agent.main(argv) == 1
+    assert "without --role" in capsys.readouterr().err
+    assert og.sessions == {}
+
+
+def test_worker_start_with_a_pr_is_not_taken_for_a_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = argparse.Namespace(
+        pr=7, same_family=False, title="Fix the parser", report=tmp_path / "worker.md"
+    )
+    assert not omnigent_agent.verifier_without_role(args)

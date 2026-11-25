@@ -132,6 +132,58 @@ jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) an
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) runs have no draft.
 
+#### Moving a repo onto the rule set
+
+A repo keeps only what really differs per repo: its loop configuration, the `docs/agents/gatekeeper.md`
+block (step 2) and the `Affected tests:`, `Acceptance tests:` and `Acceptance budget:` lines in `loop.md`.
+Anything else repo-local that implements a loop rule is a copy to delete (step 3), since a rule fix in the
+pack reaches a copy only by hand and each copy drifts on its own. A repo's migration story is then the
+release tag, the config block and one row per deleted file with its kind from step 3, and links here.
+
+1. **Install the pack at a release tag.**
+   - `apm.yml` pins `kzarzycki/agent-skills/engineering` to an `engineering-v*` tag; `apm install` writes
+     `.claude/` and `.agents/`. Renovate or a scheduled `apm update` moves the pin.
+   - Delete what reads the pack another way: a host checkout path, a vendored copy of a pack directory, a
+     script that copies skill files in.
+   - `apm audit` shows no local edit to a deployed skill. A needed change goes upstream as an agent-skills
+     issue.
+2. **State the project's facts in `docs/agents/gatekeeper.md`.** The rules are the pack's; the repo supplies
+   only its facts:
+
+   | Key | What the repo says | Rule |
+   |---|---|---|
+   | `land.queue` | `mergify`, `github`, or none | R6 |
+   | `land` batch keys | batch size and wait, or per-PR | R6 |
+   | `select.layers` | which paths are docs, agent config, CI config, infra; which checks each reaches | R2 |
+   | `select.build_inputs` | lock files, toolchain pins, test-runner config, and the affected-test selector's own code and map: a change to the selector can't be judged by the selector it changes, so it runs the whole suite | R3 |
+   | `select.unkeyed` | checks every PR head runs | R1 |
+   | `select.shards` | optional, only where runners allow | R3 |
+   | `timeouts` | `test` and `run` | every run's limit |
+
+   `docs/agents/loop.md` names the selector, `Affected tests: <command>` (R3), and, where the project has
+   acceptance checks, `Acceptance tests: <command>` and `Acceptance budget: <spec minutes>, <nightly minutes>`.
+3. **Delete the local copies, by kind.**
+
+   | Kind | What it looks like | Replaced by |
+   |---|---|---|
+   | Selector | a script that maps changed paths to tests, or a path-filter file read by repo code | the pack's `affected-tests` with its fallback to the narrowest set it can name; paths move to `select` |
+   | Red rerun | a script or workflow step that reruns failed tests or a failed job | R5 |
+   | Queue selection | a queue job that reruns each PR's own tests or the whole suite | the cross-change set with the floor (R6) |
+   | Push run | a run on main for a tree the queue tested | R7 |
+   | Nightly | an unconditional cron, or a repo-local "main moved" guard | the pack's nightly (R7) |
+   | Release or tag run | a full-suite run on a tagged tree the queue or nightly already tested | a read of the record (R1) |
+   | Hook | a pre-push hook that runs product tests | the recorded head run (R1) |
+   | Limits | per-test timeouts, job `timeout-minutes`, queue timeouts set by hand | `timeouts` |
+   | Carry rule | prose in `loop.md` saying when a result carries to a new tree | R1 |
+   | Duplicate skill text | a second copy of a pack skill under another path | one path |
+
+   Keep only the loop configuration from step 2, plus the project's own check commands (`check:*` tasks and
+   the like), which are the product's checks, not loop rules. A file that decides when, where or how often a
+   check runs is a loop rule: if it isn't step 2's configuration, it's a copy to delete.
+
+After a migration, the repo's loop-specific content is the `gatekeeper.md` block and the `Affected tests:`,
+`Acceptance tests:` and `Acceptance budget:` lines, and nothing else.
+
 #### A check runs only if it can fail because of the change
 
 **A check runs only if it can fail because of this change.** A check's result is known, so the check doesn't run, when both hold:
@@ -148,7 +200,7 @@ A check can fail again on inputs that look identical when it reads something out
 
 The rule is stated in inputs and results only, so it needs no language or tool. What a project knows about its own checks goes in gatekeeper.md: which files are build inputs (`select.build_inputs` and `checks`), which environment names a check reads (`local_ci_env`), and which checks are unkeyed (`select.unkeyed`).
 
-When the loop can't tell whether a check's inputs changed, it treats them as changed. An affected-test selector that can't tell exactly which tests a change touches runs the narrowest set it can still name, never nothing: a precise selector that can't run (no per-test map, no testmon data, a base git can't resolve) falls back to the next coarser selection, a base to the merge base with the default branch; a test-setup file (a `conftest.py`) runs the tests under its directory; a file a test reads by path runs that test; a file no test names runs its package's or directory's tests; a build input (`select.build_inputs`) runs the whole suite. It selects zero only when `select` puts every changed path in a layer whose checks reach no product test, and says so in one line: `0 selected: <layer>`.
+When the loop can't tell whether a check's inputs changed, it treats them as changed. An affected-test selector that can't tell exactly which tests a change touches runs the narrowest set it can still name, never nothing: a precise selector that can't run (no per-test map, no testmon data, a base git can't resolve) falls back to the next coarser selection, a base to the merge base with the default branch; a test-setup file (a `conftest.py`) runs the tests under its directory; a file a test reads by path runs that test; a file no test names runs its package's or directory's tests; a build input (`select.build_inputs`) runs the whole suite. It selects zero only when `select` puts every changed path in a layer whose checks reach no product test, and says so in one line: `0 selected: <layer>`. A selection over half the suite runs as picked (#1872), and the run's record says `0 selected: <layer>`, the narrowed record still keyed `select.checks: none`.
 
 Each derived rule follows from the one above.
 
@@ -180,13 +232,13 @@ A head rated at a level whose gatekeeper.md `levels.<level>.rerun` is on (off by
 - Owner-only merges (`risk.critical_paths`, and a project's own owner-only paths) stay as Approvals and proof
   says: the owner's go is on the head that lands.
 
-Narrowed mode is loop.md's `Affected tests: <command>` line without the opt-out line `Gate: full`. Its command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, as one task (such as `mise run check-fast`), reading the base from the `Gate base:` variable, else `GATE_BASE`. It selects from the diff against that base and from nothing else the pack provides: it runs on a clean checkout, often a fresh clone, a cloud VM or a CI runner, with only the base variable set. A selector that can't tell which tests a change touches (a stateful selector such as pytest-testmon without its local data file, or a `<rev>` git can't resolve, such as the all-zeros SHA of a new branch) runs the narrowest set it can still name, as A check runs only if it can fail because of the change says, and never nothing for a change it can't classify. A stateful selector says in the project's `docs/agents/` files how the project supplies its state (CI caching it keyed on the base commit, say). The worker runs it as `uv run <gatekeeper>/scripts/approvals.py affected-tests`, against the merge base with the branch's base (the commit hook's `lint:` tasks ran at commit); a merge queue's batch check runs `affected-tests --base <rev>` with the base tip the batch merges onto, so it selects over the batch's combined diff. The `gate` line's variable assignments do not apply to the narrowed command: a project writes any variable its checks need on the `Affected tests:` line itself. With `Gate: full`, a merge queue's batch check runs the full check instead of the selection.
+Narrowed mode is loop.md's `Affected tests: <command>` line without the opt-out line `Gate: full`. Its command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, as one task (such as `mise run check-fast`), reading the base from the `Gate base:` variable, else `GATE_BASE`. It selects from the diff against that base and from nothing else the pack provides: it runs on a clean checkout, often a fresh clone, a cloud VM or a CI runner, with only the base variable set. A selector that can't tell which tests a change touches (a stateful selector such as pytest-testmon without its local data file, or a `<rev>` git can't resolve, such as the all-zeros SHA of a new branch) runs the narrowest set it can still name, as A check runs only if it can fail because of the change says, and never nothing for a change it can't classify. A stateful selector says in the project's `docs/agents/` files how the project supplies its state (CI caching it keyed on the base commit, say). The worker runs it as `uv run <gatekeeper>/scripts/approvals.py affected-tests`, against the merge base with the branch's base (the commit hook's `lint:` tasks ran at commit); a merge queue's batch check runs `affected-tests --base <rev>` with the base tip the batch merges onto, so it selects over the batch's combined diff. The `gate` line's variable assignments do not apply to the narrowed command: a project writes any variable its checks need on the `Affected tests:` line itself. With `Gate: full`, a merge queue's batch check runs the full check instead of the selection. The pre-queue run is that same selection and nothing narrower: the worker's proof before `READY FOR VERIFIER` and the verifier's own run are the `Affected tests:` command (`approvals.py affected-tests`), run in the queue's environment so that a root rule test the PR did not change, and a test that reads where it runs, fail before the PR is queued, never "the changed test files" (#2455; whether `check build` or `land` refuses a head with no recorded run is left to the project's policy).
 
 The risk of this model is a main that breaks between nightlies: a test the selector misses (a data file, config, a script run as a subprocess), or two PRs each green alone that break together where no queue tests them together. Its guard is the nightly's full suite: on red, `nightly.py red` opens one issue naming the merges since the last green (Nightly), from which a lead bisects and lands a fix or a revert through the loop. Without the `Affected tests:` line, the worker runs `mise run test:changed`, and `approvals.py check build` says in one line that the line is missing (not under `Gate: full`, which chose it).
 
 `approvals.py local-ci --record` records a gate pass by tree, for the cases a project still asks one for (a configured `head_proof`, a `host` step of `gate_steps`, the deprecated `check queue`: Where work runs); the loop runs it on a PR head only in those cases and for the one run a worker makes on its head (worker.md, Report), never as a gate, under `ci: false` too; a ready PR's CI reads that record by the head's tree, not the test merge commit's (the project's CI looks it up with `gate-record <head>`). It runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
-to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
+to the base repo as the branch `loop-gate/<tree>-<key>` (a plain git push, so a cloud session records and publishes with no host credential; a project's own gate script never writes a record, it is `gate` and this call runs it, a red run recording nothing), named by its tree and command, so `local-ci <pr>` at landing
 posts that pass rather than running the check again (with no usable pass it refuses, naming the head, tree, record branch and what was wrong with a record found; `--run` runs the check on this host): in this clone for any commit with the same tree and gate
 command (a rebase or reworded commit keeps its tree), in any other, host or cloud session, from that branch, at every
 risk, through the same code. The branch is the one route a pass travels: the `gate` commit status the run and each
@@ -263,7 +315,7 @@ nightly runs the project's full suite, which holds every spec's acceptance check
 `acceptance/<issue>/` folders; the workflow itself (its schedule, where it runs) is the
 project's. It runs only when the default branch moved since its last green (the newest scheduled
 run that passed, read from the forge): on an unmoved branch it can fail because of no change, so it
-skips and links that run (A check runs only if it can fail because of the change): the nightly's first step calls `python3 <this skill's folder>/scripts/nightly.py moved schedule`, and a push run on the default branch calls `moved push`, which skips a tree a merge queue's batch run already tested. A tag-check job that runs the nightly's suites calls `moved tag` first, which skips them when a green nightly ran the tagged commit (any successful scheduled run of `engineering-ci.yml` on that SHA; the job needs `actions: read`); only the suites the nightly runs are guarded. Each reads the forge with the job's `GITHUB_TOKEN` (`actions: read`), writes `skip=true|false` to `GITHUB_OUTPUT`, names the run it found in the step summary, and runs the checks on any forge failure; `push` reads the batches of the policy's `land.queue` (`mergify`: `mergify/merge-queue/` `pull_request` runs; `github`: `gh-readonly-queue/` `merge_group` runs, so the workflow needs that trigger; unset: both) and says which it read. When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
+skips and links that run (A check runs only if it can fail because of the change): the nightly's first step calls `python3 <this skill's folder>/scripts/nightly.py moved schedule`, and a push run on the default branch calls `moved push`, which skips a tree a merge queue's batch run already tested. A tag-check job that runs the nightly's suites calls `moved tag` first, which skips them when a green nightly ran the tagged commit (any successful scheduled run of `engineering-ci.yml`, or of the workflow file `--nightly <file>` names, on that SHA; the job needs `actions: read`); only the suites the nightly runs are guarded. Each reads the forge with the job's `GITHUB_TOKEN` (`actions: read`), writes `skip=true|false` to `GITHUB_OUTPUT`, names the run it found in the step summary, and runs the checks on any forge failure; `push` reads the batches of the policy's `land.queue` (`mergify`: `mergify/merge-queue/` `pull_request` runs; `github`: `gh-readonly-queue/` `merge_group` runs, so the workflow needs that trigger; unset: both) and says which it read. When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
 --last-green <sha> --red <sha> --run <url>`, with the newest default-branch commit a nightly
 passed on, the one it failed on and the run's link, from a checkout holding the history
 between them. It lists the PRs merged on the default branch since the last green (first-parent
@@ -653,10 +705,10 @@ With `opt_out: true` in gatekeeper.md, a developer may keep their own PRs out of
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
 PR. `check merge` then reads a PR with no loop trail (no verifier review, no
 `Approved: spec` record or `approved:spec` on an issue it links, no `Reverts #<n>` line,
-not an exempt bot PR) as outside the loop: it prints one line saying so and exits 0, so the
-`loop:approvals` status is green and the PR's author merges it their usual way, under the
-repo's own rules. `land` leaves it out of every batch and, named, prints the same line and
-exits 1, so no agent merges it. Risk rules and `risk:high` hold no PR outside the loop; the project
+not an exempt bot PR) as outside the loop: it prints one line saying so, naming the proofs it lacks, and exits 1,
+as `land` does for the same PR: `land` leaves it out of every batch and, named, prints the same
+line and exits 1, so no agent merges it and the PR's author merges it their usual way, under the
+repo's own rules. Risk rules and `risk:high` hold no PR outside the loop; the project
 accepts that by setting it. A spec a policy covers is no trail, since under
 `spec.auto: true` every issue is covered. Any trail puts the PR back under every proof. Without
 it, a PR with no trail fails the gate.
@@ -745,7 +797,7 @@ or the owner's private network.
 - **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
   `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the
-  review or comment to read, to that kept worker with `send --pr` while it is still there,
+  review or comment to read, to that kept worker with `send --pr --wait` while it is still there,
   since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
   else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
@@ -771,8 +823,11 @@ or the owner's private network.
   instance build together, plus at most one compile for the verifier's mutation check, since
   taking builds off the host is the split's point; a worker's iterations compile only in the
   cloud.
-- **Nothing on GitHub names a host or a path**: not the report, the verdict, the evidence or
-  a brief's text quoted there, since a public repo publishes them.
+- **Nothing on GitHub names a host or a path, except an Omnigent session link**: not the report,
+  the verdict, the evidence or a brief's text quoted there, since a public repo publishes them. A
+  session link (`<scheme>://<host>[:port]/c/<32 hex id>`) may go in issues, PRs and comments, and the
+  deny-list check lets a term inside one through; the same host name outside a link, and any
+  filesystem path, still stay off GitHub.
 - **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host; the sharing a
@@ -789,7 +844,7 @@ or the owner's private network.
   keeping the run (`sys_session_keep`) when it exits non-zero. The script never prints a secret's value, in its own output, a
   traceback or the verifier's, and a refused seed is described by its length, hash and days left, which is how to check one. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
-  the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr`, asking it to save the
+  the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr --wait`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort

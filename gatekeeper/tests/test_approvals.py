@@ -341,7 +341,6 @@ def test_the_label_rule_is_the_loops_fixed_set_plus_the_tracker_files_sections()
 @pytest.mark.parametrize(
     ("settings", "refused"),
     [
-        ('sizes:\n  XXL: ""\n', "issue-tracker.md has an unknown settings section `sizes`"),
         ("components: api\n", "issue-tracker.md has a setting `components` outside a section"),
         ("[components]\napi\n", "issue-tracker.md's settings block is not YAML"),
         (
@@ -603,14 +602,15 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
 @pytest.mark.parametrize(
     ("settings", "refused"),
     [
-        ("loop:\n  caps: 3\n", "loop.md has an unknown setting `loop.caps`"),
-        ("risk:\n  path:\n    - a/**\n", "loop.md has an unknown setting `risk.path`"),
-        ("plan:\n  paths:\n    - a/**\n", "loop.md has an unknown setting `plan.paths`"),
+        ("loop:\n  caps: 3\n", "loop.md has an unknown setting `loop.caps`: did you mean `cap`?"),
+        (
+            "risk:\n  path:\n    - a/**\n",
+            "loop.md has an unknown setting `risk.path`: did you mean `paths`?",
+        ),
         (
             "practice:\n  reviews: code-review\n",
-            "loop.md has an unknown setting `practice.reviews`",
+            "loop.md has an unknown setting `practice.reviews`: did you mean `review`?",
         ),
-        ("approvals:\n  spec: auto\n", "loop.md has an unknown settings section `approvals`"),
         ("spec: auto\n", "loop.md has a setting `spec` outside a section"),
         (
             "bot:\n  paths:\n    - uv.lock\n",
@@ -630,7 +630,6 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
             "spec:\n  auto:\n    - bugs\n",
             "loop.md's `spec.auto` must be true, false or a list of bug, follow-up, sub-issue, not ['bugs']",
         ),
-        ("loop:\n  spec: auto\n", "loop.md has an unknown setting `loop.spec`"),
         (
             "risk:\n  labels: size:L, size:XL\n",
             "loop.md's `risk.labels` must be a list of strings, not 'size:L, size:XL'",
@@ -3620,6 +3619,8 @@ def lands(
         if args[:2] == ("api", "-i"):
             # land --wait's ETag read of a head's checks between rounds (#1915)
             return checks_if_changed(args, pulls)
+        if args[:2] == ("api", "--paginate") and "/commits/main/check-runs" in args[2]:
+            return ""  # the base's push run, which land names when red (#2565): none here
         raise AssertionError(args)
 
     def comment(number: int, body: str) -> None:
@@ -3871,6 +3872,22 @@ def pre_land(lands: dict[str, Any], configured: bool = True) -> Path:
             )
         )
     return runs
+
+
+def test_a_host_that_forbids_the_pre_land_check_refuses_land_up_front(
+    lands: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = pre_land(lands)
+    policy = tmp_path / "host-commands"
+    policy.write_text("check.py  # the host takes no pre-land check\n")
+    monkeypatch.setenv("AGENT_HOST_COMMANDS", str(policy))
+    lands["open"](7, {"7.txt": "7\n"})
+    code, lines = lands["land"]()
+    # before any step: no check ran, nothing merged, and the reason is the place, not a machine fault
+    assert code == 1 and not runs.exists() and lands["merged"]() == []
+    said = "\n".join(lines)
+    assert "this host can't land: run land from a cloud session or a host that can take it" in said
+    assert "machine fault" not in said and "no gate record" not in said
 
 
 def test_a_pr_the_pre_land_check_refuses_is_left_out_with_one_comment_and_stays_ready(
@@ -4964,7 +4981,7 @@ def test_a_batch_squash_lands_the_gated_tree_on_the_commit_before_it(
 OPTED = add(LOOP, "loop", "opt_out: true\n")
 OUTSIDE = (
     "PR #7 is outside the loop (loop.md `opt_out: true`, no verifier review, spec approval,"
-    " revert or bot exemption): its author merges it"
+    " revert or bot exemption): land refuses it, and its author merges it"
 )
 
 
@@ -5495,10 +5512,16 @@ def test_a_pr_with_no_loop_trail_is_outside_the_loop_where_opt_out_is_allowed(
     mine = landing["pull"]
     mine["reviews"]["nodes"] = []
     mine["closingIssuesReferences"]["nodes"] = [specced(1, "kind:bug")]
-    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
+    # land refuses this PR, so check merge exits 1 on the same line (#2576)
+    assert gate(capsys, "check", "merge", "7") == (1, [OUTSIDE])
     # risk rules hold no PR outside the loop: the project accepted that with the setting
     mine["labels"]["nodes"].append({"name": "risk:high"})
-    assert gate(capsys, "check", "merge", "7") == (0, [OUTSIDE])
+    assert gate(capsys, "check", "merge", "7") == (1, [OUTSIDE])
+    # a verifier review on the head puts it back in the loop: check merge no longer says it is outside
+    mine["labels"]["nodes"].pop()
+    mine["reviews"]["nodes"] = [VERDICT]
+    assert OUTSIDE not in gate(capsys, "check", "merge", "7")[1]
+    mine["reviews"]["nodes"] = []
     # without the setting, the same PR fails the gate as before
     Path("docs/agents/loop.md").write_text(LOOP)
     code, lines = gate(capsys, "check", "merge", "7")
@@ -8864,6 +8887,48 @@ def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_c
     }
 
 
+def test_a_cloud_session_gate_run_records_and_pushes_its_pass_with_no_host_credential(
+    github: list[tuple[Any, ...]],
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#2579: in a session where Claude Code sets CLAUDE_CODE_REMOTE and GitHub refuses the status write, a green
+    `local-ci --record` leaves the head's record in the clone and pushes it as a branch (a plain git push, no host
+    credential), which `gate-record` and another clone read."""
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    head = published_on_a_with(tmp_path, monkeypatch, no_status)
+    out = capsys.readouterr().out
+    assert approvals.in_cloud()
+    assert f"published in origin as the record branch {branch_of(head)}" in out
+    local = tmp_path / "a" / ".git" / "approvals" / "local-ci"
+    [record] = local.glob("*.json")
+    assert json.loads(record.read_text())["head"] == head
+    monkeypatch.chdir(tmp_path / "b")
+    assert approvals.main(["gate-record", head]) == 0
+
+
+def test_a_cloud_session_gate_run_that_fails_records_and_pushes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    real_refs(monkeypatch)
+    origin, a = tmp_path / "origin.git", tmp_path / "a"
+    git_in(tmp_path, "init", "-q", "--bare", str(origin))
+    committed(a)
+    git_in(a, "remote", "add", "origin", str(origin))
+    git_in(a, "push", "-q", "origin", "HEAD:refs/heads/main")
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.chdir(a)
+    monkeypatch.setattr(approvals, "LOCAL_CI", ["false"])
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert "nothing recorded" in capsys.readouterr().out
+    assert not list((a / ".git" / "approvals" / "local-ci").glob("*.json"))
+    assert "loop-gate" not in git_in(origin, "for-each-ref", "--format=%(refname)")
+    assert approvals.main(["gate-record", git_in(a, "rev-parse", "HEAD").strip()]) == 1
+
+
 def test_gate_record_reuses_origins_record_only_for_the_same_tree_and_command(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -9307,7 +9372,42 @@ def test_a_landing_leaves_no_record_of_the_landed_head_and_publishes_no_pass_on_
     approvals.merges([({**pull(), "headRefOid": head}, tree)], "main", head, LOOP, set())
     assert loop_gate_branches(origin) == set()
     assert "published in origin" not in capsys.readouterr().out
-    assert [found["context"] for found in hub[head]] == ["land"]
+    # the status the head keeps names the record the clean-up deleted (#2310)
+    assert [found["context"] for found in hub[head]] == ["land", "land"]
+    assert hub[head][0]["description"] == f"Landed: record {name_of(head)}"
+
+
+def test_a_landing_of_a_head_with_no_record_says_so_in_its_land_status(
+    hub: dict[str, list[dict[str, Any]]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#2310: merges() runs no gate and publishes no pass on the new tip (#1872); the record clean-up leaves origin with no
+    record of the landed head, and the tip shows only the `land` status."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    b, origin = tmp_path / "b", tmp_path / "origin.git"
+    tree = approvals.tree_of(head)
+    git_in(b, "push", "-q", "origin", f":{branch_of(head)}")  # a head that was never recorded
+    assert loop_gate_branches(origin) == set()
+    listing = open_prs()
+
+    def gh(*args: str) -> str:
+        if args[:2] == ("pr", "merge"):
+            git_in(b, "push", "-q", "origin", f"{head}:refs/heads/main")
+            return ""
+        return listing(*args)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    # the squash body is tested on its own
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: {"state": "MERGED"})
+    monkeypatch.setattr(approvals, "comment", lambda *_a: None)
+    hub.clear()
+    capsys.readouterr()
+    approvals.merges([({**pull(), "headRefOid": head}, tree)], "main", head, LOOP, set())
+    assert loop_gate_branches(origin) == set()
+    assert [found["context"] for found in hub[head]] == ["land", "land"]
+    assert hub[head][0]["description"] == "Landed: no record"
 
 
 def test_land_deletes_the_record_branches_of_the_prs_it_merged(

@@ -67,7 +67,7 @@ record their answer.
   Delegated decisions). Every other question, approval or step goes on the morning's
   Decide first, and the lead carries on with what does not depend on it.
 - Log every decision you take in the project's decision log: what, why, and how to undo
-  it.
+  it (chief-of-staff `scripts/decisions.py log`, which refuses an entry with no undo).
 - Stay inside the boundaries. A step that would cross one is not taken: it goes on Decide
   first.
 - At the end time, start nothing new and move to the morning. A lead still running is
@@ -76,7 +76,8 @@ record their answer.
 ## 3. Morning
 
 - Draw the digest of the night's decisions from the project's decision log with the
-  project's digest.
+  project's digest (chief-of-staff `scripts/decisions.py digest`, which sends nothing;
+  after you send it by hand, `decisions.py sent --via <where>`).
 - Write the report page where the project keeps it (a file, a published page, a console's
   digest). Its sections, in order:
   1. **Decide first:** each item that waits for the owner, with its options, your
