@@ -171,3 +171,12 @@ def test_no_pack_text_tells_a_cloud_session_a_background_task_wakes_it() -> None
     # the nudge every lead gets, a cloud one included, names no tracked background wait either
     assert "harness-tracked" not in omnigent_agent.LEAD_UNTRACKED
     assert "in the foreground" in omnigent_agent.LEAD_UNTRACKED
+
+
+def test_a_cloud_lead_brief_has_the_foreground_wait_rule_a_host_lead_brief_lacks() -> None:
+    """#2611: a cloud lead is not woken by a finished background run, so its brief says to wait in the foreground."""
+    cloud = omnigent_agent.cloud_preamble(omnigent_agent.LEAD_PREAMBLE, None)
+    assert IN_TURN in cloud and "in the foreground" in cloud
+    assert "is not woken by a finished background task" in cloud
+    host = omnigent_agent.LEAD_PREAMBLE
+    assert IN_TURN not in host and "is not woken by a finished background task" not in host
