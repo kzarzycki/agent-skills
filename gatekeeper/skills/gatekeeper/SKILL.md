@@ -22,6 +22,7 @@ it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged 
 | `record approval\|verdict\|checks` | records a person's approval, a verifier report as a review, or a check pass on the head |
 | `land [--wait]` | every merge proof, then marks the PR ready and merges it, pinned to the head |
 | `report [--json]` | reads a verifier report as the gatekeeper does; `--json` prints its facts |
+| `claim <issue> [--takeover\|--release]` | under a policy `team` section: an early claim as a record on the issue, `check build` exits 1 naming the holder when another session holds it, `--takeover` writes a `Handover:` record, `--release` a `Released:` one; policy.md's `team` row |
 | `delegate` | the delegated approver's `approved:merge`, feature branch only |
 | `timeouts [--json\|--mergify\|--check]` | every time limit the policy's `timeouts` derive; `--mergify` renders `.mergify.yml`, `--check` exits 1 where it is out of step |
 

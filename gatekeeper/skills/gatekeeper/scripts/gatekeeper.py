@@ -32,6 +32,7 @@
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
+    uv run scripts/approvals.py claim <issue> [--takeover|--release]  # under a `team` policy: an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -2578,6 +2579,103 @@ def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
         and (event.get("createdAt") or "") >= max(recorded)  # ISO 8601 in UTC, so it orders as text
     ]
     return len(later) <= 1
+
+
+# the first lines of an early claim's records on the issue: `Assigned: @<login>` (ASSIGNED, the line older tooling reads),
+# the takeover's `Handover: @<login>` and the release's `Released: @<login>`, each with its `Session:` link folded under it
+HANDOVER, RELEASED = "Handover: @", "Released: @"
+
+
+def claim_holder(issue: dict[str, Any]) -> tuple[str, str] | None:
+    """The record and session link of whoever holds `issue`'s claim: the last `Assigned:`, `Handover:` or `Released:`
+    record that names a session (a release names none, and ends the claim); None when unclaimed, released or closed.
+    ponytail: an `Assigned:` record with no `Session:` (written outside Omnigent) names no holder, so it blocks no one."""
+    if issue.get("state") == "CLOSED":
+        return None
+    kept = []
+    for note in notes(issue):
+        first = note["body"].strip().split("\n", 1)[0].strip()
+        if not first.startswith((ASSIGNED, HANDOVER, RELEASED)):
+            continue
+        session = re.search(r"^Session: (\S+)", machine(note["body"]), re.MULTILINE)
+        if first.startswith(RELEASED) or session:
+            kept.append((first, session[1] if session else ""))
+    if not kept or kept[-1][0].startswith(RELEASED):
+        return None
+    return kept[-1]
+
+
+def held_claims(issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+    """`check build`'s refusal, a line per issue another session holds an unreleased claim on, naming the holder.
+    ponytail: only under a policy with a `team` section and only for a run that names its own session, since
+    a project with one team must change nothing and without a link there is no one to tell apart."""
+    link = session_link()
+    if settings(loop).get("team") is None or not link:
+        return []
+    found = []
+    for issue in issues:
+        if (holder := claim_holder(issue)) and holder[1] != link:
+            found.append(
+                f"#{issue['number']}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}): "
+                "ask them to `claim --release`, or take it over with `claim --takeover`"
+            )
+    return found
+
+
+def claim_verb(number: int, takeover: bool = False, release: bool = False) -> int:
+    """`claim <issue>`: the early claim, a record on the issue before any PR exists, which `check build` reads
+    (held_claims). `--takeover` takes one another session holds, with a `Handover:` record naming the session it came
+    from; `--release` ends this session's claim. Under a policy with no `team` section it writes nothing."""
+    _, loop = project()
+    team = settings(loop).get("team")
+    if team is None:
+        print(f"#{number}: the policy has no `team` section: claims are off, nothing written")
+        return 0
+    link = session_link()
+    if not link:
+        raise Refused(
+            f"#{number}: this run names no Omnigent session (RUNNER_SERVER_URL and OMNIGENT_RUNNER_PRIMARY_SESSION_ID"
+            " are unset), so a claim has no holder to name"
+        )
+    issue = issue_node(number)
+    holder = claim_holder(issue)
+    login = approver(issue) or viewer()
+    if not login:
+        raise Refused(f"#{number}: no one to record the claim for: the forge names no account")
+    name = str(team.get("name") or viewer() or "").strip()
+    details = "By: claim" + (f"\nTeam: {name}" if name else "")
+    mine = holder is not None and holder[1] == link
+    if release:
+        if holder is None:
+            print(f"#{number}: no claim to release")
+            return 0
+        if not mine:
+            raise Refused(
+                f"#{number}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}), not this session"
+            )
+        comment(number, fold(f"{RELEASED}{login}", details=details))
+        print(f"#{number}: released")
+        return 0
+    if mine:
+        print(f"#{number}: already claimed by this session")
+        return 0
+    if holder and not takeover:
+        raise Refused(
+            f"#{number}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}): "
+            "`claim --takeover` takes it over"
+        )
+    if takeover and not holder:
+        raise Refused(f"#{number}: no unreleased claim to take over: `claim` it")
+    if holder:
+        comment(
+            number,
+            fold(f"{HANDOVER}{login}", details=f"{details}\nFrom: {holder[1]}\nSession: {link}"),
+        )
+        print(f"#{number}: taken over from session {holder[1]}")
+    else:
+        comment(number, fold(f"{ASSIGNED}{login}", details=f"{details}\nSession: {link}"))
+        print(f"#{number}: claimed")
+    return 0
 
 
 def graduate(epic: int, pr: int) -> int:
@@ -6261,6 +6359,10 @@ def checked(point: str, pull: dict[str, Any]) -> int:
         base = pull["baseRefName"]
         judge_with_base(base, fetch=True)
     found, issues = gated(point, pull, tracker, loop)
+    if point == "build":
+        found += held_claims(
+            issues, loop
+        )  # before claim(): another session's claim is not overwritten
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
     if point == "build" and not found:
@@ -6307,7 +6409,7 @@ def unbuilt(number: int, tracker: str | None, loop: str | None) -> int:
     the assignee."""
     issues, pull = adopted([issue_node(number)], loop), unopened()
     found = problems(issues, None if tracker is None else label_names(tracker))
-    found += proofs("build", pull, issues, loop)
+    found += proofs("build", pull, issues, loop) + held_claims(issues, loop)
     for line in holds(pull, issues, loop) + found:
         print(line)
     if not found:
@@ -13595,6 +13697,10 @@ def main(argv: list[str]) -> int:
     checking.add_argument("point", choices=("build", "merge", "ready", "rerun", "setup", "stalled"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--issue", type=int)
+    claiming = commands.add_parser("claim")
+    claiming.add_argument("issue", type=int)
+    claiming.add_argument("--takeover", action="store_true")
+    claiming.add_argument("--release", action="store_true")
     # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
     records = commands.add_parser("record").add_subparsers(dest="kind", required=True)
     approving = records.add_parser("approval")
@@ -13755,6 +13861,10 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         if args.issue is not None and (args.point != "build" or args.pr is not None):
             raise Refused("--issue goes with check build and no PR number")
         return check(args.point, args.pr, args.issue)
+    if args.command == "claim":
+        if args.takeover and args.release:
+            raise Refused("claim --takeover and --release are two verbs: pass one")
+        return claim_verb(args.issue, args.takeover, args.release)
     if args.command == "breakglass-proof":
         return breakglass_proof(
             args.pr, args.head, args.failed_run, args.rerun, args.smoke, args.earlier
