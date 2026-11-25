@@ -797,7 +797,7 @@ or the owner's private network.
 - **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
   `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the
-  review or comment to read, to that kept worker with `send --pr` while it is still there,
+  review or comment to read, to that kept worker with `send --pr --wait` while it is still there,
   since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
   else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
@@ -844,7 +844,7 @@ or the owner's private network.
   keeping the run (`sys_session_keep`) when it exits non-zero. The script never prints a secret's value, in its own output, a
   traceback or the verifier's, and a refused seed is described by its length, hash and days left, which is how to check one. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
-  the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr`, asking it to save the
+  the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr --wait`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort

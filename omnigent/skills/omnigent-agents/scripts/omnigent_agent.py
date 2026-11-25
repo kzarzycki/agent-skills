@@ -10,7 +10,7 @@
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
     python3 scripts/omnigent_agent.py wait-for (--log <file> [--pid <n|file>] | --pid <n|file> | --pr N [--until checks|merged|closed|gate|verdict] [--since <ISO time>]) [--budget <s>] [--stall <s>] [--notify]
-    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--notify]
+    python3 scripts/omnigent_agent.py send <session> <brief-file> <report-path> [--pr N] [--wait] [--notify]
     python3 scripts/omnigent_agent.py relay <session> <message-file>   (send, relay: [--expires MINUTES])
     python3 scripts/omnigent_agent.py broadcast <message-file> [--stop | --decisions FILE] [--registry FILE] [--active-hours N] [--project NAME ...] [--host NAME ...] [--include ID ...] [--exclude ID ...] [--dry-run]
     python3 scripts/omnigent_agent.py approve <session> [--decline]
@@ -47,8 +47,8 @@ workspace it started from and that a foreground command stops at 10 minutes; ``w
 so the report is a file here as for any child; ``send --pr N`` takes only a comment created after
 the report there, and reaches a session whose workspace is on another host. A lead launches it as one background command, so its
 exit is the wake; ``run``, ``send`` and ``wait`` take ``--notify`` as ``wait-for`` does, running
-``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. Omnigent already wakes this session for a child that is its sub-agent or one it subscribes to: when that child ends its turn with the report in, the line is skipped and said on stderr, so a child wakes its lead once (#1086). ``send`` answers that question in the same session, also mid-turn, then waits the
-same way. A session whose runner Omnigent reaped after its idle timeout (a send there answers
+``$LOOP_NOTIFY "exit <code>: <report path or the failure's first line>"`` once, however they end. Omnigent already wakes this session for a child that is its sub-agent or one it subscribes to: when that child ends its turn with the report in, the line is skipped and said on stderr, so a child wakes its lead once (#1086). ``send`` answers that question in the same session, also mid-turn, and returns once it is accepted (``--wait``, ``--notify`` and ``--verdict`` then wait
+for the report the same way). A session whose runner Omnigent reaped after its idle timeout (a send there answers
 ``queued`` and never arrives) it first revives in place with a ``retry_session`` event and sends
 once the runner is online; exit 4 only when that revive fails, naming its reply.
 ``send`` exits 7 when the message was posted and a later read (the poll that confirms it) failed:
@@ -2745,10 +2745,13 @@ def send(
     queued_after: float | None = None,
     far: bool = False,
     unarchive: bool = False,
+    accepted: bool = False,
 ) -> tuple[str, bool]:
     """Send a follow-up (an answer) to a session whose runner is still up, and wait until it lands:
     ``delivered``, or ``already`` when a copy had landed before, and whether this call posted. With ``queued_after`` (a relay),
-    ``queued`` once the copy has been pending that long instead. ``far``: the session runs on
+    ``queued`` once the copy has been pending that long instead. With ``accepted`` (``send`` without
+    ``--wait``), ``queued`` as soon as the copy is pending: the server holds it for the harness, so a
+    session mid-turn does not hold the caller until its next tool boundary. ``far``: the session runs on
     another host (``elsewhere``), where ``report`` and its question are. ``unarchive``: an
     archived session is unarchived first, so it resumes with its history; otherwise it is Gone.
 
@@ -2848,6 +2851,8 @@ def send(
                     file=sys.stderr,
                 )
             held = held or time.monotonic()
+            if accepted:
+                return "queued", posted
             if queued_after is not None and time.monotonic() - held >= queued_after:
                 return "queued", posted
             deadline = time.monotonic() + confirm_seconds
@@ -12005,6 +12010,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         help="unarchive an archived session even when the registry does not list it; a listed"
         " one is unarchived without it, and an unlisted one exits 4",
     )
+    p.add_argument(
+        "--wait",
+        action="store_true",
+        help="after delivering, wait for the report as `run` does (the default is to return once"
+        " the message is accepted: delivery line, exit 0); --notify and --verdict imply it",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p.add_argument(
         "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
@@ -12976,12 +12987,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # marked like a relay: the server stamps it as the owner's, and owner-said must skip it
             mark = RELAYED.format(who=own_id() or "an agent")
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
+            waits = args.wait or args.notify or args.verdict
             undeleted = None
             try:
                 # an archived lead the registry still lists is the supervisor's own archive after
                 # its DONE, so its next brief resumes it; an unlisted one was reaped (#2420)
                 listed = bool(registry) and args.session in registered(Path(registry))[0]
-                send(
+                outcome, _ = send(
                     og,
                     args.session,
                     f"{mark}\n{text}",
@@ -12989,6 +13001,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     args.confirm_seconds,
                     far=far,
                     unarchive=args.unarchive or listed,
+                    accepted=not waits,
                 )
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
@@ -13005,7 +13018,15 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 )
             if undeleted:
                 raise undeleted
-            if opened := still_open(og, args.session):  # a card blocks nothing: it stays open
+            opened = still_open(og, args.session)  # a card blocks nothing: it stays open
+            if not waits:
+                held = " (queued until its current step ends)" if outcome == "queued" else ""
+                print(
+                    f"session {args.session}: delivered{held}{opened}; not waiting for the report:"
+                    f" `wait {args.session} {report}` waits for it"
+                )
+                return 0
+            if opened:
                 print(f"session {args.session}: delivered{opened}")
             print(
                 wait(og, args.session, report, args.timeout, args.verdict, since, args.pr, baseline)
