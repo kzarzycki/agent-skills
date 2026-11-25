@@ -45,3 +45,17 @@ def test_the_r6_bullet_holds_the_floor_the_refusal_the_fallback_and_the_batching
         "The local queue runs no test today and stays so.",
     ):
         assert part in bullet, part
+
+
+def test_no_skill_line_says_a_run_that_cant_tell_runs_or_records_nothing() -> None:
+    """After #2217 a run that can't tell never runs nothing, and a `--record` run records against the merge base
+    (#2361): the skill text must not drift back to the old rule."""
+    for name in ("SKILL.md", "worker.md"):
+        assert "or can't tell records nothing" not in text(name), name
+    worker = text("worker.md")
+    assert (
+        "a run that fails records nothing, nor does a run with no `Affected tests:` line" in worker
+    )
+    skill = text("SKILL.md")
+    assert "never nothing for a change it can't classify" in skill
+    assert "A selection over half the suite runs as picked (#1872)" in skill
