@@ -5891,6 +5891,41 @@ def check_bare_ref(line: str) -> None:
             ) from e
 
 
+def record_blocker(line: str, story: int) -> None:
+    """Record ``line``'s ``Waits: #N`` as GitHub's own "blocked by" link on issue ``story``, so the
+    blocker shows on the board and the supervisor can tell the lead when it ends. Refuses a blocker
+    it cannot watch: the link must be readable first (the endpoint 404s where the feature is off),
+    and only a bare ``#N`` of this repo can be linked. A link already there is left as it is."""
+    # ponytail: epic #2458 q3 (queue story) is out of scope here; only same-repo blockers are linked, no cross-repo form
+    if not (m := re.fullmatch(r"Waits: #(\d+)", line)):
+        raise Fail("wait-on --story records a bare `pr <n>` blocker of this repo only")
+    base = f"repos/{{owner}}/{{repo}}/issues/{story}/dependencies/blocked_by"
+    try:
+        listed = json.loads(gh("api", base) or "[]")
+    except (Fail, ValueError) as e:
+        raise Fail(
+            f"wait-on: cannot watch #{m[1]}: this repo's blocked-by links of #{story} are not "
+            f"readable ({e}); turn them on for the repo, or wait with a plain `pr {m[1]}`"
+        ) from e
+    if any(i.get("number") == int(m[1]) for i in listed if isinstance(i, dict)):
+        return
+    blocker = json.loads(gh("api", f"repos/{{owner}}/{{repo}}/issues/{m[1]}"))
+    gh("api", "-X", "POST", base, "-F", f"issue_id={blocker['id']}")
+
+
+def blocks(repo: str, number: int) -> list[int]:
+    """The open issues GitHub's "blocked by" links name as blocked by ``number``; empty when none is
+    recorded or the link cannot be read, so a project without the feature sees no change."""
+    try:
+        listed = json.loads(
+            gh("api", f"repos/{repo or '{owner}/{repo}'}/issues/{number}/dependencies/blocking")
+            or "[]"
+        )
+    except (Fail, ValueError):
+        return []
+    return [i["number"] for i in listed if isinstance(i, dict) and i.get("state") == "open"]
+
+
 def kill_group(pid: int) -> None:
     """SIGTERM ``pid``'s process group (the detached recipe's ``setsid`` makes the pid its leader;
     any other pid gets the signal alone, never this process's own group), then SIGKILL after
@@ -10951,6 +10986,7 @@ def supervise_registry(
         )
         head = f"{sid} {lead['title']}".rstrip()
         done: list[str] = []  # members that ended well
+        unblocks: list[int] = []  # issues a member that ended well was recorded as blocking
         seen: dict[str, tuple[dict, dict]] = {}  # each session read: its info and ``lead_status``
         failed = ""
         pending = False
@@ -11025,6 +11061,7 @@ def supervise_registry(
                 else:
                     done.append(found[1])
                     ends.append(f"{found[1]}@{found[2] if len(found) > 2 else ''}")
+                    unblocks += blocks(wait_repo(sid, m[1] or ""), int(m[2]))
             elif run := re.fullmatch(
                 r"https://github\.com/([\w.-]+/[\w.-]+)/actions/runs/(\d+)", item
             ):
@@ -11059,6 +11096,8 @@ def supervise_registry(
                     ends.append(f"{item}@{end[2]}")
         if failed or (items and not pending and done):
             line = f"{head}: {failed or '; '.join(done)}; your wait names it"
+            if unblocks and not failed:  # the native link says what it frees: one line, once
+                line += f"; {', '.join(f'#{n}' for n in dict.fromkeys(unblocks))} is blocked by it: you can queue now"
             kind = "fail" if failed else "all"
             # keyed on the members' ends, not the lead's turn: its reply is a new turn
             key = hashlib.sha1("|".join(ends).encode()).hexdigest()[:16]
@@ -12154,6 +12193,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         "--branch", help="the lead's branch for its event (default: the checked-out one)"
     )
     p.add_argument("--url", default="", help="the PR or issue the lead's item is (the event's url)")
+    p.add_argument(
+        "--story",
+        type=int,
+        help="with `pr <n>`: record <n> as GitHub's blocked-by link of this issue, refusing when it cannot be watched",
+    )
     p = sub.add_parser(
         "end-on",
         description="print the DONE or USER NEEDED line a lead ends its turn with, and write its lead event",
@@ -12359,6 +12403,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         if args.cmd == "wait-on":
             line = wait_line(args.wait)
             check_bare_ref(line)
+            if args.story:
+                record_blocker(line, args.story)
             print(line)
             lead_emit("waiting", args.branch or "", args.url)
             return 0

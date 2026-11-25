@@ -849,6 +849,8 @@ it, and a failed turn that lost its runner (offline, or an error naming a lost r
 routes as any lead's, since the owner can't see why in that session. A direct lead that goes
 offline while idle raises nothing.
 
+`wait-on pr <n> --story <m>` also records `#<n>` as GitHub's own "blocked by" link of issue `#<m>` (REST `issues/<m>/dependencies/blocked_by`) and refuses when that link cannot be read, as where the feature is off for the repo: a blocker the supervisor cannot watch is no wait. When `#<n>` then closes or merges, the one "your wait names it" message to the waiting lead ends `#<m> is blocked by it: you can queue now`; a wait with no recorded link is told as before, and `wait-on` without `--story` reads no link.
+
 **Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
 `route`'s table (the design's § Routing an event), and settles what needs no decision itself.
 

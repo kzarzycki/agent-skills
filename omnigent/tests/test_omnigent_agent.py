@@ -14868,3 +14868,95 @@ def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
         == 0
     )
     assert via_env not in og.archived
+
+
+def blocker_gh(
+    calls: list[tuple[str, ...]], blocking: str = "[]", blocked_by: str | None = "[]"
+) -> Callable[..., str]:
+    """A ``gh`` double: ``blocking`` answers the blocker's list, ``blocked_by`` the story's (None:
+    the endpoint 404s, as where the feature is off)."""
+
+    def gh(*args: str, **_: object) -> str:
+        calls.append(args)
+        if args[-1].endswith("/dependencies/blocking"):
+            return blocking
+        if args[-1].endswith("/dependencies/blocked_by"):
+            if blocked_by is None:
+                raise omnigent_agent.Fail("gh api: Not Found (HTTP 404)")
+            return blocked_by
+        return '{"id": 4242}'
+
+    return gh
+
+
+def test_a_lead_waiting_on_a_recorded_blocker_is_told_once_it_can_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    blocking = json.dumps([{"number": 2499, "state": "open"}, {"number": 7, "state": "closed"}])
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh([], blocking=blocking))
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    told = [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
+    assert len(told) == 1  # once, however often it is read
+    assert (
+        "PR #976 merged; your wait names it; #2499 is blocked by it: you can queue now" in told[0]
+    )
+    assert "#7" not in told[0]  # a closed story is not queued
+
+
+@pytest.mark.parametrize("blocking", ["[]", None])
+def test_a_wait_with_no_recorded_blocker_is_told_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocking: str | None
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+
+    def gh(*args: str, **_: object) -> str:
+        if blocking is None:  # the feature is off for the repo
+            raise omnigent_agent.Fail("gh api: Not Found (HTTP 404)")
+        return blocking
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told = [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
+    assert len(told) == 1 and told[0].endswith("PR #976 merged; your wait names it")
+
+
+def test_wait_on_story_records_the_blocker_as_a_native_link(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls))
+    assert omnigent_agent.main(["wait-on", "pr", "976", "--story", "2499"]) == 0
+    assert capsys.readouterr().out.strip() == "Waits: #976"
+    post = [c for c in calls if "POST" in c]
+    assert len(post) == 1
+    assert post[0][-3].endswith("issues/2499/dependencies/blocked_by")
+    assert post[0][-1] == "issue_id=4242"
+    calls.clear()  # a link already there is not posted again
+    monkeypatch.setattr(
+        omnigent_agent, "gh", blocker_gh(calls, blocked_by='[{"number": 976, "id": 4242}]')
+    )
+    assert omnigent_agent.main(["wait-on", "pr", "976", "--story", "2499"]) == 0
+    assert not [c for c in calls if "POST" in c]
+
+
+def test_wait_on_story_refuses_a_blocker_it_cannot_watch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls, blocked_by=None))
+    assert omnigent_agent.main(["wait-on", "pr", "976", "--story", "2499"]) != 0
+    captured = capsys.readouterr()
+    assert "cannot watch #976" in captured.err and captured.out == ""
+    assert not [c for c in calls if "POST" in c]  # nothing was recorded
+
+
+def test_wait_on_without_story_reads_no_blocked_by_link(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls))
+    assert omnigent_agent.main(["wait-on", "pr", "976"]) == 0
+    assert not [c for c in calls if "dependencies" in c[-1]]  # off where no one asked
