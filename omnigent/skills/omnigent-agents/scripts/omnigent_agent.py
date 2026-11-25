@@ -11334,7 +11334,9 @@ def service_env(env: dict[str, str]) -> dict[str, str]:
     return carried
 
 
-SERVICE_MARK = "OMNIGENT_SERVICE"  # set by the unit or plist alone: `<manager>:<name>`; a hand run has none
+SERVICE_MARK = (
+    "OMNIGENT_SERVICE"  # set by the unit or plist alone: `<manager>:<name>`; a hand run has none
+)
 
 
 def service_hint(env: dict[str, str], uid: int | None = None) -> str | None:
