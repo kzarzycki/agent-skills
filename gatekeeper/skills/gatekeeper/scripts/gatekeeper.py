@@ -2372,7 +2372,9 @@ unfielded: str | None = None
 
 # the variable a cloud lead, with no server variables, sets to its own session link, and the form that link must have
 SESSION_LINK_ENV = "OMNIGENT_SESSION_LINK"
-SESSION_LINK_FORM = re.compile(r"https?://[^\s/]+(?:/[^\s/]+)*/c/[^\s/]+")
+SESSION_LINK_FORM = re.compile(
+    r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._~-]+)*/c/[A-Za-z0-9_-]+"
+)
 
 
 def session_link() -> str | None:
@@ -2383,8 +2385,8 @@ def session_link() -> str | None:
     if lead and server:
         return f"{server}/c/{lead}"
     # ponytail: epic #2458 open question "how a cloud lead learns its own link", narrower reading: the host cannot
-    # put the link atop a cloud brief (the session's id exists only after the session does), so the lead exports the
-    # link its `Session link:` line gives, and this reads it when the server variables are absent (a cloud VM has none)
+    # put the link atop a cloud brief (the session's id exists only after the session does), so the lead exports its
+    # own link (nothing in the cloud brief says so yet: a follow-up), and this reads it when the server variables are absent (a cloud VM has none)
     given = os.environ.get(SESSION_LINK_ENV, "").strip().rstrip("/")
     return given if SESSION_LINK_FORM.fullmatch(given) else None
 

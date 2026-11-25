@@ -21,7 +21,18 @@ def test_a_cloud_run_with_no_server_variables_writes_the_link_from_its_brief(
     assert owner_notes(posted) == [f"Owner: alpha\nSession: {LINK}\n"]
 
 
-@pytest.mark.parametrize("given", ["", "lead-session", "not a link /c/x", "https://example.test/x"])
+@pytest.mark.parametrize(
+    "given",
+    [
+        "",
+        "lead-session",
+        "not a link /c/x",
+        "https://example.test/x",
+        "https://example.test/c/id?token=abc",  # a query string would reach a public comment
+        "https://user:pw@example.test/c/id",  # so would credentials
+        "https://example.test/c/id#frag",
+    ],
+)
 def test_a_value_that_is_not_a_session_link_names_no_session(
     monkeypatch: pytest.MonkeyPatch, given: str
 ) -> None:
