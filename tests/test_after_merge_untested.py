@@ -360,6 +360,48 @@ def test_tag_mode_reads_the_nightly_and_a_forge_failure_runs_the_suite(tmp_path,
     assert out.read_text().strip() == "skip=false"
 
 
+def test_the_tag_verb_asks_for_the_tagged_commits_runs(tmp_path, monkeypatch):
+    """#2323 m1: the verb, not only `nightly_ran`, filters the runs by the tagged sha; a `tag` that read the newest
+    green run would skip on a nightly that ran another commit."""
+    asked: list[str] = []
+
+    def api(path: str):
+        asked.append(path)
+        # a forge that ignores head_sha answers with another commit's run; only the sha in the query names the commit
+        return runs(run("main", MAIN if f"head_sha={MAIN}" in path else OTHER, 5, "schedule"))
+
+    code, out, _ = verb(monkeypatch, tmp_path, "tag", api)
+    assert code == 0 and out.strip() == "skip=true"
+    assert [path for path in asked if f"head_sha={MAIN}" in path], asked
+    assert all(f"head_sha={MAIN}" in path for path in asked)
+
+
+def test_a_consumer_names_its_nightly_with_the_nightly_flag(tmp_path, monkeypatch):
+    """#2323 m2: `moved tag --nightly <file>` reads that workflow's runs; the default is `engineering-ci.yml`."""
+    asked: list[str] = []
+
+    def api(path: str):
+        asked.append(path)
+        return runs(run("main", MAIN, 5, "schedule"))
+
+    parsed = []
+    real = nightly.moved
+    monkeypatch.setattr(
+        nightly, "moved", lambda args, api=api: parsed.append(args) or real(args, api)
+    )
+    for name, value in {
+        "GITHUB_OUTPUT": str(tmp_path / "out"),
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_SHA": MAIN,
+    }.items():
+        monkeypatch.setenv(name, value)
+    assert nightly.main(["moved", "tag", "--nightly", "release-nightly.yml"]) == 0
+    assert nightly.main(["moved", "tag"]) == 0
+    assert [a.nightly for a in parsed] == ["release-nightly.yml", "engineering-ci.yml"]
+    assert "/workflows/release-nightly.yml/" in asked[0]
+    assert "/workflows/engineering-ci.yml/" in asked[-1]
+
+
 def test_tag_workflow_skips_only_the_nightlys_suites():
     """The release check, the vendor check and the package gate run on every tag, since the nightly runs none of
     them; `test` and `test-slow` skip on `skip=true`; the forge read gets `actions: read` in `qualify` alone."""

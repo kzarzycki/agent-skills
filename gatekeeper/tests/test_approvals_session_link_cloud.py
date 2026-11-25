@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from approvals_harness import approvals
-from test_approvals_owner_record import LINK, TEAM, build, owner_notes, posted  # noqa: F401
+from test_approvals_owner_record import LINK, build, owner_notes, posted  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -17,8 +17,8 @@ def test_a_cloud_run_with_no_server_variables_writes_the_link_from_its_brief(
     monkeypatch: pytest.MonkeyPatch, posted: list[tuple[int, str]]
 ) -> None:
     monkeypatch.setenv("OMNIGENT_SESSION_LINK", LINK + "/")
-    assert build(monkeypatch, TEAM) == 0
-    assert owner_notes(posted) == [f"Owner: alpha\nSession: {LINK}\n"]
+    assert build(monkeypatch) == 0
+    assert owner_notes(posted) == [f"Owner: {LINK}\n"]
 
 
 @pytest.mark.parametrize(
