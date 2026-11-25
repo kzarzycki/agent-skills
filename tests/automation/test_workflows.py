@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -37,7 +41,7 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     batch = next(st for st in _steps(workflow) if st.get("run") == "mise run test-batch")
     full = next(st for st in _steps(workflow) if st.get("run") == "mise run check")
     test_map = next(st for st in _steps(workflow) if st.get("with", {}).get("path") == ".test-map")
-    # a `tests` dispatch (the break-glass proof's re-run alone) runs those tests instead
+    # a `tests` dispatch (the break-glass proof's rerun) runs rerun-tests on those ids instead
     assert fast["if"] == (
         "github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'"
         " && steps.tested.outputs.skip != 'true' && steps.record.outputs.recorded != 'true'"
@@ -46,7 +50,10 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
     # reads the test map; a PR head runs the cheap checks alone
     assert "env" not in fast
     on_a_batch = "startsWith(github.head_ref, 'mergify/merge-queue/')"
-    assert batch["if"] == test_map["if"] == on_a_batch
+    assert test_map["if"] == on_a_batch
+    assert (
+        batch["if"] == f"{on_a_batch} && steps.read.outputs.red != 'read'"
+    )  # a rerun's read of the red skips it
     assert batch["env"]["GATE_BASE"] == "${{ github.event.pull_request.base.sha }}"
     assert full["if"] == "github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'"
     for command in (
@@ -165,3 +172,89 @@ def test_qualify_holds_a_release_pr_to_the_fold() -> None:
     verify = next(st for st in steps if "release-verify" in st.get("run", ""))
     assert verify["if"] == "startsWith(github.head_ref, 'release/')"
     assert verify["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha }}"
+
+
+def test_qualify_rerun_attempt_calls_rerun_tests_never_the_failed_tests_alone() -> None:
+    """R5 (#1794): a rerun attempt of a red batch run reruns the red run's selection, never its failed ids alone."""
+    text = (WORKFLOWS / "engineering-ci.yml").read_text()
+    workflow = _workflow("engineering-ci.yml")
+    steps = _steps(workflow)
+    runs = [step.get("run", "") for step in steps]
+
+    assert workflow["permissions"]["actions"] == "read"
+    # the red attempt's artifact, read only on a later attempt of a batch run
+    red = next(st for st in steps if st.get("id") == "red")
+    assert "github.run_attempt != '1'" in red["if"]
+    assert red["with"]["name"] == "failed-tests"
+    assert red["continue-on-error"] == "true"
+    # one rerun-tests call per path, each handing it the failed-tests file and the head
+    reruns = [run for run in runs if "approvals.py rerun-tests" in run]
+    assert len(reruns) == 2
+    assert all(
+        "--red " in run and "failed-tests.json" in run or "dispatch.json" in run for run in reruns
+    )
+    # a pytest run on the failed ids alone is the shortcut R5 forbids
+    assert not any("pytest" in run and "TESTS" in run for run in runs)
+    assert "failed alone" not in text and "to run alone" not in text
+    # with a red read, the usual batch step is skipped and the rerun's pass counts as the selection
+    batch = next(st for st in steps if st.get("id") == "batch")
+    assert "steps.read.outputs.red != 'read'" in batch["if"]
+    rerun = next(st for st in steps if st.get("id") == "rerun")
+    assert rerun["if"] == "steps.read.outputs.red == 'read'"
+    selection = next(st for st in steps if st.get("id") == "selection")
+    assert "steps.rerun.outcome == 'success'" in selection["if"]
+    # V1: the artifact handling holds under each undoing
+    assert "startsWith(github.head_ref, 'mergify/merge-queue/')" in red["if"]
+    read = next(st for st in steps if st.get("id") == "read")
+    assert '["failed"]' in read["run"] and "sys.exit(0 if" in read["run"]
+    upload = next(
+        st for st in steps if st.get("with", {}).get("path") == ".qualify/failed-tests.json"
+    )
+    assert upload["with"]["overwrite"] == "true"
+
+
+def _rerun_check(tmp_path: Path, red: list[str], ran: list[tuple[str, str]] | None):
+    """Run the `rerun` step's lines after `rerun-tests` (the missing-id check) under `bash -e`, as Actions does, in a
+    scratch checkout holding the red attempt's failed ids and, when `ran` is given, a JUnit file of the tests that ran."""
+    step = next(st for st in _steps(_workflow("engineering-ci.yml")) if st.get("id") == "rerun")
+    lines = step["run"].splitlines()
+    after = lines[next(n for n, line in enumerate(lines) if "rerun-tests" in line) + 1 :]
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "tools" / "failed_tests.py").write_text(
+        (ROOT / "tools" / "failed_tests.py").read_text()
+    )
+    (tmp_path / ".qualify" / "red").mkdir(parents=True)
+    (tmp_path / ".qualify" / "red" / "failed-tests.json").write_text(json.dumps({"failed": red}))
+    if ran is not None:
+        cases = "".join(f'<testcase classname="{c}" name="{n}"/>' for c, n in ran)
+        (tmp_path / ".qualify" / "junit.xml").write_text(
+            f"<testsuites><testsuite>{cases}</testsuite></testsuites>"
+        )
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "python3").symlink_to(
+        sys.executable
+    )  # the repo's python, as mise puts it on PATH in CI
+    return subprocess.run(
+        ["bash", "-e", "-c", "\n".join(after)],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a_rerun_passes_only_when_it_ran_every_test_the_red_attempt_failed(tmp_path: Path) -> None:
+    (tmp_path / "ok").mkdir()
+    ran = [("a.b", "t1"), ("a.b", "t[x y]"), ("a.b", "t3")]
+    ok = _rerun_check(tmp_path / "ok", ["a.b::t1", "a.b::t[x y]"], ran)
+    assert ok.returncode == 0, ok.stderr
+    (tmp_path / "missing").mkdir()
+    gone = _rerun_check(tmp_path / "missing", ["a.b::t1", "a.b::t2"], [("a.b", "t1")])
+    assert gone.returncode != 0 and "a.b::t2" in gone.stderr
+    (tmp_path / "none").mkdir()
+    assert (
+        _rerun_check(tmp_path / "none", ["a.b::t1"], None).returncode != 0
+    )  # no JUnit: nothing ran
+    (tmp_path / "empty").mkdir()
+    assert _rerun_check(tmp_path / "empty", ["a.b::t1"], []).returncode != 0

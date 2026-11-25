@@ -7,7 +7,9 @@ Orchestration backend: omnigent
 
 Affected tests: mise run check-affected
 
-<!-- ponytail: `check-affected` is check-fast plus the PR's tests that tools/affected_tests.py selects against the base, the selection test-batch runs. #2232 swaps it for the pack's `affected-tests` selector with #2217's fallback once PR #2247 lands. -->
+Test report: .qualify/junit.xml
+
+<!-- ponytail: `check-affected` is check-fast plus the PR's tests that tools/affected_tests.py selects against the base, the selection test-batch runs: this repo's `affected-tests` selector, which names its own build inputs in gatekeeper.md's `select` (#2232). -->
 
 Worker model: mid for size:S or smaller
 

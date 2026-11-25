@@ -22,6 +22,7 @@ it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged 
 | `record approval\|verdict\|checks` | records a person's approval, a verifier report as a review, or a check pass on the head |
 | `land [--wait]` | every merge proof, then marks the PR ready and merges it, pinned to the head |
 | `report [--json]` | reads a verifier report as the gatekeeper does; `--json` prints its facts |
+| `claim <issue> [--takeover\|--release]` | an early claim as a record on the issue naming this session (none for a run with no session), `check build` exits 1 naming the holder when another session holds it, `--takeover` writes a `Handover:` record, `--release` a `Released:` one |
 | `delegate` | the delegated approver's `approved:merge`, feature branch only |
 | `timeouts [--json\|--mergify\|--check]` | every time limit the policy's `timeouts` derive; `--mergify` renders `.mergify.yml`, `--check` exits 1 where it is out of step |
 
@@ -32,6 +33,17 @@ script's docstring is the manual: every proof each verb checks and every record 
 A PR carrying `needs-owner` or `loop:hold` is refused at merge, by `land` and `check merge` alike, with a line naming the
 label: `loop:hold` is a lead's hold, or another coordinator's claim, and its PR comment says who and why.
 
+The session that holds an issue: under Omnigent, `check build`'s claim adds `Session: <server>/c/<lead's session id>`
+to the issue's `Assigned:` record and sets the issue's `Session` issue field to the same link, so an issue, and a PR
+through the issue it closes, leads to its lead and the lead's children. The field is optional: the account's owner
+creates it once, as a text field, in the account's issue settings, since the loop's token can't. An account without
+it uses the gatekeeper unchanged: every command works, the record still carries the link, and the missing field costs
+one lookup and one informational line a run, never an error or a non-zero exit. Outside Omnigent neither is written.
+Where GitHub refuses GraphQL, REST checks the field exists and sets it, reading the field's id off an issue that
+already carries a value, since no REST route lists a personal account's fields: until one does, the run says so in its
+one line. `check setup` reports a missing field in one line, with the steps to create it on GitHub (Settings >
+Planning > Issue fields > New field, name `Session`, type Text), and exits as it would without it.
+
 ## Files
 
 - `scripts/gatekeeper.py`: the CLI, the policy reader and the gate.
@@ -39,12 +51,13 @@ label: `loop:hold` is a lead's hold, or another coordinator's claim, and its PR 
   forge and the evidence store only through ports, each served by the adapter the policy's
   `adapters` section names; GitHub's is the only one, and `gatekeeper.py` loads it from
   beside itself.
+- `scripts/denylist.py`: the local deny list (`LOOP_DENY_LIST`), the one check `gatekeeper.py`, engineering-loop's `nightly.py` and `omnigent_agent.py` run on a text before posting it; an Omnigent session link is let through. Read it to change the rule.
 - `scripts/folding.py`: builds and reads the folded comments the gatekeeper and the loop post.
 - `scripts/events.py` and [events.md](events.md): a step's state written as a small git ref
   (`emit`, `read`, `wait`, `clear`), which the gatekeeper reads and the loop and a runner write.
   events.md has the kinds, states, beat intervals and `event.json` fields; read it to write or
   read an event.
-- `scripts/loop_metrics.py`: `loop-metrics <owner/repo>... --since <date>` prints one read-only line per repo for the week: merged PRs, median ready->merged time, runner-minutes per merged PR, reverts and red nights, with the week before beside them (`merged with no record` prints `not measured yet (#2310)`). Run it for the weekly numbers; its docstring holds the quota it spends.
+- `scripts/loop_metrics.py`: `loop-metrics <owner/repo>... --since <date>` prints one read-only line per repo for the week: merged PRs, median ready->merged time, runner-minutes per merged PR, reverts and red nights, with the week before beside them (`merged with no record N of M` reads each merged PR's `land` status, which `land` writes before it deletes the record, #2310). Run it for the weekly numbers; its docstring holds the quota it spends.
 - `scripts/acceptance.py`: runs one spec's acceptance checks from a folder of executables, and
   the gatekeeper's `check` reads the evidence it leaves.
 - [policy.md](policy.md): every policy key, its type and default, the rules the policy
@@ -68,6 +81,15 @@ setting is never read as a rule nobody wrote. [policy.md](policy.md) has every k
 example block, and `SCHEMA` in `gatekeeper.py` is the same list as code. Label names come
 from `docs/agents/issue-tracker.md`'s settings block (policy.md, Tracker settings).
 
+A `gate_steps` step marked `on_demand: true` is no part of the gate: `local-ci` and `local-ci --record` skip it,
+each saying so in one line, `land` reads only the other steps' records, and the gate's pass never needs it, since
+every other step runs on each PR
+whose tree has no pass of it, and a check too costly for every PR (an hours-long run against a paid system) would
+then cost hours or go red without its credential. It runs only when named, `local-ci --record --step <name>`, and
+its pass is keyed by its `paths`, recorded, published and reused like any step's, so a spec that needs it asks for
+its pass on the head's inputs key, and an unchanged input never runs it again. A `gate_steps` whose every step is
+on demand is refused, since its gate would have no step and pass every head with no run.
+
 ## Specs
 
 An issue's spec needs the owner's `Approved: spec` record and the `approved:spec` label, unless the policy's
@@ -80,6 +102,17 @@ adds an approval and no review; a stale parent approval, a stranger's issue or a
 owner. The gate takes the row line as a claim and the verifier checks it against the parent's table, failing a row
 that adds scope. `check` prints `#141: covered by #140's approved spec (row "pack pin")` for a row it credits, and
 the missing piece for one it doesn't.
+
+## A PR waiting on another agent tree's go
+
+A PR that waits on another agent tree (its go, a decision) carries a `Waiting on:` record, so the wait is on GitHub and not
+in a message. `record waiting <pr> --on "<what>" [--within <span>]` posts it: the first line `Waiting on: <what>`, a
+`Deadline:` line under it (default `24h` on, or the span given), and nothing else: no session, host or name.
+`record waiting <pr> --clear` posts the same line with `Cleared:` in place of the deadline; the newest record decides.
+Past the deadline with no clearing record, the supervisor of the agent tree that owns the PR (its `Owner:` record, see
+`omnigent-agents`) raises one event to the owner; the other agent tree's supervisor, which does not list that session,
+raises none. A project with no such record has nothing read or raised. The gate does not read the record: it lets no
+PR merge and holds none.
 
 ## Verifier report
 

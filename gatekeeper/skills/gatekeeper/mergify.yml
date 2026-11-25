@@ -85,9 +85,32 @@ queue_rules:
       - base = main
       - -draft
       - label = loop:queued
+      - -label = loop:solo
       - -label = loop:hold
       - check-success = land
     # two-step CI, so the queue never checks a PR in place (Never in place, above): different from `queue_conditions`
+    merge_conditions:
+      - -conflict
+      - check-success = queue-run
+  # A PR whose test selection is the whole suite (`land` labels it `loop:solo`, whole_suite) is tested and merged in a
+  # batch of its own, so its slow run never holds a batch of quick PRs and a red one never sends them back. One queue,
+  # one ordering: it waits its turn like any entry, and nothing merges past it untested. Everything but the batch is
+  # the default rule's; `batch_size` and `batch_max_wait_time` here are not rendered from the policy, since a batch of
+  # one has nothing to wait for.
+  - name: solo
+    merge_method: squash
+    batch_size: 1
+    queue_branch_prefix: mergify/merge-queue/
+    max_checks_retries: 1
+    batch_max_failure_resolution_attempts: null
+    checks_timeout: 1 hour
+    queue_conditions:
+      - base = main
+      - -draft
+      - label = loop:queued
+      - label = loop:solo
+      - -label = loop:hold
+      - check-success = land
     merge_conditions:
       - -conflict
       - check-success = queue-run
@@ -98,11 +121,23 @@ pull_request_rules:
       - base = main
       - -draft
       - label = loop:queued
+      - -label = loop:solo
       - -label = loop:hold
       - check-success = land
     actions:
       queue:
         name: default
+  - name: queue what land handed over, alone
+    conditions:
+      - base = main
+      - -draft
+      - label = loop:queued
+      - label = loop:solo
+      - -label = loop:hold
+      - check-success = land
+    actions:
+      queue:
+        name: solo
 
 merge_queue:
   dequeued_label: loop:dequeued

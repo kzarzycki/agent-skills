@@ -21,9 +21,10 @@ One line per repo for the 7 days from `--since`, with the 7 days before it besid
   the batch's PRs that merged in the two weeks, and a line that holds such minutes says
   `batch minutes split evenly`.
 
-- merged with no record: not measured yet (#2310). A merged PR's record ref is deleted at landing, so it can't be read
-  after the merge; the line prints `merged with no record: not measured yet (#2310)` until `land` names the record
-  in the head's `land` status.
+- merged with no record: `merged with no record N of M` counts the merged PRs whose head's `land` status says
+  `Landed: no record` (N) among those whose status names a record (`Landed: record <name>`) or says none (M, #2310). A
+  record ref is deleted at landing, so `land` writes that status first; a PR landed before it did, or merged another
+  way (the queue, the UI), has no such status and is left out of M, which the line says: `(K unread)`.
 - reverts: merged PRs titled `Revert`, counted from the merged-PR search already made.
 - red-nights: red-nightly issues (`Nightly red since ...`, one search) created in the week whose body names the
   number of a merged PR (`#<n>`).
@@ -31,7 +32,8 @@ One line per repo for the 7 days from `--since`, with the 7 days before it besid
 A repo with no Actions workflows is skipped with a line that says so.
 
 Quota, per repo: one search for the two weeks' merged PRs (a page per 100), one search for the queue-batch
-PRs, one for the red-nightly issues, one `timeline` call per merged PR (the only source of its ready events, heads and merge commit; never
+PRs, one for the red-nightly issues, one `pulls/<n>` and one `commits/<head>/status` call per merged PR (its final
+head's `land` status), one `timeline` call per merged PR (the only source of its ready events, heads and merge commit; never
 per job), the runs listing in bulk, one day at a time (`created=<d>..<d>`, a page per 100 runs, indexed here by
 `head_sha`; from the oldest merged PR's creation, at most 14 days before the two weeks, to the day after the
 week's end), and one jobs listing per attributed run (`filter=all`, so every attempt). The runs listing serves
@@ -156,6 +158,20 @@ def read_timeline(gh: Gh, repo: str, number: int) -> dict[str, Any]:
     return {"ready": ready, "shas": shas}
 
 
+LAND_RECORD = re.compile(r"^Landed: (no record|record \S+)")
+
+
+def landed_without_record(gh: Gh, repo: str, number: int) -> bool | None:
+    """Whether the merged PR's final head's newest `land` status says `Landed: no record` (True) or names a record
+    (False); None when it says neither (a head landed before `land` wrote it, or merged another way)."""
+    head = gh(f"repos/{repo}/pulls/{number}")["head"]["sha"]
+    for each in gh(f"repos/{repo}/commits/{head}/status").get("statuses", []):
+        if each.get("context") == "land":
+            found = LAND_RECORD.match(each.get("description") or "")
+            return found.group(1) == "no record" if found else None
+    return None
+
+
 def red_nights(gh: Gh, repo: str, first: dt.date) -> list[dict[str, Any]]:
     query = f'repo:{repo} is:issue "Nightly red since" in:title created:>={first}'
     found = pages(gh, "search/issues?q=" + query.replace(" ", "+"), "items")
@@ -185,6 +201,7 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
     batch_prs = batches(gh, repo, first)
     with ThreadPoolExecutor(8) as pool:  # the same calls, 8 at a time
         timelines = dict(zip(prs, pool.map(lambda n: read_timeline(gh, repo, n), prs)))
+        norecord = dict(zip(prs, pool.map(lambda n: landed_without_record(gh, repo, n), prs)))
     owner_of_sha: dict[str, set[int]] = {}
     for number, timeline in timelines.items():
         for sha in timeline["shas"]:
@@ -234,6 +251,7 @@ def collect(gh: Gh, repo: str, since: dt.date) -> dict[str, Any]:
                 "seconds": (pr["merged"] - ready).total_seconds(),
                 "minutes": minutes[number],
                 "revert": pr["title"].lstrip().lower().startswith("revert"),
+                "no_record": norecord[number],
             }
         )
     return {"rows": rows, "batched": batched, "nights": nights, "merged_numbers": set(prs)}
@@ -246,11 +264,14 @@ def duration(seconds: float) -> str:
     return f"{hours}h{mins:02d}m" if hours else f"{mins}m"
 
 
-NO_RECORD = "merged with no record: not measured yet (#2310)"
+def no_record(rows: list[dict[str, Any]]) -> str:
+    read = [r for r in rows if r["no_record"] is not None]
+    text = f"merged with no record {sum(r['no_record'] for r in read)} of {len(read)}"
+    return text + (f" ({len(rows) - len(read)} unread)" if len(read) < len(rows) else "")
 
 
 def summary(rows: list[dict[str, Any]], red_nights: int) -> str:
-    quality = f"{NO_RECORD}, red-nights {red_nights}"
+    quality = f"{no_record(rows)}, red-nights {red_nights}"
     if not rows:
         return f"merged 0, reverts 0, {quality}"
     median = duration(statistics.median(r["seconds"] for r in rows))

@@ -33,10 +33,14 @@ def comment(
     ago: float = 60.0,
     fault: bool = False,
     login: str = "mergify[bot]",
+    head: str = "",
+    queued_ago: float = 0.0,
 ) -> dict:
     """A Mergify status comment shaped as the real one: its payload, then a ``Failing checks:`` list of ``qualify``
     runs, one per job in ``jobs``."""
     payload = {"version": 1, "state": state, "left_at": iso(ago)}
+    if queued_ago:
+        payload["queued_at"] = iso(queued_ago)
     if state == "dequeued":
         payload["dequeue_reason"] = {"code": code, "checks": ["qualify"] * bool(jobs)}
     url = "https://github.com/o/r/actions/runs/9/job/{}"
@@ -47,6 +51,7 @@ def comment(
         "<!---\nDO NOT EDIT\n-*- Mergify Payload -*-\n"
         + json.dumps(payload)
         + "\n-*- Mergify Payload End -*-\n-->\n\n### Left the queue\n\n"
+        + (f"- 🚫 **Left the queue** 23:47 · `{head}`\n\n" if head else "")
         # an earlier attempt's red run, in the history above the reason: not one of the failing checks
         + f"- ❌ **Checks failed (attempt 1/2)**\n  - ❌ [`old`]({url.format(1)})\n\n"
         + ("**The failure is in this pull request.** It failed alone on top of `main`.\n\n" * fault)
@@ -75,7 +80,13 @@ class GitHub:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.comments: list[dict] = []
         self.logs: dict[int, str] = {}
+        self.pr_comments: dict[
+            int, list[dict]
+        ] = {}  # a PR's own comments, where its Owner record sits (#2496)
         self.calls: list[tuple[str, ...]] = []
+        self.pulls: list[
+            dict
+        ] = []  # open PRs the poll lists (a head to say the PR was pushed since)
         self.down = ""
         self.pulls_down = False
         self.log_limit = 0  # the next log reads refused for the rate limit
@@ -95,8 +106,11 @@ class GitHub:
                 self.log_limit -= 1
                 raise omnigent_agent.RateLimited("gh api: API rate limit exceeded", 0.0)
             return self.logs.get(int(job[1]), "no tests ran\n")
-        if path.startswith("repos/o/r/pulls?"):
-            out = "[]"
+        if own := re.fullmatch(r"repos/o/r/issues/(\d+)/comments\?.*", path):
+            rows = self.pr_comments.get(int(own[1]), [])
+            out = json.dumps(rows if "page=1" in path else [])
+        elif path.startswith("repos/o/r/pulls?"):
+            out = json.dumps(self.pulls if "page=1" in path else [])
         elif path.startswith("repos/o/r/issues/comments?"):
             since = unquote(re.search(r"since=([^&]+)", path)[1])
             shown = [c for c in self.comments if c["updated_at"] >= since]
@@ -412,6 +426,56 @@ def test_a_followed_lead_whose_wait_names_the_pr_owns_it(tmp_path, monkeypatch) 
     assert [s for s, _ in relays(og, 12)] == ["a"]
 
 
+def owner_comment(session: str) -> dict:
+    """The record gatekeeper's `check build` leaves on a PR: `Owner: <the lead's session link>`, one line."""
+    body = f"Owner: https://x.test/c/{session}\n"
+    return {"id": 1, "body": body, "user": {"login": "ci-account"}}
+
+
+def test_a_record_naming_an_unknown_session_is_owned_elsewhere_and_raises_no_event(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Another agent tree's PR: its Owner record names a session this server does not list. One info line, no relay and
+    no manager event, however many polls (#2496)."""
+    registry, og = fleet(tmp_path)
+    og.snaps["a"] = {
+        "labels": {"omni.pr": "o/r#12", "omni.role": "lead"}
+    }  # even a label would not make it ours
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    gh.pr_comments[12] = [owner_comment("gone-session")]
+    run(og, registry, monkeypatch, 3)
+    assert not relays(og, 12) and not acts(og, "o/r#12")
+    assert not [e for e in events_of(registry) if e["kind"] == "dequeued"]
+    assert capsys.readouterr().out.count("o/r#12 left the merge queue: owned elsewhere") == 1
+
+
+def test_a_record_naming_a_known_session_relays_to_that_lead(tmp_path, monkeypatch) -> None:
+    """The record, not a label or a report, names the lead: its session is listed, so it is told."""
+    registry, og = fleet(tmp_path, k={"labels": {"omni.role": "lead"}})
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    gh.pr_comments[12] = [
+        owner_comment("old"),
+        owner_comment("k"),
+    ]  # the last record counts
+    run(og, registry, monkeypatch, 3)
+    assert [s for s, _ in relays(og, 12)] == ["k"]
+    assert not acts(og, "o/r#12")
+    assert [r for r in gh.calls if any("issues/12/comments" in a for a in r)]  # read, once
+    assert len([a for c in gh.calls for a in c if "issues/12/comments" in a]) == 1
+
+
+def test_owner_record_reads_the_session_in_the_last_record() -> None:
+    assert omnigent_agent.owner_record([owner_comment("s1")]) == "s1"
+    assert omnigent_agent.owner_record([owner_comment("s1"), owner_comment("s2")]) == "s2"
+    assert (
+        omnigent_agent.owner_record([{"body": "Assigned: @x"}, {"body": "Owner: elsewhere\n"}])
+        == ""
+    )
+    assert omnigent_agent.owner_record([{"body": "no record"}]) is None
+
+
 @pytest.mark.parametrize("failure", ["no lead", "unarchive", "relay"])
 def test_dequeue_without_lead_acts(tmp_path, monkeypatch, failure) -> None:
     """No lead owns the PR, or its unarchive or relay fails: one act event to the manager, never sent twice."""
@@ -707,3 +771,86 @@ def test_queue_events_route_by_rule(kind, session, action) -> None:
 
     event = {"kind": kind, "session": session, "last": "", "line": "x"}
     assert omnigent_agent.route(event, ask)[:2] == ("rule", action)
+
+
+def test_a_followed_verifier_is_no_lead_and_the_lead_gets_the_dequeue(
+    tmp_path, monkeypatch
+) -> None:
+    """The followed session ``a`` is the PR's verifier (read-only: it can't push or land) and carries the PR's label;
+    the lead ``L`` carries it too. The dequeue goes to ``L``, never ``a`` (#2614)."""
+    registry, og = fleet(tmp_path, L={"labels": {"omni.pr": "o/r#12", "omni.role": "lead"}})
+    og.snaps["a"] = {"labels": {"omni.pr": "o/r#12", "omni.role": "verifier"}}
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 2)
+    assert [s for s, _ in relays(og, 12)] == ["L"]
+
+
+def test_a_verifier_alone_leaves_the_dequeue_to_the_manager(tmp_path, monkeypatch) -> None:
+    registry, og = fleet(tmp_path)
+    og.snaps["a"] = {"labels": {"omni.pr": "o/r#12", "omni.role": "verifier"}}
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 2)
+    assert not relays(og, 12) or all(s != "a" for s, _ in relays(og, 12))
+
+
+def test_a_dequeue_for_a_head_since_replaced_goes_to_no_session(tmp_path, monkeypatch) -> None:
+    """The PR's head was first seen after the entry queued, so a later push replaced the run that failed: no
+    session is told (#2614)."""
+    registry, og = fleet(tmp_path)
+    og.snaps["a"] = {"labels": {"omni.pr": "o/r#12", "omni.role": "lead"}}
+    gh = GitHub(monkeypatch)
+    gh.pulls = [{"number": 12, "draft": False, "head": {"sha": "a" * 40}, "updated_at": iso(0)}]
+    monkeypatch.setattr(omnigent_agent, "loop_cards", lambda *a, **k: {})
+    monkeypatch.setattr(omnigent_agent, "pr_facts", lambda *a, **k: {})
+    monkeypatch.setattr(omnigent_agent, "pr_stall", lambda *a, **k: (time.time(), ""))
+
+    def push_then_dequeue(p: int) -> None:
+        if p == 1:  # a push the sweep sees after the entry queued, then the old run's dequeue
+            gh.pulls[0] = {**gh.pulls[0], "head": {"sha": "b" * 40}, "updated_at": iso(0)}
+            gh.comments.append(comment(100, 12, jobs=(7,), queued_ago=3600))
+
+    run(og, registry, monkeypatch, 4, push_then_dequeue)
+    assert not relays(og, 12) and not acts(og, "o/r#12")
+
+
+def test_a_dequeue_names_its_head_and_only_a_different_current_head_drops_it(
+    tmp_path, monkeypatch
+) -> None:
+    """The comment's head decides, not a clock: a PR sent back to draft and made ready on the same head, its sweep
+    after the entry queued, still gets its dequeue; a different current head gets none."""
+    for i, (current, want) in enumerate([("a" * 40, ["a"]), ("b" * 40, [])]):
+        (tmp_path / str(i)).mkdir()
+        registry, og = fleet(tmp_path / str(i))
+        og.snaps["a"] = {"labels": {"omni.pr": "o/r#12", "omni.role": "lead"}}
+        gh = GitHub(monkeypatch)
+        gh.pulls = [{"number": 12, "draft": False, "head": {"sha": current}, "updated_at": iso(0)}]
+        gh.comments.append(comment(100, 12, jobs=(7,), head="aaaaaaa", queued_ago=3600))
+        monkeypatch.setattr(omnigent_agent, "loop_cards", lambda *a, **k: {})
+        monkeypatch.setattr(omnigent_agent, "pr_facts", lambda *a, **k: {})
+        monkeypatch.setattr(omnigent_agent, "pr_stall", lambda *a, **k: (time.time(), ""))
+
+        run(og, registry, monkeypatch, 4)
+        assert [s for s, _ in relays(og, 12)] == want
+
+
+def test_a_followed_verifier_naming_the_pr_in_its_wait_is_still_no_owner(
+    tmp_path, monkeypatch
+) -> None:
+    """``a`` is the PR's verifier and its wait line names o/r#12: still no lead, so the manager gets it (#2614)."""
+    registry, og = fleet(tmp_path)
+    og.snaps["a"] = {"labels": {"omni.role": "verifier"}}
+    (tmp_path / "a.md").write_text("")
+    og.histories["a"][-1] = ending("STILL WORKING: waiting on o/r#12\nWaits: #12", 8000)
+    gh = GitHub(monkeypatch)
+    gh.comments.append(comment(100, 12, jobs=(7,)))
+    run(og, registry, monkeypatch, 3)
+    assert all(s != "a" for s, _ in relays(og, 12))
+
+
+def test_queue_comment_reads_queued_at_and_the_head() -> None:
+    entry = omnigent_agent.queue_comment(comment(1, 12, jobs=(7,), head="1ae8cad", queued_ago=3600))
+    assert entry["head"] == "1ae8cad"
+    assert entry["queued_at"] == pytest.approx(time.time() - 3600, abs=5)
+    assert omnigent_agent.queue_comment(comment(1, 12))["head"] == ""

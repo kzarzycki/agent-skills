@@ -82,8 +82,10 @@ AUTOUSE = (
     "assigned",
     "board_risks",
     "graphql_answers",
+    "session_fields",
     "merging",
     "reran",
+    "green_base",
 )
 
 
@@ -194,6 +196,13 @@ def reran(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
+def green_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The base's latest push run is green, instead of read from the forge (red_base, #2565); test_approvals_red_base.py
+    puts the real read back."""
+    monkeypatch.setattr(approvals, "red_base", lambda _base, _loop=None: ([], []))
+
+
+@pytest.fixture
 def board_risks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The repo's board as board.py reads and sets it over gh, instead of GitHub: a `Risk` field whose option for
     each PR on the board is in `values`, every option set in `set` (which leaves `values`, so a test that checks
@@ -260,6 +269,48 @@ def graphql_answers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(approvals.github, "_rest_only", False)
 
 
+@pytest.fixture
+def session_fields(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
+    """Every test starts outside Omnigent, with a run that has looked up no `Session` field; the field's lookups, over
+    GraphQL and REST, answer that the account has it, and each lookup and write is recorded here instead of reaching
+    GitHub."""
+    calls: list[tuple[Any, ...]] = []
+    for name in ("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "OMNIGENT_SESSION_ID", "RUNNER_SERVER_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(approvals, "unfielded", None, raising=False)
+    monkeypatch.setattr(approvals, "rest_field", None, raising=False)
+
+    def lookup(number: int, name: str) -> tuple[str | None, str]:
+        calls.append(("lookup", number, name))
+        return "FIELD", f"ISSUE_{number}"
+
+    monkeypatch.setattr(approvals, "issue_field", lookup, raising=False)
+    monkeypatch.setattr(
+        approvals,
+        "set_issue_field",
+        lambda issue, field, text: calls.append(("set", issue, field, text)),
+        raising=False,
+    )
+
+    def exists(name: str) -> bool:
+        calls.append(("rest exists", name))
+        return True
+
+    def field_id(name: str) -> int | None:
+        calls.append(("rest id", name))
+        return 42
+
+    monkeypatch.setattr(approvals, "rest_has_issue_field", exists, raising=False)
+    monkeypatch.setattr(approvals, "rest_issue_field_id", field_id, raising=False)
+    monkeypatch.setattr(
+        approvals,
+        "rest_set_issue_field",
+        lambda number, field, text: calls.append(("rest set", number, field, text)),
+        raising=False,
+    )
+    return calls
+
+
 __all__ = [
     "AS_WRITTEN",
     "AUTO",
@@ -300,6 +351,7 @@ __all__ = [
     "git_in",
     "github",
     "graphql_answers",
+    "green_base",
     "heavy_by_run",
     "held",
     "hub",
@@ -322,6 +374,7 @@ __all__ = [
     "required",
     "reran",
     "rest_comment",
+    "session_fields",
     "specced",
     "status",
     "verdict_on",

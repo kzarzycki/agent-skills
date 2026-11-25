@@ -1,0 +1,32 @@
+# timeouts: nightly
+# The full run after a merge that touches a build input (#2445): the merge queue selects a floor for these under
+# `select.build_inputs_in_queue: floor`, and this runs the whole suite once on main. A failure turns this run red. No auto-revert.
+name: build-inputs-full-run
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - mise.toml
+      - conftest.py
+      - tools/affected_tests.py
+      - gatekeeper/skills/gatekeeper/scripts/gatekeeper.py
+permissions:
+  contents: read
+jobs:
+  full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - run: mise install
+      - run: uv sync --frozen
+      - run: mise run check

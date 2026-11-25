@@ -387,9 +387,17 @@ def test_with_gate_steps_affected_tests_record_records_nothing_and_says_so(
 def test_the_floor_finds_a_select_prs_record_from_a_batch_checkout(
     worker: dict,
     paths: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """Under gatekeeper.md's `select`, the floor keys a PR's record by the PR's head, not by the batch: the batch
-    holds another PR's code change, so its diff has a build input that a docs or pack-bump PR's record doesn't."""
+    holds another PR's code change, so its diff has a build input that a docs or pack-bump PR's record doesn't.
+    The run takes no host gate slot (#2339): a bare run on a host whose slots are all held must pass, so the test
+    sets `GATE_SLOTS=off` and leaves no slot file in a cache of its own."""
+    cache = tmp_path / "cache"
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+    monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+    monkeypatch.setenv("GATE_SLOTS", "off")
     worker["start"](SELECT)
     worker["commit"](*paths)
     point = base_of_work()
@@ -405,3 +413,4 @@ def test_the_floor_finds_a_select_prs_record_from_a_batch_checkout(
     git_in(repo, "merge", "-q", "--no-ff", "-m", "Merge of PR 7", "work")
     found, line = c.recorded(head, point)
     assert found, line
+    assert not list(cache.rglob("gate.*.lock")), "the run took a host gate slot"

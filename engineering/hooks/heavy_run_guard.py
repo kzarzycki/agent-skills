@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""A Claude Code PreToolUse hook on Bash: refuse a heavy test or check run on a host (#1233).
+"""A Claude Code PreToolUse hook on Bash: refuse a heavy test or check run on a host (#1233), and a hand-written
+poll loop anywhere in a loop repo (#2623).
 
-engineering-loop's SKILL.md, Where heavy steps run, sends a lead's own suite, build and check runs
+engineering-loop's SKILL.md, Where work runs, sends a lead's own suite, build and check runs
 to a Claude cloud session; this hook makes that the default. It reads the tool call's JSON on
 stdin and refuses (exit 2, the reason on stderr, as Claude Code's PreToolUse contract takes it) a
 command one of whose segments is heavy (``heavy``), when all of these hold:
@@ -14,6 +15,10 @@ command one of whose segments is heavy (``heavy``), when all of these hold:
 - the cloud route can run here: an Omnigent server is configured for this session
   (``RUNNER_SERVER_URL`` set). Without one (plain Claude Code) the run is allowed with one line on
   stderr saying it stayed on this machine, so nobody is blocked by a route they can't use.
+
+A hand-written poll loop (``poll_loop``: a ``while``/``until`` loop that ``sleep``s, or a bare ``sleep`` of 30 seconds or
+more) is refused in a cloud session too, where the heavy-run rules above do not apply: the pack's ``wait-for`` helper
+is the wait, and a loop of one's own can hang a session for hours on a line that never comes (``POLL_REFUSAL`` names it).
 
 The refusal names the ``claude-cloud-run`` call for that exact command and the fallback. Anything it
 can't read or parse is allowed (exit 0), so a bug here never blocks work. Stdlib only, no
@@ -419,7 +424,7 @@ def refusal(command: str, cwd: Path, root: Path) -> str:
     run = cloud_command(command, cwd, root)
     if run is None:
         head = (
-            "Heavy run refused on this host: engineering-loop's SKILL.md, Where heavy steps run, sends"
+            "Heavy run refused on this host: engineering-loop's SKILL.md, Where work runs, sends"
             f" a test or check run to a Claude cloud session, but a `cd` in it goes outside {root} or"
             " can't be followed, so no claude-cloud-run call runs it as written. Rewrite it to run"
             f" inside that checkout, or, when it needs this host, run it with the reason as a prefix:"
@@ -431,7 +436,7 @@ def refusal(command: str, cwd: Path, root: Path) -> str:
             f" -- {shlex.quote(run)}"
         )
         head = (
-            "Heavy run refused on this host: engineering-loop's SKILL.md, Where heavy steps run, sends"
+            "Heavy run refused on this host: engineering-loop's SKILL.md, Where work runs, sends"
             " a test or check run to a Claude cloud session. Run it there (commit and push first; it"
             " exits with the command's own code):\n"
             f"  {call}\n"
@@ -445,17 +450,56 @@ def refusal(command: str, cwd: Path, root: Path) -> str:
     )
 
 
+POLL_REFUSAL = (
+    "poll_loop_guard: a hand-written wait loop (`while`/`until` with `sleep`, or a long `sleep`) is refused: one"
+    " typo in the line it greps for and it never ends. Wait with the pack's helper: `omnigent_agent.py wait-for --log"
+    " <log> --pid <pid file> --budget 570` (from the pack's omnigent-agents skill), or `wait-for --pr <n>`, called"
+    " again on `still running`."
+)
+LONG_SLEEP = 30  # seconds: a shorter sleep is a pause, not a wait
+LOOPS = {"while", "until"}
+
+
+def poll_loop(command: str, depth: int = 0) -> bool:
+    """Whether ``command`` waits by hand: a ``while`` or ``until`` loop with a ``sleep`` command in it, or a
+    ``sleep`` of ``LONG_SLEEP`` seconds or more, in no command that also runs the helper (``wait-for``). A
+    ``sh -c`` string is read too. A line it can't parse is no poll loop."""
+    try:
+        parts = segments(command)
+    except ValueError:
+        return False
+    if any(w.endswith("wait-for") or w == "wait-for" for words in parts for w in words):
+        return False
+    looped = any(words[0] in LOOPS for words in parts)
+    for words in parts:
+        words, _, _ = strip_leading(words, None)
+        if words and words[0] == "sleep":
+            nums = [w for w in words[1:] if re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", w)]
+            long = any(
+                float(w.rstrip("smhd")) * {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(w[-1], 1)
+                >= LONG_SLEEP
+                for w in nums
+            )
+            if looped or long:
+                return True
+        if depth < SHELL_DEPTH and (inner := shell_string(words)) and poll_loop(inner, depth + 1):
+            return True
+    return False
+
+
 def verdict(payload: dict, env: dict[str, str]) -> tuple[int, str]:
     """The hook's exit code and stderr line for this tool call: ``(2, <refusal>)`` for a heavy run
     the cloud route could make, ``(0, NOTICE)`` for one it can't (no Omnigent server), else ``(0, "")``."""
-    if env.get("CLAUDE_CODE_REMOTE") == "true":
-        return 0, ""
     if payload.get("tool_name", "Bash") != "Bash":
         return 0, ""
     command = (payload.get("tool_input") or {}).get("command")
     if not isinstance(command, str) or not command.strip():
         return 0, ""
     cwd = Path(payload.get("cwd") or os.getcwd())
+    if loop_repo(cwd) and poll_loop(command):  # a cloud session too: its waits are where this hangs
+        return 2, POLL_REFUSAL
+    if env.get("CLAUDE_CODE_REMOTE") == "true":
+        return 0, ""
     parts = segments(command)
     if parts and parts[0][0].startswith(HOST_RUN + "=") and parts[0][0].partition("=")[2].strip():
         return 0, ""  # the whole command starts with the fallback prefix

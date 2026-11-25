@@ -22,6 +22,7 @@ from test_omnigent_agent import (
 )
 
 EVENTS = omnigent_agent._load_events()
+READS_LOOP_EVENTS = True  # conftest.no_origin_reads leaves this module its bare remote
 real_sleep = time.sleep  # `supervised` replaces the module-wide `time.sleep`
 WAIT = "STILL WORKING: waiting on #12"
 GREEN = (
@@ -225,6 +226,9 @@ def test_a_lead_needs_owner_event_is_not_told_twice(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clone: Path
 ) -> None:
     """The lead's own `needs-owner` is raised by its turn end; the event poll adds no second item for it."""
+    monkeypatch.setattr(
+        omnigent_agent, "blocks", lambda repo, number: []
+    )  # no GitHub in tests (#2499)
     registry = following(tmp_path)
     og = Lead(told("brief", 60), ending(WAIT, 30))
     og.snap = {"status": "idle"}

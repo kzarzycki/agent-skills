@@ -26,7 +26,7 @@ the next run reads to find where the new merges start.
 
 Every body is checked first against the local deny list, the file the environment variable `LOOP_DENY_LIST` names
 (one term per line, `#` starts a comment, matched ignoring case at word boundaries): a line naming a term refuses the
-post before any call to GitHub, since a public repo keeps an issue's first text in its edit history. A list the
+post before any call to GitHub (a term inside an Omnigent session link doesn't count), since a public repo keeps an issue's first text in its edit history. A list the
 variable names that can't be read refuses too. `--dry-run` prints the body it would post and posts nothing.
 
 The repository is `--repo`, else `GITHUB_REPOSITORY` (set in GitHub Actions), else the `origin` remote's GitHub slug.
@@ -65,6 +65,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _installed import installed
 
 sys.path.insert(0, str(installed("gatekeeper")))
+import denylist
 from folding import fold
 
 # the environment variable naming the local deny list, a file kept outside the repo (gatekeeper.py's DENY_LIST)
@@ -112,23 +113,11 @@ def gh(*args: str) -> Any:
 
 
 def denied(text: str) -> None:
-    """Refuse `text` when a line names a term of the deny list `LOOP_DENY_LIST` names; without it, check nothing."""
-    where = os.environ.get(DENY_LIST)
-    if not where:
-        return
+    """Refuse `text` when a line names a term of the deny list `LOOP_DENY_LIST` names (denylist.py); without it, check nothing."""
     try:
-        listed = Path(where).expanduser().read_text().splitlines()
-    except OSError as exc:
-        raise Refused(
-            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
-        ) from exc
-    terms = [term for term in (line.split("#", 1)[0].strip() for line in listed) if term]
-    for number, line in enumerate(text.splitlines(), 1):
-        for term in terms:
-            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
-                raise Refused(
-                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
-                )
+        denylist.check(text)
+    except denylist.Denied as exc:
+        raise Refused(str(exc)) from exc
 
 
 def repository(given: str | None) -> str:
@@ -348,8 +337,8 @@ def red(args: argparse.Namespace) -> int:
 #   schedule  skip when the newest successful scheduled run on the default branch (`GITHUB_REF_NAME`, else `main`)
 #             ran `GITHUB_SHA` itself.
 #   tag       skip when any successful scheduled run of the nightly workflow (`GITHUB_WORKFLOW_REF` names the tag
-#             check's workflow there, so the nightly is named: `engineering-ci.yml`) ran `GITHUB_SHA`, the tagged commit
-#             (#2264): one runs call filtered by `event=schedule`, `status=success` and `head_sha`, checked again here.
+#             check's workflow there, so the nightly is named: `engineering-ci.yml`, or `--nightly <file>`) ran
+#             `GITHUB_SHA`, the tagged commit (#2264): one runs call filtered by `event=schedule`, `status=success` and `head_sha`, checked again here.
 # Any forge or API failure reads as "nothing found": the run goes ahead.
 BATCHES = {  # land.queue -> (the batch branches' prefix, the event of the run that tests them)
     "mergify": ("mergify/merge-queue/", "pull_request"),
@@ -481,6 +470,8 @@ def moved_report(mode: str, found: dict | None, note: str = "") -> None:
                 handle.write(text + "\n")
 
 
+# ponytail: #2560's third item, a failed push run on main visible to whoever lands next (e.g. `check merge` reading main's
+# latest push run), is not built: it is a gatekeeper change beyond this fix, which keeps to the resolver and its test.
 def moved(args: argparse.Namespace, api: Api = forge) -> int:
     repo, sha = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"]
     workflow = (
@@ -496,7 +487,7 @@ def moved(args: argparse.Namespace, api: Api = forge) -> int:
                 api, repo, workflow, os.environ.get("GITHUB_REF_NAME") or "main", sha
             )
         else:
-            found = nightly_ran(api, repo, NIGHTLY, sha)
+            found = nightly_ran(api, repo, getattr(args, "nightly", None) or NIGHTLY, sha)
     except FORGE_ERRORS as error:
         print(f"nightly: forge read failed ({error}); running as usual", file=sys.stderr)
         found = None
@@ -526,6 +517,12 @@ def main(argv: list[str] | None = None) -> int:
         help="skip=true|false to GITHUB_OUTPUT: has a push, scheduled or tag-check run anything to run",
     )
     skipping.add_argument("mode", choices=tuple(LINES))
+    skipping.add_argument(
+        "--nightly",
+        default=NIGHTLY,
+        metavar="FILE",
+        help=f"`tag` only: the workflow file of the project's nightly (default {NIGHTLY})",
+    )
     args = parser.parse_args(argv)
     try:
         return moved(args) if args.verb == "moved" else red(args)

@@ -1,6 +1,6 @@
 # Proof run
 
-A brief the lead fills in and sends to a child placed as SKILL.md, Where heavy steps run says
+A brief the lead fills in and sends to a child placed as SKILL.md, Where work runs says
 (a cloud child by default: `run --pr <n>`, SKILL.md, Cloud worker) when a verifier asks for its runs because the host's heavy slot was not free, or its sandbox refused a run (verifier.md,
 A run the sandbox refuses). The child returns the logs; the verifier reads them as its own. The undo
 and redo commands are the ones verifier.md, Mutation-check the new tests gives for its

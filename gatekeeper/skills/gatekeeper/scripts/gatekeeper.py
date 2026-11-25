@@ -27,10 +27,12 @@
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py queue-select [<base>]      # a merge queue's batch check (R6): one command per line to run on the batch, the select.unkeyed checks and `affected-tests --base <point>` for each PR with no record; exit 1 when that is nothing while a PR has no record
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
-    uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1 when .mergify.yml is out of step
+    uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1, one line each, when .mergify.yml, a marked workflow job's `timeout-minutes`, loop.md's `Wall-clock variable:`, a hand-set `land.wait` or the nightly's push paths (against `select.build_inputs`) is out of step
+    uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record]  # the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
+    uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
@@ -42,6 +44,7 @@ unchanged. Its own names for three of them, and one verb more:
     uv run scripts/gatekeeper.py record approval <spec|plan|merge> <n> --by ...  # `approve`, the same arguments
     uv run scripts/gatekeeper.py record verdict <pr> <report>   # `verdict`
     uv run scripts/gatekeeper.py record checks [<pr>] [--record|--run|--status <head>|--head-proof]  # `local-ci`
+    uv run scripts/gatekeeper.py record waiting <pr> --on <what> [--within 4h|2d]  # a PR waiting on another agent tree's go: `Waiting on:` and its `Deadline:` (default 24h); `--clear` ends it (#2501)
     uv run scripts/gatekeeper.py report --json <report>   # the report's facts as JSON: verifier, head, verdict, ...
 
 The policy reaches the tracker, the forge and the evidence only through their ports (PORTS), each run by the adapter
@@ -76,6 +79,12 @@ PR, an issue another open PR closes too (a closing keyword, or `Implements` unde
 and its branch, since each build runs its own verifier, gate and queue. When every build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
 the PR its issues' assignees, reporting a refusal and carrying on. A flow that releases the claim (the loop's `release`) removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
+Under Omnigent (`OMNIGENT_RUNNER_PRIMARY_SESSION_ID` and `RUNNER_SERVER_URL` set) the record's details add `Session:
+<server>/c/<lead's session id>`, which names the lead from inside its workers and verifiers too, and the issue's `Session`
+issue field is set to the same link. The field is optional: the account's owner creates it (a text field); without it,
+the run says so in one line after one lookup, the record still carries the link, and the claim and the exit code are
+unchanged. A refused write is a line too. Where GitHub refuses GraphQL, REST sets it, with the field's id read off an
+issue already carrying a value. `check setup` prints one line and GitHub's steps when the account lacks the field.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` also fails a PR that itself carries `needs-owner` (`#<n> waits for the owner (needs-owner)`), so `land`
@@ -139,9 +148,8 @@ the branch's name starts a segment with (`loop/329-fix`), the same way, and clai
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in gatekeeper.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
-`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
-workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
-prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
+`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop, naming the proofs it lacks, and exits 1, as `land` does for the same PR (one rule, `outside`): `land`
+never takes it into a batch, and named, prints the same line and exits 1, so the loop never merges it and its author merges it their usual way. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
 repository's default branch, through one of three merge queues, picked by the base's rules (`required_checks`) and the
@@ -346,7 +354,7 @@ whether classic branch protection requires one, so a PR is a candidate there onl
 section, the project's word that its base requires none (a ruleset that does picks the GitHub merge queue, above);
 a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
 (`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
-`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not the base's tip. `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
+`land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not on the base's history (an older base commit passes this step, and the drift check above judges its files). `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
 loop.md's `carry_over_main` and `ci` work as below for one more release, each printing one `deprecated:` line on
 stderr. The keys that drove a gate at land, `batch_queue` under `loop` and `land`'s `gate_on`,
 `cloud_gate_timeout_seconds` and `host_gate`, do nothing (#1872): a policy that still sets one parses, with one
@@ -378,7 +386,14 @@ record branch's `Inputs: <key>` line, so any tree with the same key reuses it, f
 origin's record branches of that command, and the step's line says `<step>: reused, inputs unchanged since <tree>`. A
 found record counts only when today's `paths` give its own tree the same key, so one whose tree holds other inputs
 counts for nothing. A step without `paths`, with an empty list, or whose paths match no file in the tree is keyed by
-the tree, as above; a change to `gate_steps` changes every keyed step's key. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
+the tree, as above; a change to `gate_steps` changes every keyed step's key. A step may set `on_demand: true` (#2295),
+for a check too costly to run on every PR (an hours-long run against a paid external system): `local-ci` and
+`local-ci --record` skip it, each saying `<step>: skipped, on demand`, `land` reads only the other steps' records, and
+the gate's pass never needs it, since a
+gate step runs on every PR whose tree has no pass of it. `local-ci --record --step <name>` (repeatable, with
+`--record` alone; a name `gate_steps` lacks is refused) runs those steps alone and records, publishes and reuses each
+pass as any step's, by its inputs key, so an unchanged input never runs it again; it writes no `gate` status or event,
+since it is no pass of the gate, and `gate-record <head> -- <its command>` reads its pass. A cloud session runs no `host` step: `local-ci --record` there runs the rest, says
 which step it left and exits 0, with no head proof and no pass on the whole gate, which `local-ci <pr>` needs
 and refuses there. Each step that runs, or the one gate, holds the host gate slot (an exclusive flock on
 `${XDG_CACHE_HOME:-~/.cache}/engineering-loop/gate.<n>.lock`, n up to the host's slot count) for its run only, with `LOOP_GATE_SLOT_HELD` set to that
@@ -462,7 +477,7 @@ a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` 
 naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
 any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
-variable `LOOP_DENY_LIST` names (denied): a line naming a listed term refuses the post before any call to GitHub.
+variable `LOOP_DENY_LIST` names (denied): a line naming a listed term, outside an Omnigent session link, refuses the post before any call to GitHub.
 `verdict` posts a report in the verifier role's format as one PR review (event COMMENT, since GitHub refuses the others on
 one's own PR) on the commit its `Head:` line names, carrying any text after the pass number on its `Verifier:` line
 (a qualifier, such as why the verifier shares the author's family) into the review's first line, refusing a report without that line or its
@@ -531,7 +546,7 @@ section or key it doesn't know or a value of the wrong type is refused, naming t
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
 `short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
 `high` and `critical`, each with `spec` and `merge` (above), and `rerun`, whether `check merge` and `land` need an
-independent rerun of the head's selection on its tree (default false for `low`, true for `high` and `critical`): a
+independent rerun of the head's selection on its tree (default false at every level: a repo turns it on once a workflow pushes the rerun record): a
 record of `local-ci --record --rerun` on origin that an app pushed (a CI run on the head) or that a verifier pass on
 the head names on a `Rerun: <record commit>` line (a fresh session the verifier started), never the worker's own
 record (rerun_gap).
@@ -603,6 +618,7 @@ import ast
 import atexit
 import contextlib
 import contextvars
+import difflib
 import fcntl
 import fnmatch
 import functools
@@ -622,6 +638,7 @@ import sys
 import tempfile
 import threading
 import time
+import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timedelta, timezone
@@ -960,8 +977,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
             command=str,
             where=Choice(STEP_PLACES),
             paths=list,
+            on_demand=bool,
             unique=("name", "command"),
-            optional=("paths",),
+            optional=("paths", "on_demand"),
         ),
         "owner": str,
         "machine_exit": int,
@@ -1022,12 +1040,25 @@ SCHEMA: dict[str, dict[str, Any]] = {
     # the narrowed gate's first cut (classify): the project's build inputs, and the checks a non-product path still gets
     "select": Table(
         build_inputs=list,
+        # globs of config the project says no build or test reads (#2511): non-product, as `docs/*` is, so a docs and
+        # config diff selects no suite; a build input or a check's `paths` still wins
+        non_product=list,
         checks=Rows(paths=list, command=str, unique=("command",)),
         # the checks whose pass is never reused (#2183): each a gate step's name or command, or `gate`'s command
         unkeyed=list,
         # how many shards a whole-suite selection splits into (shard_selections), 1 or absent is one
         shards=int,
-        optional=("build_inputs", "checks", "unkeyed", "shards"),
+        # what the merge queue's selection does with a build input (#2445): `floor`, the default, the other changed
+        # files' tests plus a lockfile's importers; `full`, the whole suite
+        build_inputs_in_queue=Choice(("floor", "full")),
+        optional=(
+            "build_inputs",
+            "non_product",
+            "checks",
+            "unkeyed",
+            "shards",
+            "build_inputs_in_queue",
+        ),
     ),
     # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
     "timeouts": Table(test=str, run=str, optional=("test", "run")),
@@ -1111,12 +1142,52 @@ def sections(data: dict[str, Any], file: str) -> dict[str, dict[str, Any]]:
     return data
 
 
+def pack_version() -> str:
+    """The version of the gatekeeper pack running here, from the `.claude-plugin/plugin.json` above this script, else
+    `unversioned`. ponytail: a copy vendored without the manifest (a consumer's `.agents/skills`) names no version."""
+    for folder in Path(__file__).resolve().parents[:6]:
+        manifest = folder / ".claude-plugin" / "plugin.json"
+        if manifest.is_file():
+            try:
+                found = json.loads(manifest.read_text())
+            except (OSError, ValueError):
+                continue
+            if (
+                isinstance(found, dict)
+                and found.get("name") == "gatekeeper"
+                and found.get("version")
+            ):
+                return f"v{found['version']}"
+    return "unversioned"
+
+
+def unknown(file: str, where: str, key: str, known: Any, kind: str = "setting") -> None:
+    """An unknown setting or section: refused when it is a near match to a key `known` holds in the same place (a
+    typo, naming the key it probably meant), else said once per run on stderr and left to the caller to drop, so the
+    run goes on as if it were absent (#2475): a repo's main may set a key only a newer pack knows, and every branch
+    still on an older one would otherwise refuse every command until it merged main."""
+    near = difflib.get_close_matches(key, [k for k in known if isinstance(k, str)], n=1, cutoff=0.8)
+    if near:
+        raise Refused(
+            f"{file} has an unknown {kind} {where}: did you mean `{near[0]}`?"
+            if kind == "setting"
+            else f"{file} has an unknown settings section `{key}`: did you mean `{near[0]}`?"
+        )
+    if where not in DEPRECATED:
+        DEPRECATED.add(where)
+        print(
+            f"{file} sets {where}, which this gatekeeper ({pack_version()}) doesn't know: this repo's policy needs a"
+            " newer pack; merge main",
+            file=sys.stderr,
+        )
+
+
 def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md") -> dict[str, Any]:
     """A section's values checked against its schema (a map of keys, or one type for any key), refusing one that
     doesn't match it and naming the key, so a mistyped setting is never read as a rule nobody wrote. Types match
     exactly, which also refuses what YAML 1.1 reads as another type where a name was meant (`no` as false, `1.10` as
     a float), naming the key, since such a value is never the name written."""
-    for key, value in section.items():
+    for key, value in list(section.items()):
         where = f"`{name}.{key}`"
         if not isinstance(
             key, str
@@ -1124,7 +1195,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             raise Refused(f"{file}'s {where} is no name: quote it")
         kind = schema.get(key) if isinstance(schema, dict) else schema
         if kind is None:
-            raise Refused(f"{file} has an unknown setting {where}")
+            unknown(file, where, key, schema)
+            del section[key]  # as if it were absent
+            continue
         if isinstance(kind, Rows):  # a list of sections, such as `loop.gate_steps`
             if not (
                 isinstance(value, list) and value and all(isinstance(row, dict) for row in value)
@@ -1259,7 +1332,7 @@ def settings(loop: str | None) -> dict[str, Any]:
                 if adapter not in ADAPTERS:
                     raise Refused(unknown_adapter(file, port_name, adapter))
         else:
-            raise Refused(f"{file} has an unknown settings section `{name}`")
+            unknown(file, f"`{name}`", name, SCHEMA, "section")
     return data
 
 
@@ -1298,12 +1371,12 @@ def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
     """docs/agents/issue-tracker.md's settings block, checked against TRACKED: each section's names with their text.
     `components` and `categories` name a label bare (`billing`) or in full (`area:billing`)."""
     data = sections(block(tracker, "issue-tracker.md"), "issue-tracker.md")
-    unknown = [name for name in data if name not in TRACKED]
-    if unknown:
-        raise Refused(f"issue-tracker.md has an unknown settings section `{unknown[0]}`")
+    for name in [name for name in data if name not in TRACKED]:
+        unknown("issue-tracker.md", f"`{name}`", name, TRACKED, "section")
     return {
         name: typed(section, TRACKED[name], name, "issue-tracker.md")
         for name, section in data.items()
+        if name in TRACKED
     }
 
 
@@ -1785,8 +1858,8 @@ def levels(loop: str | None) -> dict[str, dict[str, Any]]:
     needs an independent rerun of the head's selection (`rerun`, rerun_gap): gatekeeper.md's `levels`, each key it
     leaves out at its default, which is the rule before levels existed: `low` {policy, gates}; `high` {policy, go}, or
     under `spec.auto: true` {owner, gates}, since there the owner approved the change before it was built; `critical`
-    {policy, owner}; `rerun` false for `low` and true for `high` and `critical` (#2240), since for a high-risk change
-    a red the nightly finds is found too late."""
+    {policy, owner}; `rerun` false at every level (#2472): a repo opts in once it has a workflow that pushes the rerun record
+    (#2240), since for a high-risk change a red the nightly finds is found too late."""
     high: dict[str, Any] = (
         {"spec": "owner", "merge": "gates"}
         if spec_auto(loop)
@@ -1794,8 +1867,8 @@ def levels(loop: str | None) -> dict[str, dict[str, Any]]:
     )
     table: dict[str, dict[str, Any]] = {
         "low": {"spec": "policy", "merge": "gates", "rerun": False},
-        "high": {**high, "rerun": True},
-        "critical": {"spec": "policy", "merge": "owner", "rerun": True},
+        "high": {**high, "rerun": False},
+        "critical": {"spec": "policy", "merge": "owner", "rerun": False},
     }
     for level, actions in settings(loop).get("levels", {}).items():
         table[level] = {**table[level], **actions}
@@ -2015,7 +2088,7 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
       session it started pushed, in a repo with no CI.
     A record branch someone pushed by hand alone is neither, so the worker's own record never satisfies it, nor does a
     rerun record a person's account pushed unless the verifier names it. The level is the rating's (rating), so a
-    level whose `rerun` is false (by default `low`) keeps the worker's record as the proof (#2143's D1)."""
+    level whose `rerun` is false (by default every level) keeps the worker's record as the proof (#2143's D1)."""
     level = rating(pull, issues, loop).level
     if not levels(loop)[level].get("rerun"):
         return None
@@ -2054,6 +2127,8 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
         if found
         else f"origin holds no rerun record on tree {held}"
     )
+    if missing := rerun_workflow_gap(toplevel(), loop, level, policy_tree(toplevel())):
+        return f"{asked} {said}; {missing}"
     return (
         f"{asked} {said}. Where the repo has CI, a CI run on the head runs `local-ci --record --rerun` and pushes its"
         f" record; with no CI, the verifier starts a fresh session that runs it on the head and names the record's"
@@ -2343,24 +2418,153 @@ def unflag(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None)
     ]
 
 
+# the issue field naming the session that holds an issue, which the account's owner creates (claim sets it)
+SESSION_FIELD = "Session"
+# why this run sets no `Session` field, once a lookup found it missing or unreadable: later claims skip it unasked
+unfielded: str | None = None
+
+
+# the variable a cloud lead, with no server variables, sets to its own session link, and the form that link must have
+SESSION_LINK_ENV = "OMNIGENT_SESSION_LINK"
+SESSION_LINK_FORM = re.compile(
+    r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._~-]+)*/c/[A-Za-z0-9_-]+"
+)
+
+
+def session_link() -> str | None:
+    """The lead's Omnigent session link, `<server>/c/<session id>`; None outside Omnigent. The lead's id names the
+    lead inside its workers and verifiers too, since they run as its children."""
+    lead = os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "").strip()
+    server = os.environ.get("RUNNER_SERVER_URL", "").strip().rstrip("/")
+    if lead and server:
+        return f"{server}/c/{lead}"
+    # ponytail: epic #2458 open question "how a cloud lead learns its own link", narrower reading: the host cannot
+    # put the link atop a cloud brief (the session's id exists only after the session does), so the lead exports its
+    # own link (nothing in the cloud brief says so yet: a follow-up), and this reads it when the server variables are absent (a cloud VM has none)
+    given = os.environ.get(SESSION_LINK_ENV, "").strip().rstrip("/")
+    return given if SESSION_LINK_FORM.fullmatch(given) else None
+
+
+def issue_field(number: int, name: str) -> tuple[str | None, str]:
+    found: tuple[str | None, str] = github.issue_field(number, name)
+    return found
+
+
+def set_issue_field(issue: str, field: str, text: str) -> None:
+    github.set_issue_field(issue, field, text)
+
+
+def rest_has_issue_field(name: str) -> bool:
+    found: bool = github.rest_has_issue_field(name)
+    return found
+
+
+def rest_issue_field_id(name: str) -> int | None:
+    found: int | None = github.rest_issue_field_id(name)
+    return found
+
+
+def rest_set_issue_field(number: int, field: int, text: str) -> None:
+    github.rest_set_issue_field(number, field, text)
+
+
+# the `Session` field's REST id once a run where GitHub refuses GraphQL found it, so later claims write unasked
+rest_field: int | None = None
+# what `check setup` and a claim print where the account lacks the field: GitHub's steps to create it
+SESSION_STEPS = (
+    f"To add it, on GitHub: your profile picture (or the organization) > Settings > Planning > Issue fields > New field;"
+    f" Field name `{SESSION_FIELD}`, Field type Text; Create."
+)
+
+
+def session_field(number: int, link: str) -> str | None:
+    """Set issue `number`'s `Session` field to `link`: None once set, else the line saying why not. Best effort, like a
+    board move, since the claim's record carries the link too. GraphQL reads the field and the issue's id in one call
+    and sets it; where GitHub refuses GraphQL, REST checks the field exists, reads its id once a run and sets it. A
+    field the account lacks, or one no lookup can read, is said once a run and asked no more (unfielded), so an account
+    without the field pays one lookup."""
+    global unfielded
+    if unfielded is not None or port("tracker") is not github.tracker:
+        return None
+    missing = f"the account has no `{SESSION_FIELD}` issue field"
+
+    def graphql() -> Callable[[], None] | None:
+        field, node = issue_field(number, SESSION_FIELD)
+        return None if field is None else lambda: set_issue_field(node, field, link)
+
+    def rest() -> Callable[[], None] | None:
+        global rest_field
+        if rest_field is None:
+            if not rest_has_issue_field(SESSION_FIELD):
+                return None
+            rest_field = rest_issue_field_id(SESSION_FIELD)
+            if rest_field is None:
+                raise LookupError(
+                    f"GitHub refuses GraphQL here, and REST names the `{SESSION_FIELD}` field's id only once an issue"
+                    " carries a value: set it on one issue by hand"
+                )
+        field = rest_field
+        return lambda: rest_set_issue_field(number, field, link)
+
+    try:
+        write = github.fast(graphql, rest)
+    except (subprocess.CalledProcessError, LookupError, KeyError, TypeError, ValueError) as exc:
+        unfielded = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+    else:
+        if write is None:
+            unfielded = missing
+        else:
+            try:
+                write()
+                return None
+            except subprocess.CalledProcessError as exc:
+                why = (exc.stderr or "").strip() or str(exc)
+                return f"#{number}: could not set the `{SESSION_FIELD}` field ({why}); its `Assigned:` record names the session"
+    said = f"no issue's `{SESSION_FIELD}` field set ({unfielded}); the `Assigned:` record names the session"
+    return f"{said}. {SESSION_STEPS}" if unfielded == missing else said
+
+
+def session_notice() -> list[str]:
+    """`check setup`'s note on the optional `Session` issue field: one line and GitHub's steps when the account lacks
+    it, a line when GitHub can't say, nothing when it has it. Informational: it changes no exit code."""
+    try:
+        if rest_has_issue_field(SESSION_FIELD):
+            return []
+    except (subprocess.CalledProcessError, Refused, OSError) as exc:
+        why = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+        return [
+            f"setup: could not tell whether the account has a `{SESSION_FIELD}` issue field ({why})"
+        ]
+    return [
+        (
+            f"setup: the account has no `{SESSION_FIELD}` issue field (optional), so a claim's `Assigned:` record"
+            " alone names the lead's Omnigent session."
+        ),
+        SESSION_STEPS,
+    ]
+
+
 def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
     """Building starts: assign each issue no one holds to its spec's approver, with a record that the loop did
     (assigned_by_loop reads it), and give the PR its issues' assignees. The record comes first, so a refused comment leaves no
     assignment assigned_by_loop would read as a person's. A line when GitHub refuses, never a failure, since an assignee says
-    who the issue belongs to and gates nothing past `check build`."""
+    who the issue belongs to and gates nothing past `check build`. Under Omnigent the record names the lead's session
+    (`Session:`) and so does the issue's `Session` field (session_field)."""
     found, held = [], set()
+    link = session_link()
     for issue in issues:
         number, owners = issue["number"], assignees(issue)
         if not owners and (login := approver(issue)):
+            details = f"By: loop\nPR: #{pull['number']}" + (f"\nSession: {link}" if link else "")
             try:
-                comment(
-                    number, fold(f"{ASSIGNED}{login}", details=f"By: loop\nPR: #{pull['number']}")
-                )
+                comment(number, fold(f"{ASSIGNED}{login}", details=details))
             except subprocess.CalledProcessError as exc:
                 found.append(
                     f"#{number}: did not assign @{login}: could not record the claim ({(exc.stderr or '').strip() or exc})"
                 )
                 continue
+            if link and (said := session_field(number, link)):
+                found.append(said)
             try:
                 assign(number, login, add=True)
             except subprocess.CalledProcessError as exc:
@@ -2378,6 +2582,71 @@ def claim(pull: dict[str, Any], issues: list[dict[str, Any]]) -> list[str]:
                 f"PR #{pull['number']}: could not assign @{login} ({(exc.stderr or '').strip() or exc})"
             )
     return found
+
+
+# the first line of the record `check build` leaves on a PR: `Owner: <the lead's session link>`, and nothing else
+OWNER = "Owner: "
+
+
+def owner_record(pull: dict[str, Any]) -> list[str]:
+    """Several agent trees (independent groups of agents) work one repo and align only through GitHub, so `check build`
+    writes one `Owner:` record on the PR: the lead's session link (session_link). A line when it cannot write the
+    record, which `check build` counts as a failure; nothing is written again while the PR's last `Owner:` record
+    already says the same.
+    ponytail: the record is written whenever the run has a session to name, and a run with no session at all (a
+    project that does not use sessions) writes none and is not refused, so a single-user project changes nothing; the
+    epic left open what turns the record on, and the owner chose this reading (#2458)."""
+    link = session_link()
+    if not link:
+        return []
+    body = f"{OWNER}{link}\n"
+    kept = [n for n in notes(pull) if n["body"].startswith(OWNER)]
+    if kept and kept[-1]["body"].strip() == body.strip():
+        return []
+    try:
+        comment(pull["number"], body)
+    except subprocess.CalledProcessError as exc:
+        return [
+            f"PR #{pull['number']}: could not write the `Owner:` record ({(exc.stderr or '').strip() or exc})"
+        ]
+    return []
+
+
+# the first line of the record a PR waiting on another agent tree's go carries: `Waiting on: <what>`, its `Deadline:` (ISO
+# 8601, UTC) folded under it; the clearing record repeats the line and adds `Cleared:`. The last one on the PR decides.
+WAIT_RECORD = "Waiting on: "
+# how long a wait may last before the waiting agent tree's supervisor raises it to the PR's owner, when `--within` is absent
+WAIT_SPAN = "24h"
+
+
+def wait_on(number: int, what: str | None, within: str | None, clear: bool) -> int:
+    """`record waiting <pr> --on <what> [--within <span>]` posts the PR's `Waiting on:` record with its deadline (now
+    plus the span, default WAIT_SPAN); `--clear` posts the one that ends the wait, naming what the PR last waited on.
+    The omnigent-agents supervisor of the agent tree that owns the PR (its `Owner:` record) raises one event to that owner
+    once the deadline passes with no clearing record. Refused: no `--on` (or `--clear`), both, a span it cannot read, a
+    `--clear` with nothing to clear. ponytail (#2501): the record is written on request, never by `check build`, and
+    the deadline is the writer's span, not a policy setting: the epic names nothing to configure."""
+    if clear == bool(what):
+        raise Refused(
+            "record waiting takes `--on <what>` to start a wait, or `--clear` to end one, not both or neither"
+        )
+    pull = pull_request(number)
+    last = next((n for n in reversed(notes(pull)) if n["body"].startswith(WAIT_RECORD)), None)
+    if clear:
+        if last is None or "Cleared:" in machine(last["body"]):
+            raise Refused(f"PR #{number} has no `Waiting on:` record to clear")
+        first = machine(last["body"]).split("\n", 1)[0]
+        comment(number, fold(first, details=f"Cleared: {utcnow():%Y-%m-%dT%H:%M:%SZ}"))
+        return 0
+    delta = span(within or WAIT_SPAN)
+    if delta is None:
+        raise Refused(f"--within {within!r} is not a span: write it as `4h`, `2d` or `1d12h`")
+    deadline = f"{utcnow() + delta:%Y-%m-%dT%H:%M:%SZ}"
+    comment(
+        number,
+        fold(f"{WAIT_RECORD}{' '.join((what or '').split())}", details=f"Deadline: {deadline}"),
+    )
+    return 0
 
 
 def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
@@ -2399,6 +2668,99 @@ def assigned_by_loop(issue: dict[str, Any], login: str) -> bool:
         and (event.get("createdAt") or "") >= max(recorded)  # ISO 8601 in UTC, so it orders as text
     ]
     return len(later) <= 1
+
+
+# the first lines of an early claim's records on the issue: `Assigned: @<login>` (ASSIGNED, the line older tooling reads),
+# the takeover's `Handover: @<login>` and the release's `Released: @<login>`, each with its `Session:` link folded under it
+HANDOVER, RELEASED = "Handover: @", "Released: @"
+
+
+def claim_holder(issue: dict[str, Any]) -> tuple[str, str] | None:
+    """The record and session link of whoever holds `issue`'s claim: the last `Assigned:`, `Handover:` or `Released:`
+    record that names a session (a release names none, and ends the claim); None when unclaimed, released or closed.
+    ponytail: an `Assigned:` record with no `Session:` (written outside Omnigent) names no holder, so it blocks no one."""
+    if issue.get("state") == "CLOSED":
+        return None
+    kept = []
+    for note in notes(issue):
+        first = note["body"].strip().split("\n", 1)[0].strip()
+        if not first.startswith((ASSIGNED, HANDOVER, RELEASED)):
+            continue
+        session = re.search(r"^Session: (\S+)", machine(note["body"]), re.MULTILINE)
+        if first.startswith(RELEASED) or session:
+            kept.append((first, session[1] if session else ""))
+    if not kept or kept[-1][0].startswith(RELEASED):
+        return None
+    return kept[-1]
+
+
+def held_claims(issues: list[dict[str, Any]], loop: str | None) -> list[str]:
+    """`check build`'s refusal, a line per issue another session holds an unreleased claim on, naming the holder.
+    ponytail: only for a run that names its own session: a run with no session reads no claim and is not refused,
+    so a single-user project changes nothing, and without a link there is no one to tell apart."""
+    link = session_link()
+    if not link:
+        return []
+    found = []
+    for issue in issues:
+        if (holder := claim_holder(issue)) and holder[1] != link:
+            found.append(
+                f"#{issue['number']}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}): "
+                "ask them to `claim --release`, or take it over with `claim --takeover`"
+            )
+    return found
+
+
+def claim_verb(number: int, takeover: bool = False, release: bool = False) -> int:
+    """`claim <issue>`: the early claim, a record on the issue before any PR exists, which `check build` reads
+    (held_claims). `--takeover` takes one another session holds, with a `Handover:` record naming the session it came
+    from; `--release` ends this session's claim.
+    ponytail: a run with no session to name (session_link()) writes no claim and is not refused, so a project with
+    no session changes nothing."""
+    link = session_link()
+    if not link:
+        print(
+            f"#{number}: this run names no session, so a claim has no holder to name: nothing written"
+        )
+        return 0
+    issue = issue_node(number)
+    holder = claim_holder(issue)
+    login = approver(issue) or viewer()
+    if not login:
+        raise Refused(f"#{number}: no one to record the claim for: the forge names no account")
+    details = "By: claim"
+    mine = holder is not None and holder[1] == link
+    if release:
+        if holder is None:
+            print(f"#{number}: no claim to release")
+            return 0
+        if not mine:
+            raise Refused(
+                f"#{number}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}), not this session"
+            )
+        comment(number, fold(f"{RELEASED}{login}", details=details))
+        print(f"#{number}: released")
+        return 0
+    if mine:
+        print(f"#{number}: already claimed by this session")
+        return 0
+    if holder and not takeover:
+        raise Refused(
+            f"#{number}: claimed by {holder[0].split(': ', 1)[1]} (session {holder[1]}): "
+            "`claim --takeover` takes it over"
+        )
+    if takeover and not holder:
+        raise Refused(f"#{number}: no unreleased claim to take over: `claim` it")
+    if holder:
+        comment(
+            number,
+            fold(f"{HANDOVER}{login}", details=f"{details}\nFrom: {holder[1]}\nSession: {link}"),
+        )
+        print(f"#{number}: taken over from session {holder[1]}")
+    else:
+        comment(number, fold(f"{ASSIGNED}{login}", details=f"{details}\nSession: {link}"))
+        print(f"#{number}: claimed")
+    return 0
 
 
 def graduate(epic: int, pr: int) -> int:
@@ -3736,7 +4098,7 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
             return None
     return (
         f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
-        " revert or bot exemption): its author merges it"
+        " revert or bot exemption): land refuses it, and its author merges it"
     )
 
 
@@ -3957,6 +4319,46 @@ def base_merges(pull: dict[str, Any], since: str) -> list[tuple[str, str, str]] 
     except (subprocess.CalledProcessError, OSError) as exc:
         return f"git failed reading {commit}: {exc}"
     return found
+
+
+def pipeline_down(run: int) -> bool:
+    """Whether a job of Actions run `run` shows CI down: cancelled, timed out, never started, or with no steps, so no test
+    ran (breakglass_verify's `infra`, and red_base's refusal)."""
+    broken = {"cancelled", "timed_out", "startup_failure"}
+    return any(job.get("conclusion") in broken or not job.get("steps") for job in run_jobs(run))
+
+
+def red_base(base: str, loop: str | None = None) -> tuple[list[str], list[str]]:
+    """What `base`'s latest push run, the checks on its tip, tells a lander (#2565): (advice, refusals). A required check
+    that failed is advice, with the run's link, since the lander can stop or fix before stacking more onto a red base and
+    a flaky test must not block every landing. It is a refusal when the run's own jobs show the pipeline down, as
+    breakglass_verify reads them: a job cancelled, timed out or never started, or one with no steps, so no test ran. A
+    forge read that fails is one advice line saying so, never silence and never a refusal, and it leaves the refusals
+    already found."""
+    advice: list[str] = []
+    refusals: list[str] = []
+    try:
+        checks = commit_checks(base)
+        wanted = required_checks(base) - OWN
+    except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+        return [
+            f"{base}'s latest push run could not be read from the forge ({err}): check it before landing"
+        ], []
+    for name, run in sorted(checks.items()):
+        if run["conclusion"] not in RED or name in OWN or (wanted and name not in wanted):
+            continue
+        where = f"{base} is red: its latest push run failed `{name}`: {run_link(run['url'])}"
+        number = re.search(r"/actions/runs/(\d+)", run["url"])
+        try:
+            down = number is not None and pipeline_down(int(number[1]))
+        except (Refused, subprocess.CalledProcessError, OSError, ValueError) as err:
+            advice.append(f"{where}; its jobs could not be read ({err})")
+            continue
+        if down:
+            refusals.append(f"{where}; its jobs show the pipeline down, so no test ran")
+        else:
+            advice.append(f"{where}; fix it or stop before landing more onto it")
+    return advice, refusals
 
 
 def unforced(pull: dict[str, Any]) -> str | None:
@@ -4761,11 +5163,7 @@ def breakglass_verify(pull: dict[str, Any], loop: str | None, proof: dict[str, A
                 f" ({', '.join(sorted(required))})"
             )
         got = tests(failed["id"])
-        broken = {"cancelled", "timed_out", "startup_failure"}
-        down = any(
-            job.get("conclusion") in broken or not job.get("steps")
-            for job in run_jobs(failed["id"])
-        )
+        down = pipeline_down(failed["id"])
         if got is None and not down:
             why.append(
                 f"{where}: run {failed['id']} published no `{cfg['artifact']}` artifact and no job shows CI down:"
@@ -5179,25 +5577,12 @@ DENY_LIST = "LOOP_DENY_LIST"
 
 
 def denied(text: str) -> None:
-    """Refuse to post `text` when it names a term of the local deny list: the file `LOOP_DENY_LIST` names, one term per
-    line (a name, a repo slug, a hostname; `#` starts a comment), matched ignoring case at word boundaries, since a
-    public repo's comment keeps its first text in GitHub's edit history for good. Without the variable nothing is
-    checked; a list it names that can't be read refuses, since an unread list would let every post through."""
-    if not (where := os.environ.get(DENY_LIST)):
-        return
+    """Refuse to post `text` when it names a term of the local deny list (denylist.py, which has the format and the
+    one allowance: an Omnigent session link); a refusal exits 1 like any other."""
     try:
-        listed = Path(where).expanduser().read_text().splitlines()
-    except OSError as exc:
-        raise Refused(
-            f"{DENY_LIST} names {where}, which can't be read ({exc.strerror}): nothing posted"
-        ) from exc
-    terms = [term for line in listed if (term := line.split("#", 1)[0].strip())]
-    for number, line in enumerate(text.splitlines(), 1):
-        for term in terms:
-            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", line, re.IGNORECASE):
-                raise Refused(
-                    f"refused to post: line {number} names `{term}` from the deny list ({DENY_LIST}); nothing posted"
-                )
+        denylist.check(text)
+    except denylist.Denied as exc:
+        raise Refused(str(exc)) from exc
 
 
 def closing_issues(pull: dict[str, Any]) -> list[dict[str, Any]]:
@@ -5319,8 +5704,9 @@ def sibling(name: str) -> ModuleType:
 github = sibling("github_adapter")
 # every comment the loop writes: a heading, a short summary and the rest folded (folding.py)
 folding = sibling("folding")
+denylist = sibling("denylist")
 fold, machine = folding.fold, folding.machine
-# the adapters a policy's `adapters` section may name, by name; another team's adapter is added here
+# the adapters a policy's `adapters` section may name, by name; another agent tree's adapter is added here
 ADAPTERS: dict[str, Any] = {"github": github}
 # each port's adapter while main() runs, read from the policy at the first call (port); GitHub's outside main()
 using: dict[str, Any] | None = None
@@ -5498,6 +5884,16 @@ def shown_at(root: Path, ref: str, path: Path) -> bytes | None:
         check=False,
     )
     return found.stdout if found.returncode == 0 else None
+
+
+def policy_tree(root: Path) -> str | None:
+    """The ref whose files the policy is read from (policy_file): origin's default branch in a clone with no working
+    tree (policy_ref), else `origin/<base>` of the PR the run acts on (policy_from); None where the policy is the
+    working tree's, which has no such ref."""
+    if (ref := policy_ref(root)) is not None:
+        return ref
+    found = policy_base(str(root), POLICY_BASE.get())
+    return found[1] if found else None
 
 
 def policy_bytes(root: Path, path: Path) -> bytes | None:
@@ -5737,7 +6133,10 @@ def adopting(issues: list[dict[str, Any]], loop: str | None, record: bool) -> li
             if holder is None or name not in names(issue):
                 continue
             value = texted(holder)
-            if current(issue, point, point, versions(holder), "owner"):
+            if current(issue, point, point, versions(holder), "owner") or current(
+                issue, point, point, versions(holder), DELEGATE
+            ):
+                # the delegate's record already stands, and its own label rides the owner's account: not the owner's word
                 continue
             added = [
                 event
@@ -5876,8 +6275,38 @@ MISE_CONFIGS = (
 MISE_TASK_DIRS = ("mise-tasks", ".mise-tasks", ".mise/tasks", ".config/mise/tasks", "mise/tasks")
 
 
-def mise_files(root: Path) -> list[Path]:
-    """The mise configs and file tasks of the repo, in every place mise reads them."""
+def tree_names(root: Path, ref: str) -> list[str]:
+    """Every file path `ref` holds, relative to the repo root; none where git can't list it."""
+    found = subprocess.run(
+        ["git", "-C", str(root), "ls-tree", "-r", "--name-only", ref],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return found.stdout.splitlines() if found.returncode == 0 else []
+
+
+def text_at(root: Path, ref: str | None, path: Path) -> str:
+    """`path`'s text in the working tree, or at `ref` (empty where the ref holds no such file)."""
+    if ref is None:
+        return read(path)
+    return (shown_at(root, ref, path.relative_to(root)) or b"").decode(errors="replace")
+
+
+def mise_files(root: Path, ref: str | None = None) -> list[Path]:
+    """The mise configs and file tasks of the repo, in every place mise reads them: the working tree's, or those `ref`
+    holds."""
+    if ref is not None:
+        names = tree_names(root, ref)
+        return sorted(
+            root / name
+            for name in names
+            if any(
+                fnmatch.fnmatchcase(name, pattern) and name.count("/") == pattern.count("/")
+                for pattern in MISE_CONFIGS
+            )
+            or any(name.startswith(f"{folder}/") for folder in MISE_TASK_DIRS)
+        )
     configs = {path for pattern in MISE_CONFIGS for path in root.glob(pattern) if path.is_file()}
     tasks = {path for name in MISE_TASK_DIRS for path in (root / name).rglob("*") if path.is_file()}
     return sorted(configs | tasks)
@@ -5895,17 +6324,17 @@ def runs_task(text: str, task: str) -> bool:
     return bool(re.search(rf"mise run\b[^\n;&|]*[ '\"]{re.escape(task)}\b", text))
 
 
-def pack_tasks(root: Path) -> set[str]:
-    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does:
-    `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named by their path, `/` as `:`).
-    Needs tomllib (Python 3.11+), imported here so the other commands still start on the pack's 3.9."""
+def task_bodies(root: Path, ref: str | None = None) -> dict[str, str]:
+    """Each mise task's command text by name: `[tasks.<name>]` tables, the `[tasks]` table form, and file tasks (named
+    by their path, `/` as `:`). Needs tomllib (Python 3.11+), imported here so the other commands still start on the
+    pack's 3.9."""
     import tomllib
 
     bodies: dict[str, str] = {}
-    for path in mise_files(root):
+    for path in mise_files(root, ref):
         if path.suffix == ".toml":
             try:
-                tasks = tomllib.loads(read(path)).get("tasks") or {}
+                tasks = tomllib.loads(text_at(root, ref, path)).get("tasks") or {}
             except tomllib.TOMLDecodeError:
                 continue
             for task, body in tasks.items():
@@ -5913,16 +6342,74 @@ def pack_tasks(root: Path) -> set[str]:
         else:
             folder = next(d for d in MISE_TASK_DIRS if (root / d) in path.parents)
             task = ":".join(path.relative_to(root / folder).parts)
-            bodies[task] = bodies.get(task, "") + read(path)
+            bodies[task] = bodies.get(task, "") + text_at(root, ref, path)
+    return bodies
+
+
+def tasks_matching(bodies: dict[str, str], found: Callable[[str], bool]) -> set[str]:
+    """The tasks whose text `found` accepts, directly or through `mise run <task>` of one that does."""
     named: set[str] = set()
     while grew := {
         task
         for task, body in bodies.items()
-        if task not in named
-        and (PACK_SCRIPT.search(body) or any(runs_task(body, other) for other in named))
+        if task not in named and (found(body) or any(runs_task(body, other) for other in named))
     }:
         named |= grew
     return named
+
+
+def pack_tasks(root: Path) -> set[str]:
+    """The names of the mise tasks that run a pack script, directly or through `mise run <task>` of one that does."""
+    return tasks_matching(task_bodies(root), lambda body: bool(PACK_SCRIPT.search(body)))
+
+
+RERUN_STEP = re.compile(r"\blocal-ci\b[^\n;&|]*--rerun\b")
+
+
+def rerun_workflow_gap(
+    root: Path, loop: str | None, level: str, ref: str | None = None
+) -> str | None:
+    """A line, or None: `levels.<level>.rerun` is on, the repo has CI (`loop.ci` is not false), and no workflow under
+    .github/workflows runs `local-ci --record --rerun`, in a step or through a mise task a step runs, so the rerun
+    record `rerun_gap` waits on can never come: a setup problem, not a wait. ponytail: a text scan of the workflows and
+    of mise's tasks, as setup_problems reads them (#2473's open question); where mise's TOML can't be read (Python
+    before 3.11) the tasks are not scanned, so a rerun run only through a task reads as present, never as missing.
+    With `ref` the files are read from that ref, as the policy is (policy_tree), so a clone with no working tree sees
+    the base's workflows; a ref git can't list reads as present too, since nothing then shows one missing."""
+    if no_ci(loop) or not levels(loop)[level].get("rerun"):
+        return None
+    flows = sorted((root / ".github" / "workflows").glob("*.y*ml")) if ref is None else []
+    if ref is not None:
+        names = tree_names(root, ref)
+        if not names:
+            return None
+        flows = [
+            root / name
+            for name in names
+            if fnmatch.fnmatchcase(name, ".github/workflows/*.y*ml") and name.count("/") == 2
+        ]
+    try:
+        tasks = tasks_matching(task_bodies(root, ref), lambda body: bool(RERUN_STEP.search(body)))
+    except ImportError:
+        return None
+    for path in flows:
+        try:
+            jobs = (yaml.safe_load(text_at(root, ref, path)) or {}).get("jobs") or {}
+        except (yaml.YAMLError, AttributeError):
+            continue
+        for body in jobs.values():
+            runs = "\n".join(
+                str(step.get("run", ""))
+                for step in (body.get("steps") or [] if isinstance(body, dict) else [])
+                if isinstance(step, dict)
+            )
+            if RERUN_STEP.search(runs) or any(runs_task(runs, task) for task in tasks):
+                return None
+    return (
+        f"`levels.{level}.rerun` asks an independent rerun, but no workflow under .github/workflows runs"
+        " `local-ci --record --rerun` (directly or through a mise task), so the rerun record can't come: add a rerun"
+        f" workflow, or set `levels.{level}.rerun: false` in docs/agents/gatekeeper.md"
+    )
 
 
 def setup_problems(root: Path) -> list[str]:
@@ -6001,6 +6488,16 @@ def setup() -> int:
         print(line)
     if not problems:
         print("setup: the policy parses and the repo's loop steps run the pack's scripts with uv")
+    try:
+        loop = project()[1]
+        # a warning, not a problem: the exit stays as it was, and a repo learns it before its first high-rated PR
+        for level in levels(loop):
+            if line := rerun_workflow_gap(root, loop, level):
+                print(line)
+    except (Refused, OSError, subprocess.CalledProcessError):
+        pass  # the policy's own refusal is already listed above
+    for line in session_notice():  # advice, never a problem: the field is optional
+        print(line)
     return 1 if problems else 0
 
 
@@ -6071,14 +6568,21 @@ def checked(point: str, pull: dict[str, Any]) -> int:
         )
         return 1 if found else 0
     if point == "merge" and (why := outside(pull, loop)):
+        # land refuses this PR on the same rule (proof_gaps), so the check says so now, never green (#2576)
         print(why)
-        return 0
+        return 1
     if point == "merge":
         base = pull["baseRefName"]
         judge_with_base(base, fetch=True)
     found, issues = gated(point, pull, tracker, loop)
+    if point == "build":
+        found += held_claims(
+            issues, loop
+        )  # before claim(): another session's claim is not overwritten
     # flag() first, since a `risk:high` it takes off no longer holds the merge
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
+    if point == "build" and not found:
+        found = owner_record(pull)
     covered = breakglass_cover(pull, loop, ran(pull)) if point == "merge" else Covered([], [])
     waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
@@ -6096,9 +6600,13 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     )
     # what land's pre-land check would refuse, after the rest, so check merge never calls clear a PR land leaves out
     waiting += pre_land_holds(pull, loop, bool(found or waiting)) if point == "merge" else []
-    for line in holds(pull, issues, loop) + found + waiting + after + used + advice:
+    red: list[str] = []
+    if point == "merge":
+        said, red = red_base(pull["baseRefName"], loop)
+        advice += said
+    for line in holds(pull, issues, loop) + found + waiting + after + used + advice + red:
         print(line)
-    return 1 if found else WAITING if waiting else 0
+    return 1 if found or red else WAITING if waiting else 0
 
 
 def unopened() -> dict[str, Any]:
@@ -6121,7 +6629,7 @@ def unbuilt(number: int, tracker: str | None, loop: str | None) -> int:
     the assignee."""
     issues, pull = adopted([issue_node(number)], loop), unopened()
     found = problems(issues, None if tracker is None else label_names(tracker))
-    found += proofs("build", pull, issues, loop)
+    found += proofs("build", pull, issues, loop) + held_claims(issues, loop)
     for line in holds(pull, issues, loop) + found:
         print(line)
     if not found:
@@ -6346,6 +6854,81 @@ def tree_policy(root: Path) -> str | None:
     return chosen(*found)
 
 
+WORKFLOWS = Path(".github/workflows")
+# a job's `timeout-minutes` that follows `timeouts.run`, marked so the check knows which job is the selection's (#2445)
+JOB_MINUTES = re.compile(
+    r"^[ \t]*timeout-minutes:[ \t]*(\d+)[ \t]*#[ \t]*timeouts\.run\b", re.MULTILINE
+)
+# the workflow that is the project's nightly: one comment line says so, and its push paths must be `select.build_inputs`
+NIGHTLY_MARK = re.compile(r"^#[ \t]*timeouts:[ \t]*nightly\b", re.MULTILINE)
+# loop.md's line naming the variable a project's affected-tests wall-clock limit is set in, in seconds
+WALL_CLOCK = re.compile(r"^Wall-clock variable:[ \t]*`?([A-Za-z_]\w*)", re.MULTILINE)
+
+
+def push_paths(text: str) -> list[str]:
+    """The `paths:` of a workflow's `push:` trigger, in order; empty when it has none (a push of any path)."""
+    lines = text.splitlines()
+    for at, line in enumerate(lines):
+        if re.match(r"^[ \t]+push:[ \t]*$", line):
+            indent = len(line) - len(line.lstrip())
+            found: list[str] = []
+            listing = False
+            for row in lines[at + 1 :]:
+                if row.strip() and len(row) - len(row.lstrip()) <= indent:
+                    break
+                if re.match(r"^[ \t]+paths:[ \t]*$", row):
+                    listing = True
+                elif listing and (item := re.match(r"^[ \t]+-[ \t]*(.+?)[ \t]*$", row)):
+                    found.append(item.group(1).strip("\"'"))
+                elif listing and row.strip() and not row.lstrip().startswith("#"):
+                    listing = False
+            return found
+    return []
+
+
+def limit_drift(root: Path, loop: str | None) -> list[str]:
+    """One line for each limit out of step with `timeouts.run` (#2445), beside `.mergify.yml` (mergify_drift): a marked
+    workflow job's `timeout-minutes`, the variable loop.md's `Wall-clock variable:` names (in seconds), a `land.wait`
+    set by hand, and the nightly workflow's push paths against `select.build_inputs`. Each names the file and the
+    value the budget gives."""
+    out: list[str] = []
+    budget, minutes = timeouts(loop)["run"], job_minutes(loop)
+    flows = sorted((root / WORKFLOWS).glob("*.y*ml")) if (root / WORKFLOWS).is_dir() else []
+    loop_file = root / LOOP
+    named = WALL_CLOCK.search(read(loop_file)) if loop_file.exists() else None
+    select = settings(loop).get("select", {})
+    setting = re.compile(rf"\b{named[1]}\b[\"']?[ \t]*[:=][ \t]*[\"']?(\d+)") if named else None
+    files = [(f"{WORKFLOWS}/{flow.name}", read(flow)) for flow in flows]
+    if setting and (root / "mise.toml").exists():
+        files.append(("mise.toml", read(root / "mise.toml")))
+    for where, text in files:
+        out += [
+            f"{where}: `timeout-minutes` is {found[1]} but `timeouts.run` ({said_span(budget)}) makes it {minutes}"
+            for found in JOB_MINUTES.finditer(text)
+            if int(found[1]) != minutes
+        ]
+        if setting and (limit := setting.search(text)) and int(limit[1]) != budget:
+            out.append(
+                f"{where}: `{named[1]}` is {limit[1]} seconds but `timeouts.run` makes it {budget}"  # type: ignore[index]
+            )
+        if (
+            NIGHTLY_MARK.search(text)
+            and "build_inputs" in select
+            and sorted(push_paths(text)) != sorted(select["build_inputs"])
+        ):
+            out.append(
+                f"{where}: the nightly's push paths {push_paths(text)} differ from `select.build_inputs`"
+                f" {list(select['build_inputs'])}"
+            )
+    land = settings(loop).get("land", {}).get("wait")
+    if land is not None and (given := span(str(land))) and int(given.total_seconds()) != 2 * budget:
+        out.append(
+            f"{POLICY}: `land.wait` is {said_span(int(given.total_seconds()))} but `timeouts.run` makes it"
+            f" {said_span(2 * budget)}: drop `land.wait`"
+        )
+    return out
+
+
 def timeouts_verb(render: bool, check_only: bool, as_json: bool) -> int:
     """`timeouts`: every limit the working tree's policy derives from its `timeouts` block; `--mergify` prints the
     repo's `.mergify.yml` as rendered from it; `--check` exits 1 with one line where `.mergify.yml` is out of step."""
@@ -6355,10 +6938,12 @@ def timeouts_verb(render: bool, check_only: bool, as_json: bool) -> int:
         sys.stdout.write(mergify_rendered(loop))
         return 0
     if check_only:
-        if problem := mergify_drift(root, loop):
-            print(problem)
+        problems = [problem] if (problem := mergify_drift(root, loop)) else []
+        problems += limit_drift(root, loop)
+        if problems:
+            print("\n".join(problems))
             return 1
-        print(f"timeouts: {MERGIFY_FILE} is in step with the policy's `timeouts`")
+        print("timeouts: every limit is in step with the policy's `timeouts`")
         return 0
     limits = timeouts(loop)
     derived = {
@@ -6796,6 +7381,9 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         )
     with policy_from(base):
         tracker, loop = project()
+        host_takes_pre_land(
+            loop
+        )  # before any lock, draft or step: a host that can't run it refuses up front (#2577)
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
         watched["required"] = set(rules) - OWN
@@ -6866,6 +7454,11 @@ def landing_here(
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
     required = rules - OWN
+    said, red = red_base(base, loop)
+    for line in said:
+        print(line)
+    if red:
+        raise Refused("\n".join(red))
     queue = held_by(loop, rules)  # before readied, so a refused policy touches no PR
     # a draft is ready before the wait for the lock, so the holder's next batch includes it
     if ready:
@@ -6975,7 +7568,7 @@ def base_drift(base: str, rules: bool = True) -> list[str]:
 
 def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
     """Refuse, naming the files, when the code or policy running here is not `origin/<base>`'s, so the caller runs from
-    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not the base's tip.
+    the base's code; under GITHUB_ACTIONS (a workflow that checks out the PR) also when HEAD is not on the base's history.
     Without `rules`, only the code is compared (base_drift)."""
     if fetch:  # a land has fetched it already
         fetched_base = subprocess.run(
@@ -7017,7 +7610,17 @@ def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
             text=True,
             check=False,
         ).stdout.strip()
-        if tip and tip != git("rev-parse", "HEAD").strip():
+        # ponytail: on the base's history, not its tip (#2464): a base that moved during the job leaves an older base
+        # commit checked out, which is safe to judge from, since base_drift right after refuses when the script or the
+        # rule files differ from the tip's
+        if tip and (
+            subprocess.run(
+                ["git", "-C", str(toplevel()), "merge-base", "--is-ancestor", "HEAD", tip],
+                capture_output=True,
+                check=False,
+            ).returncode
+            != 0
+        ):
             raise Refused(
                 f"the checked-out commit is not origin/{base}'s tip ({tip[:12]}): a workflow that checks out the PR judges"
                 " it by its own rules; check out the base"
@@ -8120,6 +8723,20 @@ def pre_land_run(pull: dict[str, Any], work: Path, loop: str | None) -> PreLand 
     return PreLand(command, tip, code, output or "")
 
 
+def host_takes_pre_land(loop: str | None) -> None:
+    """Refuse, before `land` starts any step, a loop.md `pre_land` this host's policy file forbids (host_forbids, the
+    check run_heavy makes at each step): the same rule, said up front as a land run in the wrong place, never as a step's
+    refusal midway or a machine fault (`machine_exit`)."""
+    if not (written := settings(loop).get("pre_land")):
+        return
+    command, words, _ = command_line(written, "pre_land")
+    if rule := host_forbids(words):
+        raise Refused(
+            f"land runs loop.md's `pre_land` {command!r}, which is on this host's {HOST_COMMANDS} ({rule!r}), so this"
+            " host can't land: run land from a cloud session or a host that can take it"
+        )
+
+
 def pre_landed(
     pull: dict[str, Any], base: str, work: Path, loop: str | None, failed: set[int]
 ) -> bool:
@@ -8554,6 +9171,34 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
     return tracker, loop, rules - OWN, queue
 
 
+# the label `land` puts on a PR whose test selection is the whole suite, before QUEUED: `.mergify.yml`'s `solo` queue
+# rule (batch_size 1) takes a PR with it, and the `default` rule one without it, so a slow run never holds or fails a
+# batch of quick PRs while the queue keeps one ordering (#2553)
+SOLO = "loop:solo"
+
+
+def whole_suite(pull: dict[str, Any]) -> str | None:
+    """Why the project's own selection makes this PR's test run the whole suite, None when it is an affected-tests
+    run: loop.md's opt-out `Gate: full`, a loop.md with no `Affected tests:` selector, or a changed build input under
+    gatekeeper.md's `select.build_inputs_in_queue: full`. Only the project's settings decide, never a path or name
+    the pack knows."""
+    text = loop_md()
+    if FULL_GATE.search(text):
+        return "loop.md's `Gate: full`"
+    if narrowing(text) is None:
+        return "loop.md names no `Affected tests:` selector"
+    select = None
+    with contextlib.suppress(Refused):
+        select = settings(project()[1]).get("select")
+    if select and "build_inputs" in select and select.get("build_inputs_in_queue") == "full":
+        head = pull["headRefOid"]
+        point = merge_base_of(pull["baseRefName"], head)
+        cut = selected(point, head) if point else None
+        if cut and cut[0]:
+            return f"build input {cut[0][0]} under `select.build_inputs_in_queue: full`"
+    return None
+
+
 def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1), unless its queue check
@@ -8629,6 +9274,16 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
             label(number, DEQUEUED, add=False)
         queued = QUEUED in labels and ours
         if not queued:
+            # the solo label first: the queue rule that matches QUEUED must already see which rule is the PR's
+            alone = whole_suite(pull)
+            if alone and SOLO not in labels:
+                label(number, SOLO, add=True)
+            elif not alone and SOLO in labels:
+                label(number, SOLO, add=False)
+            if alone:
+                print(
+                    f"{where}: its selection is the whole suite ({alone}): queued in a batch of its own"
+                )
             refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
             if QUEUED not in labels:
                 label(number, QUEUED, add=True)
@@ -9320,6 +9975,13 @@ def merges(
         return
     git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
     tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+    for (
+        pull,
+        _,
+    ) in (
+        done
+    ):  # before drop_records deletes the record, the status that outlives it names it (#2310)
+        unwritten(pull["headRefOid"], LAND, landed_record(pull["headRefOid"]))
     drop_records([pull["headRefOid"] for pull, _ in done])
     numbers = ", ".join(f"#{pull['number']}" for pull, _ in done)
     for pull, tree in done:
@@ -9337,16 +9999,34 @@ def merges(
 
 def installed_scripts(skill: str) -> Path | None:
     """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
-    skill folder (APM's one skills directory), a sibling plugin's (this repo, or a marketplace Claude Code loads in
-    place), else the newest version of a plugin in Claude Code's cache (`<marketplace>/<plugin>/<version>/`) that
-    no update has orphaned. None when none holds it."""
-    # ponytail: three layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    skill folder (APM's one skills directory), a sibling plugin's (a marketplace Claude Code loads in place), a
+    native plugin APM deployed to the project's `.agents/plugins/`, else the newest version of a plugin in Claude
+    Code's cache (`<marketplace>/<plugin>/<version>/`, beside the script or in `~/.claude/plugins/cache`) that no
+    update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
+    searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
+    tests set it, or the checkout is the GITHUB_WORKSPACE of the CI job running there. None when none holds it."""
+    # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    import os
+
     own = Path(__file__).resolve().parents[1]
     plugin = own.parent.parent
-    cached = plugin.parent.parent.glob(f"[!.]*/[!.]*/skills/{skill}")
+    root = plugin.parent
+    checkout = (root / ".git").exists() and (root / ".claude-plugin" / "marketplace.json").is_file()
+    # the pack's own CI runs in the workspace its job checked out: that checkout is the repo it runs in, not a stale clone
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    laid = (
+        not checkout
+        or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
+        or bool(workspace and Path(workspace).resolve() == root)
+    )
+    cached = [
+        *(root.parent.glob(f"[!.]*/[!.]*/skills/{skill}") if laid else []),
+        *(Path.home() / ".claude" / "plugins" / "cache").glob(f"[!.]*/[!.]*/[!.]*/skills/{skill}"),
+    ]
     for folder in [
-        own.parent / skill,
-        *sorted(plugin.parent.glob(f"[!.]*/skills/{skill}")),
+        *([own.parent / skill] if laid else []),
+        *(sorted(root.glob(f"[!.]*/skills/{skill}")) if laid else []),
+        *(sorted(root.glob(f".agents/plugins/*/skills/{skill}")) if laid else []),
         *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
     ]:
         if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
@@ -9893,14 +10573,19 @@ def gate(passed: list[str] | tuple[str, ...] = ()) -> tuple[str, list[str], dict
 WHOLE = "gate"
 
 
-def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
+def gate_plan(
+    passed: list[str] | tuple[str, ...] = (), every: bool = False
+) -> list[dict[str, Any]]:
     """The gate's steps, in order, each `name`, `command` (as gate() reads one, with `passed`), `words`, `sets` and
     `where` (`any`, or `host`: never run in a cloud session): the base's policy's `gate_steps` (project(), so a PR's own
     edit of its gate is not the one it is gated by), else the one `gate` command as
     the step WHOLE, `any`, flagged `legacy`, which records, publishes and prints as the one gate always did (a plan
     from `gate_steps` is stepped whatever its names or length: its steps are not `legacy`). Each step's pass is recorded and reused by itself, keyed by its tree and command (recorded),
     so a step that passed on a tree anywhere is not run again; a project without `gate_steps` keeps one record. A
-    policy setting both is refused, since two sources of the gate would drift."""
+    policy setting both is refused, since two sources of the gate would drift. A step `on_demand` marks (#2295) is in
+    the plan only with `every` (a lookup of its pass, or run_steps, which says it skipped it) or when ASKED names it:
+    the gate's pass never needs it. With ASKED (`--step`), the plan is the steps it names alone. A `gate_steps` whose
+    every step is on demand is refused, since its gate would have no step and pass every head with no run."""
     loop = settings(project()[1])
     written = loop.get("gate_steps")
     unkeyed = set(loop.get("select", {}).get("unkeyed", []))
@@ -9917,6 +10602,7 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "paths": None,
                 "setting": None,
                 "unkeyed": bool({command, loop.get("gate")} & unkeyed),
+                "on_demand": False,
             }
         ]
     if loop.get("gate"):
@@ -9938,9 +10624,25 @@ def gate_plan(passed: list[str] | tuple[str, ...] = ()) -> list[dict[str, Any]]:
                 "paths": step.get("paths"),
                 "setting": written,
                 "unkeyed": bool({step["name"], step["command"], command} & unkeyed),
+                "on_demand": bool(step.get("on_demand")),
             }
         )
-    return plan
+    if all(step["on_demand"] for step in plan):
+        raise Refused(
+            f"{source(project()[1])}: every `gate_steps` step sets `on_demand: true`, so the gate would have no step"
+            " and pass every head with no run: list the merge check as a step without `on_demand`"
+        )
+    if asked := ASKED.get():
+        return [step for step in plan if step["name"] in asked]
+    return [step for step in plan if every or not step["on_demand"]]
+
+
+def skipped(step: dict[str, Any]) -> str:
+    """The line a gate run says for an `on_demand` step it does not run (#2295)."""
+    return (
+        f"{step['name']}: skipped, on demand (`on_demand: true`): it runs only when named,"
+        f" `local-ci --record --step {step['name']}`, and the gate's pass does not need it"
+    )
 
 
 def inputs_key(tree: str, step: dict[str, Any]) -> str | None:
@@ -10030,8 +10732,10 @@ def ran_gate(
 ) -> int:
     """Run each step of the gate that may run here (gate_plan, here), in order, to the first that fails, and return
     that step's exit, else 0; nothing is recorded (a checkout with changes)."""
-    for step in gate_plan(passed):
-        if here(step) and (code := ran_step(step, cwd, out)[0]):
+    for step in gate_plan(passed, every=True):
+        if step["on_demand"] and not ASKED.get():
+            print(skipped(step))
+        elif here(step) and (code := ran_step(step, cwd, out)[0]):
             return code
     return 0
 
@@ -10080,6 +10784,8 @@ def gate_base_variable(text: str | None = None) -> str:
 # loop.md's narrowed mode (SKILL.md, Adopting the loop): its `Affected tests:` command is the whole narrowed check, and
 # the line `Gate: full` opts the project out, so every gate runs the full check as it does without the selector
 AFFECTED = re.compile(r"^Affected tests:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+# where the `Affected tests:` command writes its JUnit XML report, which rerun-tests reads to count the tests it ran
+TEST_REPORT = re.compile(r"^Test report:[ \t]*`?(.+?)`?[ \t]*$", re.MULTILINE)
 FULL_GATE = re.compile(r"^Gate:[ \t]*`?full`?[ \t]*$", re.MULTILINE)
 # the end of a narrowed gate's command (narrowed_gate): `(` is a shell operator command_line refuses, and the command it
 # returns is shlex-quoted, so no full gate's command, record or key can ever equal a narrowed one
@@ -10098,6 +10804,9 @@ FRESH: contextvars.ContextVar[bool] = contextvars.ContextVar("FRESH", default=Fa
 # set by `local-ci --record --rerun --no-push`: the rerun's record commit is made and kept as a local branch, not
 # pushed (publish), for a CI job whose token can't write: another job, holding no code of the PR, pushes it
 KEEP: contextvars.ContextVar[bool] = contextvars.ContextVar("KEEP", default=False)
+# set by `local-ci --record --step <name>`: the gate is those named steps alone (gate_plan), an `on_demand` one included,
+# and its run is no run of the whole gate, so it writes no `gate` status or event (gate_branch, local_ci)
+ASKED: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar("ASKED", default=())
 # the line that names a kept record, `<ref> <commit>`, which that job reads
 KEPT = "rerun record kept, not pushed: "
 
@@ -10208,13 +10917,15 @@ SELECTION_FILES = (str(POLICY), str(LOOP))
 def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[str]]:
     """The narrowed gate's first cut, by gatekeeper.md's `select`: the changed `files` that are build inputs, and the
     `checks` commands the rest touch. A file is a build input when it matches `build_inputs`, is the selection's own
-    policy (SELECTION_FILES), or matches neither NON_PRODUCT nor a check's `paths`: a path whose effect on the build
-    is unclear tests. Without `select` every file is one, as before the setting."""
+    policy (SELECTION_FILES), or matches none of NON_PRODUCT, the project's `non_product` globs (#2511) and a check's
+    `paths`: a path whose effect on the build is unclear tests. A path in `non_product` is no build input, so a docs and
+    config diff selects only the checks its files can fail; a path in `build_inputs` or a check's `paths` still counts. Without `select` every file is one, as before the setting."""
     if "build_inputs" not in (
         select or {}
     ):  # no declaration: every file tests, as before the setting
         return list(files), []
     checks = select.get("checks", [])
+    quiet = (*NON_PRODUCT, *select.get("non_product", []))
     inputs, commands = [], []
     for path in files:
         hit = [
@@ -10225,7 +10936,7 @@ def classify(files: list[str], select: dict[str, Any]) -> tuple[list[str], list[
         if (
             path in SELECTION_FILES
             or any(fnmatch.fnmatch(path, glob) for glob in select["build_inputs"])
-            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in NON_PRODUCT))
+            or not (hit or any(fnmatch.fnmatch(path, glob) for glob in quiet))
         ):
             inputs.append(path)
         commands += [command for command in hit if command not in commands]
@@ -10273,6 +10984,10 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
     if not commands:
         print("affected-tests: 0 selected: non-product", file=sys.stderr)
         return 0
+    budget = run_budget()
+    deadline: float | None = (
+        None  # the budget runs from the first check's start, all checks together
+    )
     for command in commands:
         _, words, sets = command_line(command, "select.checks")
         print(
@@ -10282,9 +10997,23 @@ def non_product_run(base: str, root: Path, env: dict[str, str]) -> int | None:
         )
         try:
             with heavy_slot("affected-tests") as (slot, _):
-                code = run_heavy(words, env=env | sets | {SLOT_HELD: slot}, cwd=root)[0]
+                deadline = deadline or time.monotonic() + budget
+                code, spent = run_heavy(
+                    words,
+                    env=env | sets | {SLOT_HELD: slot},
+                    budget=max(deadline - time.monotonic(), 0.001),
+                    cwd=root,
+                )
         except OSError as exc:
             raise Refused(f"`{words[0]}` can't run: {exc}") from None
+        if spent is SPENT:
+            print(
+                f"affected-tests: timed out after `timeouts.run` ({said_span(budget)}) running"
+                f" `{shlex.join(words)}`: a timeout, not a check failure; raise `timeouts.run` in"
+                " gatekeeper.md or fix the check",
+                file=sys.stderr,
+            )
+            return TIMED_OUT
         if code:
             return code
     return 0
@@ -10296,7 +11025,7 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     the line `Gate base:` names, else `GATE_BASE`). The base is `<rev>`, else the merge base (selection_base). Where it
     can't tell exactly, it runs the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a
     new branch) selects against the merge base instead, and a loop.md without the line runs gatekeeper.md's `select`
-    cut (non_product_run), then, for a change that cut can't settle, the project's full check, `mise run check`. Zero
+    cut (non_product_run, whose checks stop at `timeouts.run` together, #2346), then, for a change that cut can't settle, the project's full check, `mise run check`. Zero
     runs only for a change `select` finds only non-product paths in, saying `0 selected: non-product`. The opt-out
     `Gate: full` (narrowing), the project's own choice, runs `mise run check` too, with the variable unset. Either
     runs under the host gate slot (heavy_slot, run_heavy), as a `local-ci` step does. Its exit passes through: a
@@ -10356,16 +11085,199 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
             env[variable] = base
     print(f"affected-tests: {shlex.join(words)}", file=sys.stderr, flush=True)
     budget = run_budget()
+    # ponytail: the pack sees the selection only where it makes it (the whole suite): a project's `Affected tests:`
+    # command picks its tests internally, so no list-only mode yet (#2445's open question) and no estimate for it
+    estimate: float | None = None
+    if written is None or FULL_GATE.search(text):
+        try:
+            shards = shard_count()
+        except Refused:
+            shards = 1
+        estimate, why = read_estimate(root, shards)
+        cause = (
+            "`Gate: full` selects the whole suite"
+            if FULL_GATE.search(text)
+            else "loop.md names no `Affected tests:` selector, so the whole suite"
+        )
+    else:
+        why = "the project's `Affected tests:` command picks its tests itself, so the pack has no list to estimate"
+    if estimate is None:
+        print(
+            f"affected-tests: no estimate available ({why}): `timeouts.run` ({said_span(budget)}) is the only limit",
+            file=sys.stderr,
+        )
+    elif estimate > FAIL_FAST_SHARE * budget:
+        print(
+            f"affected-tests: the estimate {said_span(int(estimate))} is over {FAIL_FAST_SHARE:.0%} of `timeouts.run`"
+            f" ({said_span(budget)}): {cause}; raise `timeouts.run`, shard it or narrow the run",
+            file=sys.stderr,
+        )
+        return TIMED_OUT
+    else:
+        print(
+            f"affected-tests: estimate {said_span(int(estimate))} of `timeouts.run` ({said_span(budget)})",
+            file=sys.stderr,
+        )
+    started = time.monotonic()
     try:
         with heavy_slot("affected-tests") as (slot, _):
+            started = time.monotonic()
             code, spent = run_heavy(
                 words, env=env | sets | {SLOT_HELD: slot}, budget=budget, cwd=root
             )
     except OSError as exc:
         raise Refused(f"`{words[0]}` can't run: {exc}") from None
+    if estimate is not None:  # no estimate, nothing to compare, and no file to dirty a checkout
+        note_run(root, estimate, time.monotonic() - started, code)
     if spent is SPENT:
-        print(over_budget(budget, root, base if written is not None else None), file=sys.stderr)
+        whole = "`Gate: full`" if FULL_GATE.search(text) else "no `Affected tests:` line"
+        print(
+            over_budget(budget, root, base if written is not None else None, whole), file=sys.stderr
+        )
     return code
+
+
+# the per-test durations the nightly records (`durations --record`), the file `shards --durations` reads, and the
+# estimate beside the actual time of each gate run (#2445); under the working tree's `.qualify/`, scratch the repos ignore
+DURATIONS_FILE = Path(".qualify/durations.json")
+GATE_RUNS_FILE = Path(".qualify/gate-runs.jsonl")
+SETUP_FILE = Path(".qualify/setup-seconds")
+FAIL_FAST_SHARE = (
+    0.8  # the share of `timeouts.run` an estimate may take: runner speed varies from run to run
+)
+DRIFT_SHARE = 0.25  # how far the actual time may be from its estimate before the nightly report flags it (a start)
+DURATION_LINE = re.compile(r"^\s*([\d.]+)s\s+(?:setup|call|teardown)\s+(\S+)", re.MULTILINE)
+
+
+def durations_path(root: Path) -> Path:
+    """The durations file of the project at `root`: `GATE_DURATIONS`, else `.qualify/durations.json`."""
+    return Path(os.environ.get("GATE_DURATIONS") or root / DURATIONS_FILE)
+
+
+def parse_durations(text: str) -> dict[str, float]:
+    """Seconds per test file from a JUnit XML (`testcase` times, by its `file`, else its classname's module) or from
+    `pytest --durations=0` output (setup, call and teardown lines, by the node id's file): the JSON `shards
+    --durations` reads."""
+    found: dict[str, float] = {}
+    if text.lstrip().startswith("<"):
+        for case in ET.fromstring(text).iter("testcase"):
+            file = case.get("file")
+            if not file:
+                parts = (case.get("classname") or "").split(".")
+                while parts and parts[-1][:1].isupper():
+                    parts.pop()  # a test class, not a module
+                file = "/".join(parts) + ".py" if parts else ""
+            if file:
+                found[file] = found.get(file, 0.0) + float(case.get("time") or 0)
+    else:
+        for seconds, node in DURATION_LINE.findall(text):
+            file = node.split("::")[0]
+            if not file:  # a nested pytest run's `::test` line: no file of this run
+                continue
+            found[file] = found.get(file, 0.0) + float(seconds)
+    return {file: round(seconds, 3) for file, seconds in found.items()}
+
+
+def estimate_seconds(
+    items: Sequence[str],
+    durations: dict[str, float],
+    workers: int = 1,
+    setup: float = 0.0,
+    shards: int = 1,
+) -> float | None:
+    """The expected run time of `items`: their recorded seconds (an unrecorded one at the mean of the recorded) over
+    `workers`, the longest shard's when `shards` splits them (shard_selections), plus the measured fixed `setup`
+    (install, collection). None with no recorded duration to go on."""
+    chosen = list(dict.fromkeys(items))
+    known = {item: durations[item] for item in chosen if item in durations}
+    if not known:
+        return None
+    mean = sum(known.values()) / len(known)
+    held = shard_selections(chosen, chosen, shards, known, whole=True) if shards > 1 else [chosen]
+    longest = max(sum(known.get(item, mean) for item in group) for group in held)
+    return longest / max(workers, 1) + setup
+
+
+def read_estimate(root: Path, shards: int) -> tuple[float | None, str]:
+    """The whole suite's estimate from the recorded durations, else None with why there is none."""
+    path = durations_path(root)
+    try:
+        durations = {k: float(v) for k, v in json.loads(path.read_text()).items()}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None, f"no recorded durations at {path.name}: the nightly has not recorded any"
+    try:
+        workers = int(os.environ.get("GATE_WORKERS", "1"))
+    except ValueError:
+        workers = 1
+    try:
+        setup = float(os.environ.get("GATE_SETUP_SECONDS") or (root / SETUP_FILE).read_text())
+    except (OSError, ValueError):
+        setup = 0.0
+    # a test file deleted since the nightly recorded it is no part of the run: a stale file must not over-estimate
+    durations = {
+        item: secs for item, secs in durations.items() if (root / item.split("::")[0]).exists()
+    }
+    found = estimate_seconds(list(durations), durations, workers, setup, shards)
+    return found, "no recorded durations" if found is None else ""
+
+
+def note_run(root: Path, estimate: float | None, actual: float, code: int) -> None:
+    """Append the gate run's estimate beside its actual time to `.qualify/gate-runs.jsonl`, for the nightly report."""
+    path = root / GATE_RUNS_FILE
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as out:
+            line = {
+                "at": int(time.time()),
+                "estimate": estimate,
+                "actual": round(actual, 2),
+                "exit": code,
+            }
+            out.write(json.dumps(line) + "\n")
+
+
+def drift_lines(root: Path, share: float = DRIFT_SHARE) -> list[str]:
+    """One line for each recorded gate run whose actual time is over `share` away from its estimate."""
+    try:
+        rows = [
+            json.loads(line) for line in (root / GATE_RUNS_FILE).read_text().splitlines() if line
+        ]
+    except (OSError, ValueError):
+        return []
+    return [
+        f"drift: a gate run at {row['at']} took {said_span(int(row['actual']))} against an estimate of"
+        f" {said_span(int(row['estimate']))} ({(row['actual'] - row['estimate']) / row['estimate']:+.0%}): the durations"
+        " file is stale or the setup figure is wrong"
+        for row in rows
+        if row.get("estimate") and abs(row["actual"] - row["estimate"]) / row["estimate"] > share
+    ]
+
+
+def durations_verb(record: str | None, out: str | None, setup: float | None, report: bool) -> int:
+    """`durations --record <junit.xml | durations.txt> [--out <file>] [--setup <seconds>]` turns one run's JUnit XML or
+    `--durations=0` output into the durations file `shards --durations` and `affected-tests` read; `--report` prints a
+    line for each recorded gate run whose time is far from its estimate (the nightly report)."""
+    root = toplevel()
+    if record:
+        found = parse_durations(Path(record).read_text())
+        if not found:
+            print(f"durations: no test times in {record}", file=sys.stderr)
+            return 1
+        target = Path(out) if out else durations_path(root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(found, indent=1, sort_keys=True) + "\n")
+        if setup is not None:
+            (root / SETUP_FILE).parent.mkdir(parents=True, exist_ok=True)
+            (root / SETUP_FILE).write_text(f"{setup}\n")
+        print(f"durations: {len(found)} test files, {sum(found.values()):.0f} seconds, in {target}")
+    if report or not record:
+        lines = drift_lines(root)
+        print(
+            "\n".join(lines)
+            if lines
+            else "durations: every recorded estimate is near its run's time"
+        )
+    return 0
 
 
 def run_budget() -> int:
@@ -10383,14 +11295,15 @@ def run_budget() -> int:
         return fallback
 
 
-def over_budget(budget: int, root: Path, base: str | None) -> str:
+def over_budget(budget: int, root: Path, base: str | None, whole: str = "`Gate: full`") -> str:
     """The one line of a selection run stopped at `timeouts.run`: the budget, the selection's size as far as the verb
-    knows it (the whole suite under `Gate: full`; else unknown, since the project's own command selects, with the
+    knows it (the whole suite, its cause named by `whole`: `Gate: full`, or a loop.md with no `Affected tests:` line
+    (#2361); else unknown, since the project's own command selects, with the
     count of files the change touches against `base`, the selector's input), and that it ran unsharded: this verb runs
     the project's one command, so with `select.shards` above 1 the line names the `shards` verb that splits a selection
     (#2229)."""
     if base is None:
-        size = "the whole suite (`Gate: full`)"
+        size = f"the whole suite ({whole})"
     else:
         try:
             count = str(len(git("-C", str(root), "diff", "--name-only", base, "HEAD").split()))
@@ -10687,9 +11600,10 @@ def queue_select(
     command per line on stdout, each to pass: the `select.unkeyed` checks, then the floor, `affected-tests --base
     <point>` for each PR with no record of its `Affected tests:` run (queue_recorded) at that PR's branch point. A PR
     with a record runs nothing: its own tests passed on its head. Where the commits don't split into PRs, the batch's
-    `affected-tests --base <base>`. Without an `Affected tests:` line (and no `Gate: full`) a floor selects nothing, so
-    none is printed. Refused (exit 1, queue_refusal) when that is nothing while a PR has no record; nothing to run with
-    a record for every PR passes and says so. Each step's reason goes to stderr, prefixed `queue-select:`.
+    `affected-tests --base <base>`. The floor prints with or without an `Affected tests:` line: without one,
+    `affected-tests` runs gatekeeper.md's `select` cut, then the project's full check, the narrowest set it can name
+    (#2143 D2, #2362). Refused (exit 1, queue_refusal) when there is nothing to run while a PR has no record; nothing
+    to run with a record for every PR passes and says so. Each step's reason goes to stderr, prefixed `queue-select:`.
 
     ponytail: a floor runs in the batch's checkout, so it selects against everything since the PR's branch point, the
     other PRs and the base's newer commits included: a superset of the PR's own tests, run on the merged tree. A
@@ -10700,14 +11614,13 @@ def queue_select(
     queue_say(
         f"{len(checks)} unkeyed checks (select.unkeyed){': ' if checks else ''}{'; '.join(checks)}"
     )
-    selects = narrowing() is not None or bool(FULL_GATE.search(loop_md()))
     floor = [sys.executable, str(Path(__file__).resolve()), "affected-tests", "--base"]
     pulls = queue_pulls(base)
     runs: list[str] = []
     missing: list[QueuePull] = []
     if isinstance(pulls, str):
         queue_say(f"the batch's affected tests: the commits don't split into PRs ({pulls})")
-        runs = [shlex.join([*floor, base])] if selects else []
+        runs = [shlex.join([*floor, base])]
     else:
         for pull in pulls:
             found, line = record(pull.head, pull.point)
@@ -10716,7 +11629,7 @@ def queue_select(
             )
             if not found:
                 missing.append(pull)
-                if selects and (run := shlex.join([*floor, pull.point])) not in runs:
+                if (run := shlex.join([*floor, pull.point])) not in runs:
                     queue_say(
                         f"PR {pull.name}: no record, so its own affected tests run (the floor)"
                     )
@@ -10732,17 +11645,20 @@ def queue_select(
     return 0
 
 
-def failed_tests_of(path: str) -> list[str]:
-    """The test ids a red run wrote (`{"failed": [...]}`, as tools/failed_tests.py writes it): the run's own output,
+def failed_tests_of(path: str) -> tuple[list[str], list[str]]:
+    """The test ids a red run wrote (`{"failed": [...], "selected": [...]}`, as tools/failed_tests.py writes it), its
+    failed tests and the tests its report listed (none where the file names no `selected`): the run's own output,
     read before any rerun. Refused for a file that is not there or not that JSON, since a rerun before the red is read
     is never run."""
     try:
-        failed = json.loads(Path(path).read_text())["failed"]
-        if not isinstance(failed, list) or not all(isinstance(item, str) for item in failed):
-            raise ValueError("`failed` is not a list of test ids")
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+        data = json.loads(Path(path).read_text())
+        lists = data["failed"], data.get("selected", [])
+        for key, ids in zip(("failed", "selected"), lists):
+            if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+                raise ValueError(f"`{key}` is not a list of test ids")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise Refused(f"rerun-tests: {path} holds no red run's failed tests: {exc}") from None
-    return failed
+    return lists
 
 
 def blob_of(rev: str, name: str) -> str | None:
@@ -10828,11 +11744,28 @@ def missing_task(text: str) -> str | None:
     return None if known.returncode == 0 else words[2]
 
 
-def rerun(red: str, base: str | None, text: str) -> int | None:
+def tests_in(report: Path) -> int:
+    """How many test cases the JUnit XML `report` holds; 0 for one that is missing or unreadable, since a run that
+    wrote no report ran no test it can show."""
+    try:
+        return sum(1 for _ in ET.parse(report).getroot().iter("testcase"))
+    except (OSError, ET.ParseError):
+        return 0
+
+
+def rerun(red: str, base: str | None, text: str, red_ran: bool) -> int | None:
     """The rerun's selection against `base` with the red head's loop.md `text`: its exit, or None when it ran no test
-    (no base, a command that can't start, a `mise run` task that isn't there), having said why (did_not_run)."""
+    (no base, a command that can't start, a `mise run` task that isn't there, or a `Test report:` that shows zero tests
+    where the red run ran some, `red_ran`), having said why (did_not_run). The report is removed before the run, so a
+    report an earlier run left is never counted as this one's. Zero tests counts only for a green exit or a report the
+    run wrote: a red exit with no report failed before its tests ran (a lint step, a check ahead of the runner), and
+    that is red again, as any red rerun is."""
     if base is None:
         return did_not_run("no base to select against")
+    found = TEST_REPORT.search(text)
+    report = toplevel() / found.group(1) if found else None
+    if report:
+        report.unlink(missing_ok=True)
     try:
         code = affected_tests(base, text=text)
     except Refused as exc:
@@ -10843,6 +11776,8 @@ def rerun(red: str, base: str | None, text: str) -> int | None:
         return did_not_run(
             f"{red}'s loop.md runs `mise run {task}`, a task mise doesn't define here"
         )
+    if report and red_ran and (code == 0 or report.exists()) and not tests_in(report):
+        return did_not_run("zero tests collected")
     return code
 
 
@@ -10860,8 +11795,10 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
     The selection is the red run's own, so its command comes from the red head's loop.md, never the base's: a head
     behind its base lacks a task the base's line names (ponytail: the R1 record would name the command too, but only a
     pass writes one, so a red head never has one; read it first if a red run ever records). A rerun that ran no test
-    (rerun) exits DID_NOT_RUN, never as red again."""
-    failed = failed_tests_of(path)
+    (rerun), its `Test report:` showing zero tests where the red had some included, exits DID_NOT_RUN, never as red
+    again or as a flake that passed."""
+    failed, selected = failed_tests_of(path)
+    red_ran = bool(failed or selected)
     try:
         git("rev-parse", "--verify", "--quiet", f"{red}^{{commit}}")
     except subprocess.CalledProcessError:
@@ -10880,7 +11817,7 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
             " reaches run",
             file=sys.stderr,
         )
-        code = rerun(red, red, text)
+        code = rerun(red, red, text, red_ran)
         return DID_NOT_RUN if code is None else code
     for test in candidates:
         print(f"rerun-tests: flake candidate: {test}", file=sys.stderr)
@@ -10889,7 +11826,7 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
         " runs: alone, a test that fails only after others would pass",
         file=sys.stderr,
     )
-    code = rerun(red, here or base, text)
+    code = rerun(red, here or base, text, red_ran)
     if code is None:
         return DID_NOT_RUN
     if code == 0 and candidates:
@@ -11635,6 +12572,9 @@ def gate_branch() -> str | None:
     head it gates; none for a detached head, which has no event."""
     # ponytail: not the PR's head branch (a REST read `local-ci <pr>` does not make otherwise), so a checkout on another
     # local name than the PR's branch writes the event under its own
+    # a run of named steps (`--step`) is no run of the gate, so it ends no gate event
+    if ASKED.get():
+        return None
     with contextlib.suppress(Exception):
         return git("symbolic-ref", "-q", "--short", "HEAD").strip() or None
     return None
@@ -11699,7 +12639,11 @@ def run_local_ci(
         nothing = "nothing recorded" if step["legacy"] else f"nothing recorded for `{step['name']}`"
         machine = code == settings(project()[1]).get("machine_exit")
         # the lead's `wait-for --until gate` reads the run's end off the head (failed), said after the refusal
-        told = f"\n{failed(before[0], tree, command, code, machine)}" if code else ""
+        told = (
+            f"\n{failed(before[0], tree, command, code, machine)}"
+            if code and not ASKED.get()
+            else ""
+        )
         if machine:
             raise Refused(
                 f"{command} hit a machine fault (exit {code}, loop.md's `machine_exit`): {nothing}; fix the machine,"
@@ -11745,9 +12689,12 @@ def run_steps(
         "ran": [],
         "left": [],
     }
-    for step in gate_plan(passed):
+    for step in gate_plan(passed, every=True):
         # a gate without `gate_steps` says nothing more than it did: its one step is the gate
         say = print if not step["legacy"] else (lambda *_a, **_k: None)
+        if step["on_demand"] and not ASKED.get():
+            say(skipped(step))  # neither run nor left: the gate's pass does not need it
+            continue
         if (found := step_pass(commit, tree, step)) is not None:
             if found["tree"] == tree:
                 say(f"{step['name']}: passed on tree {tree} before, reused from {origin_of(found)}")
@@ -12031,8 +12978,13 @@ def mergify_rendered(policy: str | None) -> str:
         ("checks_timeout", said_span(timeouts(policy)["run"])),
     ):
         if value is not None:
+            # the default rule is the first; `checks_timeout` is every queue rule's (the solo one too)
             text, found = re.subn(
-                rf"^(\s+{key}:) .*$", rf"\g<1> {value}", text, count=1, flags=re.MULTILINE
+                rf"^(\s+{key}:) .*$",
+                rf"\g<1> {value}",
+                text,
+                count=0 if key == "checks_timeout" else 1,
+                flags=re.MULTILINE,
             )
             if not found:
                 raise Refused(f"{MERGIFY_TEMPLATE} has no `{key}` line to render")
@@ -12054,12 +13006,14 @@ def gate_record(head: str, words: list[str]) -> int:
         return 1
     # a command the gate's steps (gate_plan) name is read as that step, so one keyed by its inputs (inputs_key) is
     # found by that key on any tree (origin_input_pass); any other command is keyed by the tree alone
-    steps = {step["command"]: step for step in gate_plan()}
+    # (every step, so an `on_demand` one's pass is found by its key when its command is asked; the gate alone is the
+    # steps it needs)
+    steps = {step["command"]: step for step in gate_plan(every=True)}
     # a narrowed command (narrowed_gate) is the words of its run, then NARROWED, which shlex.join would quote
     if words[-1:] == [NARROWED.strip()]:
         commands = [shlex.join(words[:-1]) + NARROWED]
     else:
-        commands = [shlex.join(words)] if words else list(steps)
+        commands = [shlex.join(words)] if words else [step["command"] for step in gate_plan()]
     missing = 0
     for command in commands:
         why: list[str] = []
@@ -12116,7 +13070,11 @@ def local_ci_status(head: str) -> int:
     command, held = "; ".join(commands), str(tree_of(head))
     single = len(commands) == 1
     # a step keyed by its inputs (inputs_key) may have passed on another tree with the same inputs
-    keyed = {step["command"]: step for step in gate_plan() if inputs_key(held, step) is not None}
+    keyed = {
+        step["command"]: step
+        for step in gate_plan(every=True)
+        if inputs_key(held, step) is not None
+    }
     if code == 0 and not all(
         recorded(held, one).exists()
         or not single
@@ -12471,6 +13429,26 @@ def record_commit(record: dict[str, Any]) -> str:
     ).stdout.strip()
 
 
+LANDED_RECORD = "Landed: record "
+LANDED_NO_RECORD = "Landed: no record"
+
+
+def landed_record(head: str) -> str:
+    """The `land` status description a landed head keeps once drop_records has deleted its record refs (#2310): `Landed:
+    record <name>[, <name>...]`, each name the tail of a `loop-gate/` record branch on the head's tree (`<tree>-<key>`),
+    or `Landed: no record` where origin holds none (or can't be read), so `loop_metrics.py` counts the merges that had
+    none."""
+    held = tree_of(head)
+    try:
+        listed = git("ls-remote", "origin", RECORD_BRANCH.format(f"{held}-*")) if held else ""
+    except (subprocess.CalledProcessError, OSError):
+        listed = ""
+    names = sorted(
+        line.split("\t")[1].rsplit("/", 1)[1] for line in listed.splitlines() if "\t" in line
+    )
+    return (LANDED_RECORD + ", ".join(names))[:140] if names else LANDED_NO_RECORD
+
+
 def drop_records(heads: list[str]) -> None:
     """Delete from origin the record branches no head needs any more: each of the trees of `heads`, landed now, and
     each whose tree is no open PR's head tree and whose record is over a day old (RECORD_AGE), a head that was
@@ -12594,12 +13572,15 @@ def failed(head: str, tree: str, command: str, code: int, machine: bool) -> str:
     return f"wrote the `gate` {'error' if machine else 'failure'} status on {head}"
 
 
-def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = None) -> None:
+def publish(
+    head: str, record: dict[str, Any], proof: dict[str, Any] | None = None, show: bool = True
+) -> None:
     """Publish a pass this clone holds. Without `proof`: push it to origin as its record branch (push_record), the one
     route by which another clone reuses it (published), then show it as the `gate` status on `head` (shown); each
     refusal is said, and a refused push leaves the pass in this clone only. With `proof`, loop.md's `head_proof`: post
     it as the commit status of the proof's `status`, the description naming the values of its `env` (proof_line),
-    which `land` reads (proved), unless one already does."""
+    which `land` reads (proved), unless one already does. Without `show` (a run of named steps, `--step`), the record
+    branches are pushed and no `gate` status written."""
     if proof is not None:
         context, line = proof["status"], proof_line(record, proof["env"])
         if stated(head, context, lambda status, _named: status["description"] == line):
@@ -12636,7 +13617,8 @@ def publish(head: str, record: dict[str, Any], proof: dict[str, Any] | None = No
             print(f"not pushed to origin, so only this clone reuses it: {why}")
         else:
             print(f"published in origin as the record branch {ref}")
-    if KEEP.get():  # a job that can't write keeps the record; it writes no status either
+    # a job that can't write keeps the record, and a run of named steps is no pass of the gate: neither writes a status
+    if KEEP.get() or not show:
         return
     if why := shown(head, record):
         print(f"the `gate` status, which only shows the pass on the PR, was not written: {why}")
@@ -12789,15 +13771,28 @@ def local_ci(
                 f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
             )
             return code
-        if record := reusable(head, passed):
-            print(f"{CHECKED} on {head}: {reused(record)}")
+        # a run of named steps (`--step`) says which, never that the gate passed
+        said = f"Step {', '.join(ASKED.get())} passed" if ASKED.get() else CHECKED
+        # a run of named steps goes through run_steps, which says by each step whether it reused a pass and from where
+        if not ASKED.get() and (record := reusable(head, passed)):
+            print(f"{said} on {head}: {reused(record)}")
             gate_event(gate_branch(), "ok", lambda: gate_url(record))
         else:
             record = run_local_ci(None, None, passed)
             where = (
                 local_ci_dir() if "steps" in record else recorded(record["tree"], record["command"])
             )
-            print(f"{CHECKED} on {head}: recorded in {where}")
+            print(f"{said} on {head}: recorded in {where}")
+        if ASKED.get():
+            # each step's record pushed, with no `gate` status, which shows the gate's pass and this is none
+            publish(
+                head,
+                {"steps": [one for one in record["steps"] if not one.get("published")]},
+                show=False,
+            )
+            if left := record.get("left"):
+                print(f"{head} has no pass of {runs_only(left)}, where `local-ci` runs it alone")
+            return 0
         if left := record.get("left"):
             print(
                 f"{head} has no pass on the whole gate yet: {runs_only(left)}, where `local-ci` runs it alone"
@@ -13035,7 +14030,7 @@ def refuses_stale() -> bool:
 
 
 # `record <kind>`: the verb each kind was before #614, which the code below names
-RECORDS = {"approval": "approve", "verdict": "verdict", "checks": "local-ci"}
+RECORDS = {"approval": "approve", "verdict": "verdict", "checks": "local-ci", "waiting": "wait-on"}
 # today's verbs, kept for one release line (approvals.py's), and the gatekeeper's words for each
 ALIASES = {verb: ["record", kind] for kind, verb in RECORDS.items()}
 
@@ -13056,6 +14051,10 @@ def main(argv: list[str]) -> int:
     checking.add_argument("point", choices=("build", "merge", "ready", "rerun", "setup", "stalled"))
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--issue", type=int)
+    claiming = commands.add_parser("claim")
+    claiming.add_argument("issue", type=int)
+    claiming.add_argument("--takeover", action="store_true")
+    claiming.add_argument("--release", action="store_true")
     # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
     records = commands.add_parser("record").add_subparsers(dest="kind", required=True)
     approving = records.add_parser("approval")
@@ -13080,6 +14079,15 @@ def main(argv: list[str]) -> int:
     proving.add_argument("--earlier", type=int, nargs="*", default=[])
     delegating = commands.add_parser("delegate")
     delegating.add_argument("pr", type=int)
+    waiting_on = records.add_parser("waiting")
+    waiting_on.add_argument("pr", type=int)
+    waiting_on.add_argument(
+        "--on", metavar="WHAT", help="what the PR waits on, e.g. another agent tree's go"
+    )
+    waiting_on.add_argument(
+        "--within", metavar="SPAN", help=f"the deadline, as `4h`, `2d`: default {WAIT_SPAN}"
+    )
+    waiting_on.add_argument("--clear", action="store_true", help="the wait is over")
     posting = records.add_parser("verdict")
     posting.add_argument("pr", type=int)
     posting.add_argument("report", type=Path)
@@ -13099,6 +14107,8 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--head", metavar="SHA")
     # --base: in narrowed mode, the commit `--record` selects against (land's cloud gate passes its batch's base tip)
     recording.add_argument("--base", metavar="REV")
+    # --step: run and record only the named `gate_steps` step(s), an `on_demand` one included (#2295)
+    recording.add_argument("--step", action="append", metavar="NAME")
     merging = commands.add_parser("land")
     merging.add_argument("pr", type=int, nargs="*")
     merging.add_argument("--wait", action="store_true")
@@ -13136,6 +14146,11 @@ def main(argv: list[str]) -> int:
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
     # every limit the policy's `timeouts` derive; --mergify renders .mergify.yml, --check refuses one out of step
+    recording = commands.add_parser("durations")
+    recording.add_argument("--record", metavar="FILE")
+    recording.add_argument("--out", metavar="FILE")
+    recording.add_argument("--setup", type=float, metavar="SECONDS")
+    recording.add_argument("--report", action="store_true")
     timing = commands.add_parser("timeouts")
     timing_how = timing.add_mutually_exclusive_group()
     timing_how.add_argument("--mergify", action="store_true")
@@ -13186,6 +14201,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return 0
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)
+    if args.command == "durations":
+        return durations_verb(args.record, args.out, args.setup, args.report)
     if args.command == "timeouts":  # the working tree's files only: no forge, no remote
         return timeouts_verb(args.mergify, args.check, args.json)
     if args.command == "queue-select":
@@ -13207,6 +14224,10 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         if args.issue is not None and (args.point != "build" or args.pr is not None):
             raise Refused("--issue goes with check build and no PR number")
         return check(args.point, args.pr, args.issue)
+    if args.command == "claim":
+        if args.takeover and args.release:
+            raise Refused("claim --takeover and --release are two verbs: pass one")
+        return claim_verb(args.issue, args.takeover, args.release)
     if args.command == "breakglass-proof":
         return breakglass_proof(
             args.pr, args.head, args.failed_run, args.rerun, args.smoke, args.earlier
@@ -13233,6 +14254,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             if args.point == "merge"
             else approve(args.point, args.number, None, args.by)
         )
+    if args.command == "wait-on":
+        return wait_on(args.pr, args.on, args.within, args.clear)
     if args.command == "delegate":
         return delegate(args.pr)
     if args.command == "gate-record":
@@ -13268,11 +14291,17 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
                 "--no-push goes with --rerun: only a rerun's record is kept for another job to push"
             )
         KEEP.set(args.no_push)
-        return (
-            local_ci(args.pr, proof, args.run, args.head, args.base, args.rerun)
-            if leads_its_session()
-            else detach(argv)
-        )
+        if args.step:
+            asked_steps(args)
+        held = ASKED.set(tuple(dict.fromkeys(args.step or ())))
+        try:
+            return (
+                local_ci(args.pr, proof, args.run, args.head, args.base, args.rerun)
+                if leads_its_session()
+                else detach(argv)
+            )
+        finally:
+            ASKED.reset(held)
     if args.command == "land":
         if args.only and not args.pr:
             parser.error("land --only needs a PR: there is nothing to restrict to")
@@ -13286,6 +14315,21 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "graduate":
         return graduate(args.epic, args.pr)
     return verdict(args.pr, args.report)
+
+
+def asked_steps(args: argparse.Namespace) -> None:
+    """Refuse a `local-ci --step` that the gate can't run by name: it goes with `--record` alone (no PR, head proof,
+    rerun or base), and each name must be a step of loop.md's `gate_steps` (#2295)."""
+    if not args.record or args.head_proof or args.rerun or args.base:
+        raise Refused(
+            "local-ci --step goes with --record alone: it runs and records the named gate steps on HEAD"
+        )
+    names = [step["name"] for step in gate_plan(every=True) if not step["legacy"]]
+    if unknown := [name for name in args.step if name not in names]:
+        raise Refused(
+            f"local-ci --step {unknown[0]}: loop.md's `gate_steps` has no step of that name"
+            + (f" (its steps: {', '.join(names)})" if names else " (it sets no `gate_steps`)")
+        )
 
 
 def cli(argv: list[str]) -> int:
