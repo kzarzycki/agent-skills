@@ -34,10 +34,7 @@ def test_a_cloud_brief_carries_the_in_turn_rule_and_not_the_detach_line(
     # one wake per run (finding 1 of the waste audit): one tracked wait as long as the run, no poll loop
     # a claude-cloud session is not woken by a finished background task (#2593): it waits in the foreground
     assert "wait-for --log <log> --pid <pid> --budget 570" in brief and "in the foreground" in brief
-    assert (
-        "is not woken by a finished background task" in brief
-        and "never a short `wait-for`" in brief
-    )
+    assert "is not woken when a detached run ends" in brief and "never a short `wait-for`" in brief
     assert (
         "your harness tracks" not in brief and "end a turn only on that tracked wait" not in brief
     )
@@ -171,3 +168,24 @@ def test_no_pack_text_tells_a_cloud_session_a_background_task_wakes_it() -> None
     # the nudge every lead gets, a cloud one included, names no tracked background wait either
     assert "harness-tracked" not in omnigent_agent.LEAD_UNTRACKED
     assert "in the foreground" in omnigent_agent.LEAD_UNTRACKED
+
+
+def test_a_cloud_lead_brief_has_the_foreground_wait_rule_a_host_lead_brief_lacks() -> None:
+    """#2611: a detached run never wakes a cloud lead, so its brief says to wait in the foreground."""
+    cloud = omnigent_agent.cloud_preamble(omnigent_agent.LEAD_PREAMBLE, None)
+    assert IN_TURN in cloud and "in the foreground" in cloud
+    assert "is not woken when a detached run ends" in cloud
+    host = omnigent_agent.LEAD_PREAMBLE
+    assert IN_TURN not in host and "is not woken when a detached run ends" not in host
+
+
+def test_lead_md_names_the_detached_run_as_the_case_that_wakes_nothing() -> None:
+    """#2611: the role text reads the probe as it came out: a detached run wakes nothing, a tracked task has."""
+    lead = Path(__file__).parents[2] / "loop" / "skills" / "engineering-loop" / "lead.md"
+    text = " ".join(lead.read_text().split())
+    assert (
+        "not woken when a detached run ends, though a tracked background task has woken one (#2611)"
+        in text
+    )
+    assert "ends its turn only once the run has ended" in text
+    assert "not woken by a finished background task" not in text
