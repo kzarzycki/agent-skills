@@ -146,9 +146,8 @@ the branch's name starts a segment with (`loop/329-fix`), the same way, and clai
 since a build needs an approved spec. `check merge` with no PR yet: exit 0.
 With `opt_out: true` in gatekeeper.md, a person may keep their PRs out of the loop: `check merge` on a PR that
 left no loop trail (no verifier review, no `Approved: spec` record or `approved:spec` on an issue it links, no
-`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop and exits 0, so the approvals
-workflow posts success and its author merges it their usual way; `land` never takes it into a batch, and named,
-prints the same line and exits 1, so the loop never merges it. Risk rules and `risk:high` hold no such PR. `check build` is
+`Reverts #<n>` line, not an exempt bot PR) prints that it is outside the loop, naming the proofs it lacks, and exits 1, as `land` does for the same PR (one rule, `outside`): `land`
+never takes it into a batch, and named, prints the same line and exits 1, so the loop never merges it and its author merges it their usual way. Risk rules and `risk:high` hold no such PR. `check build` is
 unchanged. A spec a policy covers is no trail, since under `spec.auto: true` every issue is covered.
 `land [<pr>... [--only]]` is the one way an agent merges. It lands every landable PR into one base, the first named PR's or else the
 repository's default branch, through one of three merge queues, picked by the base's rules (`required_checks`) and the
@@ -3926,7 +3925,7 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
             return None
     return (
         f"PR #{pull['number']} is outside the loop ({source(loop)} `opt_out: true`, no verifier review, spec approval,"
-        " revert or bot exemption): its author merges it"
+        " revert or bot exemption): land refuses it, and its author merges it"
     )
 
 
@@ -6396,8 +6395,9 @@ def checked(point: str, pull: dict[str, Any]) -> int:
         )
         return 1 if found else 0
     if point == "merge" and (why := outside(pull, loop)):
+        # land refuses this PR on the same rule (proof_gaps), so the check says so now, never green (#2576)
         print(why)
-        return 0
+        return 1
     if point == "merge":
         base = pull["baseRefName"]
         judge_with_base(base, fetch=True)
