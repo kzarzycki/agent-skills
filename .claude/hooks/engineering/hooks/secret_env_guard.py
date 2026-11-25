@@ -64,18 +64,26 @@ INTERPRETERS = re.compile(r"^(python[\d.]*|node|nodejs|deno|bun|perl|ruby|php|lu
 CODE_FLAGS = {"-c", "-e", "-p", "-r", "--eval", "--print", "-E"}
 ENV_RUN = re.compile(r"/proc/[^\s'\"]*\benviron\b")  # also /proc/self/task/1/environ
 # code that starts a command that dumps, or opens the file
+# (`set`, `export` and `env` count only as the whole string or list, or before `-p`/`-0`, a pipe, a
+# redirect or `;`: `set -e; make` and `['env', 'FOO=1', 'ls']` run something else, #2429)
 CODE_EXEC = re.compile(
     r"(?:popen|system|check_output|check_call|\brun|\bcall|exec\w*|spawn\w*)\(\s*[\[(]?\s*['\"]"
-    r"(?:env|printenv|set|export)\b"
+    r"(?:printenv\b"
+    r"|(?:env|set|export)(?:\s*['\"]\s*(?:[\])]|,(?!\s*['\"]))|\s+-[0p]\b|\s*[;&|<>\n]))"
 )
 # code that reduces a value to a length, a digest or a test, or only assigns the environment:
 # the parts that leave no value in the output
 CODE_REDUCED = re.compile(
     r"\blen\(|hashlib|\bsha\d+|\bmd5\b|\bbool\(|\bis\s+(?:not\s+)?None\b|[!=]=\s*None\b"
-    r"|['\"]\s*(?:not\s+)?in\s+(?:os\.environ|process\.env)\b|\.length\b|\bhasOwnProperty\b"
+    r"|['\"]\s*(?:not\s+)?in\s+(?:(?:os\.)?environb?|process\.env)\b|\.length\b|\bhasOwnProperty\b"
 )
 CODE_ASSIGNED = re.compile(
-    r"(?:=|\*\*|\.\.\.)\s*(?:dict\(\s*)?(?:os\.environ|process\.env)(?:\.copy\(\))?"
+    r"(?:=|\*\*|\.\.\.)\s*(?:dict\(\s*)?(?:(?:os\.)?environb?|process\.env)(?:\.copy\(\))?"
+)
+# `from os import environ`: the bare name then is the whole environment (#2429)
+CODE_IMPORT_ENVIRON = re.compile(r"\bfrom\s+os\s+import\b[^\n;]*\benvironb?\b[^\n;]*")
+CODE_BARE_ENVIRON = re.compile(
+    r"(?<![\w.$])environb?\b(?!\s*(?:\[|\.get\b|\.setdefault\b|\.pop\b))"
 )
 CODE_STRING = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
 # the first quoted name a lookup call takes: os.environ.get('NAME'), os.getenv("NAME"), ENV.fetch
@@ -86,12 +94,14 @@ AWK_NAMED = re.compile(r"\bENVIRON\s*\[\s*[\"']([A-Za-z0-9_]+)[\"']")
 AWK_ENV = re.compile(r"\bENVIRON\b(?!\s*\[\s*[\"'])")
 # the whole environment inside code: os.environ / process.env / ENV / %ENV not indexed or looked up
 CODE_WHOLE = re.compile(
-    r"\bos\.environ\b(?!\s*(?:\[|\.get\b|\.setdefault\b|\.pop\b))"
+    r"\bos\.environb?\b(?!\s*(?:\[|\.get\b|\.setdefault\b|\.pop\b))"
     r"|\bprocess\.env\b(?![\w.\[])"
     r"|\b(?:Deno\.env\.toObject|environ\.items|getenv\(\s*\))"
     r"|(?<![\w$])%ENV\b|\bENV\.(?:to_h|each|inspect|to_a|map)\b|\bENV(?![\w\[.])|\$_ENV\b|\$_SERVER\b|\bgetenv\(\)"
 )
-CODE_NAMED = re.compile(r"(?:environ|getenv|process\.env|ENV|env\.get)\W{1,4}([A-Za-z0-9_]+)")
+CODE_NAMED = re.compile(
+    r"(?:environb?|getenv|process\.env|ENV|env\.get)\W{1,4}(?:b(?=['\"]))?\W?([A-Za-z0-9_]+)"
+)
 CODE_PRINTS = re.compile(
     r"print|console\.|echo|puts|write|say\b|dump|stringify|log\b|inspect|\bpp?\b"
 )
@@ -100,6 +110,11 @@ CODE_PRINTS = re.compile(
 VAR_USE = re.compile(
     r"\$([A-Za-z_][A-Za-z0-9_]*)|\$\{!?([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_]|:?\+)"
 )
+
+# curl options that print the request, headers included (a short flag among others: `-sv`)
+CURL_VERBOSE = re.compile(r"--verbose|--trace[\w-]*|-[A-Za-z]*v[A-Za-z]*")
+FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
+ASSIGN_VALUE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\+?=(.*)", re.DOTALL)
 
 HOW = (
     "Check a variable without printing it: `printenv NAME | wc -c` (its length), `printenv NAME |"
@@ -177,19 +192,21 @@ def reduces(words: list[str]) -> bool:
     return False
 
 
-def names_used(words: list[str]) -> list[str]:
+def names_used(words: list[str], tainted: frozenset = frozenset()) -> list[str]:
     """The secret-shaped variables a command line reads with ``$NAME`` or ``${NAME}``, never
-    ``${#NAME}`` (a length)."""
+    ``${#NAME}`` (a length). ``tainted``: names assigned from a secret earlier in the command."""
     found: list[str] = []
     for word in words:
         for m in VAR_USE.finditer(word):
             name = m.group(1) or m.group(2)
-            if name and secret(name):
+            if name and (secret(name) or name in tainted):
                 found.append(name)
     return found
 
 
-def judge_words(rest: list[str], reduced: bool, stdin: str = "") -> str | None:
+def judge_words(
+    rest: list[str], reduced: bool, stdin: str = "", tainted: frozenset = frozenset()
+) -> str | None:
     """The refusal for one command (its leading words stripped), else None. ``reduced``: its output
     goes into a hasher or counter; ``stdin``: the whole command line, the code an interpreter with
     no script reads from a here-document."""
@@ -231,8 +248,14 @@ def judge_words(rest: list[str], reduced: bool, stdin: str = "") -> str | None:
             return f"`{prog} -p {bad[0]}` prints a secret's value"
     if prog == "env" and not plain and not any("=" in a for a in args):
         return None if reduced else "`env` with no command prints the whole environment"
-    if prog in PRINTERS and not reduced and (bad := names_used(args)):
+    if prog in PRINTERS and not reduced and (bad := names_used(args, tainted)):
         return f"`{prog}` prints ${bad[0]}, which looks like a secret"
+    if (
+        prog == "curl"
+        and any(CURL_VERBOSE.fullmatch(a) for a in args)
+        and names_used(args, tainted)
+    ):
+        return "`curl` in verbose or trace mode prints the request headers, a secret included"
     if INTERPRETERS.match(prog) and not reduced:
         code = ""
         for i, a in enumerate(args):
@@ -247,6 +270,8 @@ def judge_words(rest: list[str], reduced: bool, stdin: str = "") -> str | None:
                 return f"`{prog}` code reads or dumps the whole environment"
             if CODE_PRINTS.search(code) and not CODE_REDUCED.search(code):
                 bare = CODE_ASSIGNED.sub("=", CODE_STRING.sub("''", code))
+                if CODE_IMPORT_ENVIRON.search(bare):
+                    bare = CODE_BARE_ENVIRON.sub("os.environ", CODE_IMPORT_ENVIRON.sub("", bare))
                 if CODE_WHOLE.search(bare):
                     return f"`{prog}` code prints the whole environment"
                 named = CODE_NAMED.findall(code) + CODE_GET.findall(code)
@@ -266,6 +291,34 @@ def unwrap(rest: list[str]) -> list[str]:
         if rest and Path(rest[0]).name != "env":  # `nice env` is a dump, judged as `env`
             rest, _, _ = strip_leading(rest, None)
     return rest
+
+
+def find_commands(rest: list[str]) -> list[str]:
+    """The command lines a ``find`` runs with ``-exec``, ``-execdir``, ``-ok`` or ``-okdir``
+    (up to ``;`` or ``+``, without the ``{}`` placeholder)."""
+    found: list[str] = []
+    i = 0
+    while i < len(rest):
+        if rest[i] in FIND_EXEC:
+            j = i + 1
+            while j < len(rest) and rest[j] not in (";", "+", "\\;"):
+                j += 1
+            if inner := [w for w in rest[i + 1 : j] if w != "{}"]:
+                found.append(shlex.join(inner))
+            i = j
+        i += 1
+    return found
+
+
+def taint(words: list[str], tainted: frozenset) -> frozenset:
+    """``tainted`` plus every name ``words`` assign from a secret variable (``x=$GITHUB_TOKEN``,
+    also after ``export``, ``declare``, ``local`` or ``readonly``)."""
+    out = set(tainted)
+    for word in words:
+        m = ASSIGN_VALUE.fullmatch(word)
+        if m and names_used([m.group(2)], tainted):
+            out.add(m.group(1))
+    return frozenset(out)
 
 
 def heredoc_bodies(command: str) -> list[str]:
@@ -295,7 +348,7 @@ def stdin_shell(rest: list[str]) -> bool:
 
 
 def judge_stdin_shell(
-    items: list, i: int, reads: list[str], command: str, depth: int
+    items: list, i: int, reads: list[str], command: str, depth: int, tainted: frozenset
 ) -> str | None:
     """The refusal for a shell at ``items[i]`` that runs what is fed to it: a here-string, a
     here-document or the echo before a pipe."""
@@ -308,13 +361,14 @@ def judge_stdin_shell(
         if before and Path(before[0]).name in PRINTERS | {"cat"}:
             fed.append(" ".join(before[1:]))
     for text in fed:
-        if why := judge(text, depth + 1):
+        if why := judge(text, depth + 1, tainted):
             return why
     return None
 
 
-def judge(command: str, depth: int = 0) -> str | None:
-    """The reason ``command`` is refused, else None."""
+def judge(command: str, depth: int = 0, tainted: frozenset = frozenset()) -> str | None:
+    """The reason ``command`` is refused, else None. ``tainted``: names assigned from a secret
+    variable by an outer command line."""
     items = pipelines(command)
     for i, (words, _sep, reads) in enumerate(items):
         # a segment whose output a later segment of its pipeline reduces to a length or a digest
@@ -326,27 +380,34 @@ def judge(command: str, depth: int = 0) -> str | None:
             return "it reads a process's whole environment (/proc/<pid>/environ)"
         rest, _, _ = strip_leading(words, None)
         prefix = words[: len(words) - len(rest)]
+        tainted = taint(prefix, tainted)
         rest = unwrap(rest)
+        if rest and Path(rest[0]).name in ("export", "declare", "typeset", "local", "readonly"):
+            tainted = taint(rest[1:], tainted)
         if not rest:
             if any(Path(w).name == "env" for w in prefix) and not reduced:
                 return "`env` with no command prints the whole environment"
             continue
         if Path(rest[0]).name == "eval":
-            if depth < SHELL_DEPTH and (why := judge(" ".join(rest[1:]), depth + 1)):
+            if depth < SHELL_DEPTH and (why := judge(" ".join(rest[1:]), depth + 1, tainted)):
                 return why
             continue
         if (inner := shell_string(rest)) is not None:
-            if depth < SHELL_DEPTH and (why := judge(inner, depth + 1)):
+            if depth < SHELL_DEPTH and (why := judge(inner, depth + 1, tainted)):
                 return why
             continue
         if stdin_shell(rest) and not reduced:
-            if why := judge_stdin_shell(items, i, reads, command, depth):
+            if why := judge_stdin_shell(items, i, reads, command, depth, tainted):
                 return why
             continue
+        if Path(rest[0]).name == "find" and not reduced and depth < SHELL_DEPTH:
+            for found in find_commands(rest):
+                if why := judge(found, depth + 1, tainted):
+                    return why
         fed = [r[3:] for r in reads if r.startswith("<<<")]
-        if fed and not reduced and Path(rest[0]).name in READERS and names_used(fed):
-            return f"`{Path(rest[0]).name}` prints ${names_used(fed)[0]}, which looks like a secret"
-        if why := judge_words(rest, reduced, command):
+        if fed and not reduced and Path(rest[0]).name in READERS and names_used(fed, tainted):
+            return f"`{Path(rest[0]).name}` prints ${names_used(fed, tainted)[0]}, which looks like a secret"
+        if why := judge_words(rest, reduced, command, tainted):
             return why
     return None
 
