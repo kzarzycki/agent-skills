@@ -994,11 +994,15 @@ def omnigent_agent_script():
 def session_sweep(run, dry_run=False):
     """Once a day, archive the Omnigent sessions idle over a day that no keep rule holds (`omnigent_agent.py sweep`,
     with the keep list); its lines go to the log. Returns the owner card's JSON for the sessions the owner talked to
-    (`sys_ask_user_question` input, for the round to post), else None. A failed sweep fails the run and runs again next
+    (`sys_ask_user_question` input, for the round to post), else None. The card is saved, so a run later the same day (the
+    round's second run) shows it again rather than losing it. A failed sweep fails the run and runs again next
     round; a skill install without omnigent-agents skips it."""
-    stamp = STATE / 'swept'
+    stamp, saved = STATE / 'swept', STATE / 'card'  # the day's card, shown again by every run until the next sweep
     if stamp.exists() and stamp.stat().st_mtime > time.time() - SWEEP_EVERY:
         run.say('sweep: sessions already swept in the last 20 h')
+        if card := (saved.read_text().strip() if saved.is_file() else ''):
+            run.say(f'sweep: the owner card of that sweep, again, for whoever posts it\nCARD: {card}')
+            return card
         return None
     if not (script := omnigent_agent_script()):
         run.say('note: no omnigent-agents skill installed: session sweep skipped')
@@ -1021,6 +1025,10 @@ def session_sweep(run, dry_run=False):
         run.say(f'FAIL session sweep: exit {done.returncode}: {done.stderr.strip()[-300:]}')
     elif not dry_run:
         stamp.touch()
+        if card:
+            saved.write_text(card + '\n')
+        else:
+            saved.unlink(missing_ok=True)
     if card:
         run.say(f'CARD: {card}')
     return card

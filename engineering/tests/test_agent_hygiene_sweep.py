@@ -61,7 +61,9 @@ def test_the_sweep_runs_once_a_day_with_the_keep_list_and_hands_back_the_card(
     ]
     log = (tmp_path / "log").read_text()
     assert "sweep: s1 t: archived (idle)\n" in log and "CARD: {" in log and not run.failed
-    assert hygiene.session_sweep(run) is None  # the next round the same day
+    # the round's second run, or a later round the same day: no second sweep, the same card again
+    assert json.loads(hygiene.session_sweep(run)) == CARD
+    assert (tmp_path / "log").read_text().count("CARD: {") == 2
     assert (
         len(calls(tmp_path)) == 1
         and "already swept in the last 20 h" in (tmp_path / "log").read_text()

@@ -21,6 +21,8 @@ with the last round:
    `ASK:` line instead of posting it.
 2. Settle the routine `ASK:` lines yourself (Settling what it kept). Leave the rest. When it
    printed a `CARD:` line (Idle sessions), post that JSON once as `sys_ask_user_question`'s input.
+   Every run until the next sweep prints the same card again (`~/.local/state/agent-hygiene/card`),
+   so it is never lost to a rerun; post it only when this conversation has not posted that card yet.
 3. When an `ASK:` line is left, run `~/.local/bin/agent-hygiene` once more: what you
    settled is gone, so it posts only the rest, each question once.
 4. Reply with the exit code of the last run and what changed since the last round:
@@ -94,7 +96,8 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   rounds of the day skip it): every unarchived Omnigent session idle (not updated) for over a
   day is archived through `omnigent_agent.py sweep`, which finishes each with
   `finish_delivered`, the function the `DONE` path uses, so a failed, cancelled or errored
-  session counts as finished and a parent's idle children go with it. Kept: a running session,
+  session counts as finished. Each session is judged on its own, so archiving a parent never takes
+  a child that is kept, talked to or not idle. Kept: a running session,
   one with an open question card, a pending prompt, background work or input pending, the chief
   of staff and project managers (`omni.role` `cos`, `pm`), this session, a `start --keep`
   session (`omni.keep`), a worker whose PR is open, and each session on the keep list. An
@@ -109,7 +112,9 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   the run, and the next round sweeps again. `--dry-run` says what it would archive.
 
   **The keep list** is `~/.config/agent-hygiene/keep`, beside the hygiene state, not code: one
-  session id or exact session title per line, `#` starting a comment. A session on it is never
+  session id or exact session title per line, `#` starting a comment; an entry matches a whole id
+  or title, never a prefix. A keep list that is there but can't be read (a directory, no
+  permission) fails the sweep, which then archives nothing. A session on it is never
   swept, however long it is idle; take the line out to let the sweep have it.
 
 If `lsof` or `ps` fails, nothing is removed and the run exits 1. Agent state (`~/.claude`,

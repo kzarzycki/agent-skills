@@ -7361,10 +7361,16 @@ MANAGER_ROLES = (
 
 def keep_list(path: Path | None) -> set[str]:
     """The sweep's keep list (agent-hygiene's ``~/.config/agent-hygiene/keep``): a session id or exact title per line,
-    ``#`` starting a comment. A missing file keeps nothing."""
-    if not path or not path.is_file():
+    ``#`` starting a comment; an entry matches a whole id or a whole title, never a prefix. A missing file keeps nothing.
+    A path that is there but can't be read as a file (a directory, no permission, not UTF-8) is a ``Fail``: the sweep
+    then archives nothing, since it can't know what the list keeps."""
+    if not path or not (path.exists() or path.is_symlink()):
         return set()
-    return {line.split("#", 1)[0].strip() for line in path.read_text().splitlines()} - {""}
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        raise Fail(f"keep list {path} can't be read ({type(e).__name__}): nothing swept") from None
+    return {line.split("#", 1)[0].strip() for line in text.splitlines()} - {""}
 
 
 def owner_talked(og: Omnigent, sid: str) -> bool:
@@ -7420,7 +7426,8 @@ def sweep(
     ``keep`` (by id or title), a standing manager (``MANAGER_ROLES``) and anything ``hold_of`` names. A session the owner
     talked to (``owner_talked``) is never archived here: it is returned for the one owner card (``sweep_card``).
 
-    Sub-agents go first, and the sessions spared (keep list, owner-talked) are never finished as a parent's children.
+    Each session is judged on its own, sub-agents first: a parent's finish takes none of its children (``seen`` holds every
+    live session), so a child that is kept, talked to or not idle stays open when its parent is archived.
     Returns a line per idle session, the owner-talked ones (``{"id", "title"}``) and whether a read or finish failed."""
     now = time.time() if now is None else now
     me = own_id()
@@ -7429,9 +7436,10 @@ def sweep(
         for r in og.listing()
         if not r.get("archived")
         and str(r.get("id")) != me
-        and 0 < float(r.get("updated_at") or 0) <= now - idle_seconds
+        and 0 < float(r.get("updated_at") or 0) < now - idle_seconds
     ]
     rows.sort(key=lambda r: not r.get("parent_session_id"))  # children before their parents
+    live = {str(r.get("id")) for r in og.listing() if not r.get("archived")}
     lines: list[str] = []
     talked: list[dict] = []
     spared: set[str] = set()
@@ -7466,7 +7474,7 @@ def sweep(
             hours = (now - float(row["updated_at"])) / 3600
             lines.append(f"{name}: would archive (idle {hours:.0f} h)")
             continue
-        line, bad = finish_delivered(og, sid, settled=False, seen=set(spared))
+        line, bad = finish_delivered(og, sid, settled=False, seen=live - {sid})
         lines.append(line)
         failed |= bad
     return lines, talked, failed

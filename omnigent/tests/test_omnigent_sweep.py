@@ -155,12 +155,10 @@ def test_a_session_the_owner_talked_to_is_never_archived_and_goes_on_the_card(og
 def test_a_talked_to_child_is_not_finished_with_its_parent(og: Swept) -> None:
     og.add("parent")
     og.add("kid", parent_session_id="parent", history=[typed()])
-    og.add(
-        "other-kid", parent_session_id="parent", idle_hours=1
-    )  # not idle itself: goes with its parent
+    og.add("other-kid", parent_session_id="parent", idle_hours=1)  # not idle itself: stays open
     _, talked, _ = run(og)
     assert [t["id"] for t in talked] == ["kid"]
-    assert og.archived == ["parent", "other-kid"]
+    assert og.archived == ["parent"]
 
 
 def test_the_owner_talked_set_makes_one_multiselect_card_with_archive_all_first(og: Swept) -> None:
@@ -204,3 +202,67 @@ def test_the_command_prints_lines_then_the_card(
         == "Keep t-talked (talked)"
     )
     assert og.archived == ["s1"]
+
+
+def test_a_parents_finish_spares_its_kept_talked_and_busy_children(og: Swept) -> None:
+    """The cascade never takes a child a keep rule holds, idle or not (verifier F1)."""
+    og.add("parent")
+    og.add("talked_kid", parent_session_id="parent", idle_hours=2, history=[typed()])
+    og.add("listed_kid", parent_session_id="parent", idle_hours=2)
+    og.add("plain_kid", parent_session_id="parent", idle_hours=2)
+    og.add("idle_kid", parent_session_id="parent")
+    og.add("idle_listed", parent_session_id="parent")
+    run(og, keep={"t-listed_kid", "t-idle_listed"})
+    assert og.archived == ["idle_kid", "parent"]
+
+
+def test_a_session_idle_exactly_a_day_is_not_yet_swept(og: Swept) -> None:
+    og.add("exact", idle_hours=24)
+    og.add("over", idle_hours=24.01)
+    run(og)
+    assert og.archived == ["over"]
+
+
+def test_an_idle_owner_talked_child_goes_on_the_card_when_its_parent_is_archived(og: Swept) -> None:
+    og.add("parent")
+    og.add("talked_kid", parent_session_id="parent", history=[typed()])
+    _, talked, _ = run(og)
+    assert talked == [{"id": "talked_kid", "title": "t-talked_kid"}] and og.archived == ["parent"]
+
+
+def test_a_keep_entry_matches_a_whole_id_or_title_never_a_prefix(og: Swept) -> None:
+    og.add("s1")
+    run(og, keep={"s", "t", "t-s"})
+    assert og.archived == ["s1"]
+
+
+@pytest.mark.parametrize("how", ["directory", "unreadable"])
+def test_a_keep_list_that_cannot_be_read_fails_the_sweep_and_archives_nothing(
+    og: Swept,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    how: str,
+) -> None:
+    keep = tmp_path / "keep"
+    if how == "directory":
+        keep.mkdir()
+    else:
+        keep.write_text("s1\n")
+        real = Path.read_text
+        monkeypatch.setattr(
+            Path,
+            "read_text",
+            lambda p, *a, **k: (
+                (_ for _ in ()).throw(PermissionError(13, "denied"))
+                if p == keep
+                else real(p, *a, **k)
+            ),
+        )
+    with pytest.raises(omnigent_agent.Fail, match="keep list .* can't be read"):
+        omnigent_agent.keep_list(keep)
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: og)
+    og.add("s1")
+    monkeypatch.setattr("sys.argv", ["omnigent_agent.py", "sweep", "--keep-file", str(keep)])
+    assert omnigent_agent.main() == 1
+    assert og.archived == [] and "can't be read" in capsys.readouterr().err
