@@ -545,7 +545,7 @@ section or key it doesn't know or a value of the wrong type is refused, naming t
 the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
 `short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
 `high` and `critical`, each with `spec` and `merge` (above), and `rerun`, whether `check merge` and `land` need an
-independent rerun of the head's selection on its tree (default false for `low`, true for `high` and `critical`): a
+independent rerun of the head's selection on its tree (default false at every level: a repo turns it on once a workflow pushes the rerun record): a
 record of `local-ci --record --rerun` on origin that an app pushed (a CI run on the head) or that a verifier pass on
 the head names on a `Rerun: <record commit>` line (a fresh session the verifier started), never the worker's own
 record (rerun_gap).
@@ -1806,8 +1806,8 @@ def levels(loop: str | None) -> dict[str, dict[str, Any]]:
     needs an independent rerun of the head's selection (`rerun`, rerun_gap): gatekeeper.md's `levels`, each key it
     leaves out at its default, which is the rule before levels existed: `low` {policy, gates}; `high` {policy, go}, or
     under `spec.auto: true` {owner, gates}, since there the owner approved the change before it was built; `critical`
-    {policy, owner}; `rerun` false for `low` and true for `high` and `critical` (#2240), since for a high-risk change
-    a red the nightly finds is found too late."""
+    {policy, owner}; `rerun` false at every level (#2472): a repo opts in once it has a workflow that pushes the rerun record
+    (#2240), since for a high-risk change a red the nightly finds is found too late."""
     high: dict[str, Any] = (
         {"spec": "owner", "merge": "gates"}
         if spec_auto(loop)
@@ -1815,8 +1815,8 @@ def levels(loop: str | None) -> dict[str, dict[str, Any]]:
     )
     table: dict[str, dict[str, Any]] = {
         "low": {"spec": "policy", "merge": "gates", "rerun": False},
-        "high": {**high, "rerun": True},
-        "critical": {"spec": "policy", "merge": "owner", "rerun": True},
+        "high": {**high, "rerun": False},
+        "critical": {"spec": "policy", "merge": "owner", "rerun": False},
     }
     for level, actions in settings(loop).get("levels", {}).items():
         table[level] = {**table[level], **actions}
@@ -2036,7 +2036,7 @@ def rerun_gap(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | No
       session it started pushed, in a repo with no CI.
     A record branch someone pushed by hand alone is neither, so the worker's own record never satisfies it, nor does a
     rerun record a person's account pushed unless the verifier names it. The level is the rating's (rating), so a
-    level whose `rerun` is false (by default `low`) keeps the worker's record as the proof (#2143's D1)."""
+    level whose `rerun` is false (by default every level) keeps the worker's record as the proof (#2143's D1)."""
     level = rating(pull, issues, loop).level
     if not levels(loop)[level].get("rerun"):
         return None
