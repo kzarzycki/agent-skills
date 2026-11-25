@@ -5738,7 +5738,10 @@ def adopting(issues: list[dict[str, Any]], loop: str | None, record: bool) -> li
             if holder is None or name not in names(issue):
                 continue
             value = texted(holder)
-            if current(issue, point, point, versions(holder), "owner"):
+            if current(issue, point, point, versions(holder), "owner") or current(
+                issue, point, point, versions(holder), DELEGATE
+            ):
+                # the delegate's record already stands, and its own label rides the owner's account: not the owner's word
                 continue
             added = [
                 event
