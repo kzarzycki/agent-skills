@@ -11817,9 +11817,8 @@ def gate_branch() -> str | None:
     head it gates; none for a detached head, which has no event."""
     # ponytail: not the PR's head branch (a REST read `local-ci <pr>` does not make otherwise), so a checkout on another
     # local name than the PR's branch writes the event under its own
-    if (
-        ASKED.get()
-    ):  # a run of named steps (`--step`) is no run of the gate, so it ends no gate event
+    # a run of named steps (`--step`) is no run of the gate, so it ends no gate event
+    if ASKED.get():
         return None
     with contextlib.suppress(Exception):
         return git("symbolic-ref", "-q", "--short", "HEAD").strip() or None
@@ -12838,9 +12837,8 @@ def publish(
             print(f"not pushed to origin, so only this clone reuses it: {why}")
         else:
             print(f"published in origin as the record branch {ref}")
-    if (
-        KEEP.get() or not show
-    ):  # a job that can't write keeps the record; it writes no status either
+    # a job that can't write keeps the record, and a run of named steps is no pass of the gate: neither writes a status
+    if KEEP.get() or not show:
         return
     if why := shown(head, record):
         print(f"the `gate` status, which only shows the pass on the PR, was not written: {why}")
