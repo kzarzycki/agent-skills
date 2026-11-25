@@ -9175,6 +9175,8 @@ def supervise_registry(
     ``pr-stall`` event naming its blocker (``pr_stalls``), which wakes the notified session, the manager; ``stall_after``
     0 turns the watch off.
     """
+    if hint := service_hint(dict(os.environ)):
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {hint}", flush=True)  # the log's first line
     og = Uncarded(og)
     rec = Recorded(og) if console else og
     state_path = registry.with_suffix(".state.json")
@@ -11332,6 +11334,29 @@ def service_env(env: dict[str, str]) -> dict[str, str]:
     return carried
 
 
+SERVICE_MARK = "OMNIGENT_SERVICE"  # set by the unit or plist alone: `<manager>:<name>`; a hand run has none
+
+
+def service_hint(env: dict[str, str], uid: int | None = None) -> str | None:
+    """The line a supervisor started by its service logs first: a kill is not a stop, with the exact
+    stop and restart commands. ``None`` run by hand, where ``env`` carries no ``SERVICE_MARK``."""
+    manager, _, name = env.get(SERVICE_MARK, "").partition(":")
+    if manager == "systemd" and name:
+        return (
+            f"running as the systemd user service {name}: a kill restarts it, so to pause it run"
+            f" `systemctl --user stop {name}`, and to pick up new code run"
+            f" `systemctl --user restart {name}`"
+        )
+    if manager == "launchd" and name:
+        target = f"gui/{os.getuid() if uid is None else uid}/{name}"
+        return (
+            f"running as the launchd agent {name}: a kill restarts it, so to pause it run"
+            f" `launchctl bootout {target}`, and to pick up new code run"
+            f" `launchctl kickstart -k {target}`"
+        )
+    return None
+
+
 def _systemd_quote(text: str) -> str:
     """One word for a unit file: double-quoted, ``%`` and ``$`` escaped from expansion."""
     text = text.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
@@ -11348,7 +11373,10 @@ def systemd_unit(argv: list[str], log: Path, name: str, env: dict[str, str], cwd
         "[Service]",
         "ExecStart=" + " ".join(_systemd_quote(a).replace("$", "$$") for a in argv),
         f"WorkingDirectory={str(cwd).replace('%', '%%')}",  # systemd takes no quotes here
-        *(f"Environment={_systemd_quote(f'{k}={v}')}" for k, v in env.items()),
+        *(
+            f"Environment={_systemd_quote(f'{k}={v}')}"
+            for k, v in {**env, SERVICE_MARK: f"systemd:{name}"}.items()
+        ),
         "Restart=always",
         "RestartSec=5",
         f"StandardOutput=append:{log_path}",
@@ -11367,7 +11395,7 @@ def launchd_plist(argv: list[str], log: Path, label: str, env: dict[str, str], c
         "Label": label,
         "ProgramArguments": list(argv),
         "WorkingDirectory": str(cwd),
-        "EnvironmentVariables": dict(env),
+        "EnvironmentVariables": {**env, SERVICE_MARK: f"launchd:{label}"},
         "KeepAlive": True,
         "RunAtLoad": True,
         "StandardOutPath": str(log),

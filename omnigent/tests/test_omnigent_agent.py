@@ -12807,7 +12807,7 @@ def test_supervise_install_writes_a_restarting_service_per_registry(
     assert plist["Label"] == "omnigent.supervise." + name.rsplit("-", 1)[1]
     assert plist["ProgramArguments"] == argv and plist["KeepAlive"] and plist["RunAtLoad"]
     assert plist["StandardOutPath"] == plist["StandardErrorPath"] == str(log)
-    assert plist["EnvironmentVariables"] == env
+    assert plist["EnvironmentVariables"] == {**env, "OMNIGENT_SERVICE": f"launchd:{plist['Label']}"}
     assert name.startswith("omnigent-supervise-") and name != omnigent_agent.service_name(two)
     assert omnigent_agent.service_name(tmp_path / "x" / ".." / "a.registry") == name
 
@@ -12829,6 +12829,41 @@ def test_supervise_install_writes_a_restarting_service_per_registry(
     label = omnigent_agent.service_label(one)
     assert [c[:2] for c in calls] == [["launchctl", "bootout"], ["launchctl", "bootstrap"]]
     assert calls[0][2].endswith(f"/{label}") and calls[1][3].endswith(f"/{label}.plist")
+
+
+def test_supervise_service_logs_a_stop_and_restart_hint_first_and_a_hand_run_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2350: a kill of the service-run supervisor restarts it. The unit and plist mark the service
+    in the environment; a supervisor seeing the mark logs the stop and restart commands first."""
+    reg = tmp_path / "a.registry"
+    name, label = omnigent_agent.service_name(reg), omnigent_agent.service_label(reg)
+    unit = omnigent_agent.systemd_unit(["x"], tmp_path / "l", name, {}, tmp_path)
+    assert f'Environment="OMNIGENT_SERVICE=systemd:{name}"' in unit
+    plist = omnigent_agent.launchd_plist(["x"], tmp_path / "l", label, {}, tmp_path)
+    assert plist["EnvironmentVariables"]["OMNIGENT_SERVICE"] == f"launchd:{label}"
+
+    linux = omnigent_agent.service_hint({"OMNIGENT_SERVICE": f"systemd:{name}"})
+    assert linux and f"systemctl --user stop {name}" in linux
+    assert f"systemctl --user restart {name}" in linux and "kill" in linux
+    mac = omnigent_agent.service_hint({"OMNIGENT_SERVICE": f"launchd:{label}"}, uid=501)
+    assert mac and f"launchctl bootout gui/501/{label}" in mac
+    assert f"launchctl kickstart -k gui/501/{label}" in mac
+    assert omnigent_agent.service_hint({}) is None
+
+    class Stop(Exception): ...
+
+    def first_line(env: dict[str, str]) -> str:
+        monkeypatch.delenv("OMNIGENT_SERVICE", raising=False)
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.setattr(omnigent_agent, "Uncarded", lambda og: (_ for _ in ()).throw(Stop()))
+        with pytest.raises(Stop):
+            omnigent_agent.supervise_registry(object(), reg)  # type: ignore[arg-type]
+        return capsys.readouterr().out
+
+    assert f"systemctl --user stop {name}" in first_line({"OMNIGENT_SERVICE": f"systemd:{name}"})
+    assert first_line({}) == ""
 
 
 def test_supervise_install_arms_its_pairs_and_uninstall_removes_the_service(
