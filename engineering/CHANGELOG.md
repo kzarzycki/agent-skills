@@ -5,6 +5,12 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.10 - 2026-11-25
+
+- agent-hygiene: once a day a round archives the Omnigent sessions idle over a day through `omnigent_agent.py sweep`, the DONE path's `finish_delivered`; it keeps running sessions, open cards, background work, managers and the keep list (`~/.config/agent-hygiene/keep`), holds a stale `omnigent.keep` label only while a reason stands, and puts the sessions the owner talked to on one multiSelect owner card it prints for the round to post (#1580).
+- engineering: the pack's PreToolUse hook on Bash gains `secret_env_guard.py` beside `heavy_run_guard.py` (in `hooks/hooks-claude.json`, and this repo's own `.claude/settings.json`): it refuses a command that prints the whole environment (`env`, `printenv`, `set`, `export -p`, `declare -p`, `/proc/<pid>/environ`, an interpreter one-liner printing `os.environ` or `process.env`) or a variable named like a secret (`*_TOKEN`, `*_KEY`, `*_SECRET`, `*AUTH*`, `*PASSWORD*`), since a session's transcript is stored by the agent server; it lets `env FOO=1 cmd`, `printenv HOME`, `${#NAME}` and output piped to `wc` or `sha256sum` through, and the refusal says how to check a variable by length and hash (#2359).
+- engineering: `secret_env_guard.py` closes more dump forms and stops refusing one-liners that only start with `set`, `export` or `env`: a `python3 -c` command string such as `set -e; make`, `export FOO=1; make` or `['env', 'FOO=1', 'ls']` passes, while a bare `env`/`set`/`export`, `-p`, or one followed by a pipe, redirect or `;` is still refused; it also refuses a bare `environ` after `from os import environ`, `os.environb`, `find -exec env`, a secret read one step through a variable (`x=` assigned from a secret variable, then echoed) and `curl -v`, `--verbose` or `--trace*` with a header that expands a secret variable (#2429).
+
 ## 0.35.9 - 2026-11-24
 
 - `engineering/skills/engineering-loop/` no longer holds copies of the loop's role docs (`lead.md`, `worker.md`, `verifier.md`, `proof-run.md`, `coding-standards.md`, `issues.md`): they live only in the `loop` package's `loop/skills/engineering-loop/`, so a rule edit is made once. A start that named an old doc path by hand names `loop/skills/engineering-loop/<role>.md`, or `--role <role>`, which finds the installed file. The forwarding scripts in that folder stay until the release that drops engineering's dependencies on the split packages (#2232).
