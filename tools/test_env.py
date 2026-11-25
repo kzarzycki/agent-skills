@@ -39,6 +39,8 @@ SESSION_PREFIXES = ("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_")
 # depends on one sets it itself.
 HOST_NEUTRAL = (
     "AGENT_HOST_COMMANDS",
+    # the root conftest.py sets it to 1 for the whole run, as the pack's own tests need; clearing it would undo that
+    "AGENT_SKILLS_CHECKOUT",
     "CDP_URL",
     "CLAUDE_CDP_PORT",
     "CLAUDE_CLOUD_API_BASE",
