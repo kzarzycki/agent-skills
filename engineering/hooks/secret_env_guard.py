@@ -72,7 +72,7 @@ CODE_EXEC = re.compile(
 # the parts that leave no value in the output
 CODE_REDUCED = re.compile(
     r"\blen\(|hashlib|\bsha\d+|\bmd5\b|\bbool\(|\bis\s+(?:not\s+)?None\b|[!=]=\s*None\b"
-    r"|\bin\s+(?:os\.environ|process\.env)\b|\.length\b|\bhasOwnProperty\b"
+    r"|['\"]\s*(?:not\s+)?in\s+(?:os\.environ|process\.env)\b|\.length\b|\bhasOwnProperty\b"
 )
 CODE_ASSIGNED = re.compile(
     r"(?:=|\*\*|\.\.\.)\s*(?:dict\(\s*)?(?:os\.environ|process\.env)(?:\.copy\(\))?"
@@ -82,6 +82,7 @@ CODE_STRING = re.compile(r"'[^'\n]*'|\"[^\"\n]*\"")
 CODE_GET = re.compile(
     r"(?:environ\.get|environ\.setdefault|getenv|env\.get|ENV\.fetch|ENV\.dig)\(\s*['\"]([A-Za-z0-9_]+)['\"]"
 )
+AWK_NAMED = re.compile(r"\bENVIRON\s*\[\s*[\"']([A-Za-z0-9_]+)[\"']")
 AWK_ENV = re.compile(r"\bENVIRON\b(?!\s*\[\s*[\"'])")
 # the whole environment inside code: os.environ / process.env / ENV / %ENV not indexed or looked up
 CODE_WHOLE = re.compile(
@@ -113,8 +114,11 @@ def secret(name: str) -> bool:
         return False
     if name != name.upper():  # environment names are upper case; `$key` is a loop variable
         return False
-    if "PUBLIC" in name.split("_"):  # PUBLIC_KEY holds no secret
+    parts = name.split("_")
+    if "PUBLIC" in parts:  # PUBLIC_KEY holds no secret
         return False
+    if parts[-1] in {"ID", "NAME", "COUNT", "FILE", "PATH", "LEN", "LENGTH"} and len(parts) > 1:
+        return False  # KEY_ID, TOKEN_COUNT, API_KEY_NAME name or count a secret, not hold one
     return any(p.endswith(SECRET_ENDINGS) or p in SECRET_PARTS for p in name.split("_"))
 
 
@@ -202,8 +206,12 @@ def judge_words(rest: list[str], reduced: bool, stdin: str = "") -> str | None:
         )
         if not quiet:
             return "it reads a process's whole environment (/proc/<pid>/environ)"
-    if prog in ("awk", "gawk") and not reduced and AWK_ENV.search(" ".join(args)):
-        return f"`{prog}` prints the whole environment (ENVIRON)"
+    if prog in ("awk", "gawk") and not reduced:
+        program = " ".join(args)
+        if AWK_ENV.search(program):
+            return f"`{prog}` prints the whole environment (ENVIRON)"
+        if any(secret(n) for n in AWK_NAMED.findall(program)):
+            return f"`{prog}` prints ENVIRON of a variable that looks like a secret"
     if prog == "printenv":
         if reduced:
             return None
