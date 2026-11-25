@@ -62,7 +62,8 @@ ends``, it lands then), 5 while an approval prompt or a question holds it, 4 whe
 delivered (archived, a failed revive, neither pending nor in the history), 7 when the message was posted and
 a later read failed (delivered, unconfirmed: run it again, it posts no second copy), 8 when the
 session's host is offline (nothing sent, nothing kept: run it again once the host is back).
-``relay --unarchive`` unarchives an archived session first, so it resumes with its history. An open
+``relay --unarchive`` unarchives an archived session first, so it resumes with its history; ``send`` does so for a session the
+supervisor registry lists, and ``send --unarchive`` for one it does not. An open
 question card (``sys_ask_user_question``: elicitation id ``question_…``, not ``elicit_question_…``) holds
 nothing (``holds_input``): ``relay``, ``broadcast`` and ``watch`` treat the session as free and show
 ``card open: <question>``; a plain relay (or ``send``, which prints the same line before it waits) is
@@ -272,7 +273,6 @@ import fcntl
 import hashlib
 import http.client
 import importlib.util
-import itertools
 import json
 import os
 import plistlib
@@ -356,6 +356,9 @@ TURN_END_SECONDS = 30.0
 PROMPT_CONFIRM_SECONDS = 120.0
 # how long one listing of every session serves ``Omnigent.creations``: well inside the prompt's hold
 CREATED_SECONDS = 30.0
+# A PR with this label is parked on purpose and dropped from the merge queue by a rule (#2164): it raises no stall and no
+# dequeue for a manager to fix (#2316).
+HOLD_LABEL = "loop:hold"
 # A session younger than this is not adopted: its launcher may still be writing it to its own supervisor's registry (#2313).
 ADOPT_GRACE_SECONDS = 60.0
 TITLES = 20  # <title>, then <title>-r2 up to this many: a create refused as taken tries the next
@@ -3749,7 +3752,24 @@ def refuse_shadowed_pin(workspace: Path, env: str, main: Path | None) -> None:
         )
 
 
-def pin_environment(workspace: Path) -> None:
+def cloud_env_id(name: str) -> str:
+    """The id of the environment called ``name`` on this host's claude login, for ``start --cloud-env``; a name
+    not there is a ``Fail`` listing the names that are, since a ``-code-mode`` variant is made apart."""
+    envs = cloud_environments()
+    try:
+        hit = ENVS.named(envs, name)
+    except ENVS.Refused as e:
+        raise Fail(f"--cloud-env {name}: {e}") from None
+    if hit:
+        return str(hit["environment_id"])
+    names = ", ".join(sorted({str(e.get("name")) for e in envs if e.get("name")})) or "none"
+    raise Fail(
+        f"--cloud-env {name}: no cloud environment named {name!r} on this host's claude login (it has: {names});"
+        " `claude-code-mode --cloud-env <base>` makes an environment's <base>-code-mode variant"
+    )
+
+
+def pin_environment(workspace: Path, cloud_env: str = "") -> None:
     """Make sure a cloud session started in ``workspace`` gets the repo's claude.ai environment: it
     takes ``remote.defaultEnvironmentId`` from the workspace's untracked settings file, which a new
     worktree lacks, and without it lands in the account's default environment. The environment the
@@ -3757,9 +3777,26 @@ def pin_environment(workspace: Path) -> None:
     and pinned, replacing another pin. With no name, a pin already there stays; a worktree missing
     one takes its main checkout's; with neither, the environment named after the repository, else
     the account's ``Default``, is pinned. With none of them, fail before any session exists, as with
-    a pin that the worktree's main checkout's shadows."""
+    a pin that the worktree's main checkout's shadows.
+
+    ``cloud_env`` (``start --cloud-env``) names the environment instead, and the workspace must already
+    pin it: the bridge reads the pin each time it creates the session's cloud session (on the first
+    prompt, and again on a later message after a failed setup or an unstarted stall), so a pin written
+    for one start and put back could be read back by that session in the project's environment. A launch
+    dir of its own holds it for good; any other workspace is refused, naming ``launch-dir``."""
     own = own_settings(workspace)
     main = main_worktree(workspace)  # no checkout: no main to copy from
+    if cloud_env:
+        env = cloud_env_id(cloud_env)
+        if (pinned := environment_pin(own)) != env:
+            raise Fail(
+                f"--cloud-env {cloud_env}: {workspace / SETTINGS} pins {pinned or 'no environment'}, not"
+                f" {cloud_env} ({env}), and a cloud session rereads its workspace's pin whenever its cloud"
+                f" session is made again: make a launch dir of its own, `launch-dir <remote> <branch> {env} <path>`,"
+                " and start with --workspace <path>"
+            )
+        refuse_shadowed_pin(workspace, env, main)
+        return
     line = cloud_worker(project_loop(workspace))
     named = line.env if line else ""
     if named:
@@ -4798,6 +4835,7 @@ def start(
     allow_older_model: bool = False,
     about: int | None = None,
     keep: bool = False,
+    registered: Callable[[str, bool], None] | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -4807,7 +4845,10 @@ def start(
     (``host_id``, else this one) since #849, not to this host's load. ``files`` (local
     paths, for a session on another host) are written beside ``report`` on that host through the
     session's file API before its brief is sent, so it finds them when it starts. ``about`` is the PR a
-    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945)."""
+    verifier reviews, labelled ``PR_LABEL`` on it as a ``--pr`` worker is, so its spend groups by PR (#945).
+    ``registered(sid, True)`` runs once the session exists, before its brief is sent, and ``registered(sid, False)``
+    when it is abandoned: the caller's registry line is there the whole time the brief is confirmed, which can
+    outlast the supervisor's ``ADOPT_GRACE_SECONDS`` (#2319)."""
     harness = agent if agent in AGENTS else og.harness(agent)
     agy = harness == AGY_HARNESS
     # a session has its parent's runner, so a cloud one placed on another host (run --host) has none
@@ -5017,6 +5058,9 @@ def start(
         except Fail as e:
             survivors.append(sid)
             print(f"abandoned session {sid} survives: {e}", file=sys.stderr)
+        else:
+            if registered:  # after the archive: a live session's line stays, so no sweep adopts it
+                registered(sid, False)
 
     def failed(reason: str) -> Fail:
         left = f"; abandoned sessions survive: {', '.join(survivors)}" if survivors else ""
@@ -5092,6 +5136,9 @@ def start(
                 f"create failed ({error}); briefing session {found}, made anyway", file=sys.stderr
             )
             sid = found
+        if registered:
+            # the moment the session is known: the calls below can each take HTTP_SECONDS
+            registered(sid, True)
         if name != title:
             print(f"session {sid} is titled {name}", file=sys.stderr)
         try:
@@ -5905,20 +5952,29 @@ def rest_if_changed(path: str, timeout: float = HTTP_SECONDS) -> tuple[bool, Any
     return True, found
 
 
+# the most pages rest_pages reads of one list (5,000 items), whatever the endpoint answers
+REST_PAGES_MAX = 50
+
+
 def rest_pages(path: str, key: str = "", timeout: float = HTTP_SECONDS) -> list:
     """Every item of the paged REST list at ``path`` (``repos/...``; the items under ``key`` when the body is an object,
     as a check-runs list is), each page read with its last ETag (``rest_if_changed``), so a poll of a list where nothing
     moved costs a 304 per page, which spends no quota (#2070). The supervisor's every list poll goes through here, so
     one function is where a push of GitHub events would replace the polling."""
     items: list = []
+    last: list | None = None
     base = path if "per_page=" in path else path + ("&" if "?" in path else "?") + "per_page=100"
-    for page in itertools.count(1):
+    for page in range(1, REST_PAGES_MAX + 1):
         body = rest_if_changed(f"{base}&page={page}", timeout)[1]
         got = (body.get(key) if key else body) or []
+        # an endpoint that ignores page= (git/matching-refs) answers the same page again (#2343)
+        if got == last:
+            return items
         items += got
         if len(got) < 100:
             return items
-    return items  # unreachable: the count never ends
+        last = got
+    return items  # the backstop: no list the loop reads runs to this many pages
 
 
 def etags_load(path: Path) -> None:
@@ -6301,11 +6357,28 @@ def pr_stalls(
     refs: dict | None = None
     last = memo.get("swept", 0.0)  # the sweep before this one: a head new since was pushed after it
     said = []
+    memo["held"] = sorted(  # ``queue_round`` tells no dequeue of these
+        p["number"]
+        for p in listed
+        if HOLD_LABEL in {str(x.get("name")) for x in p.get("labels") or []}
+    )
     for row in sorted(listed, key=lambda p: p["number"]):
         if row.get("draft"):
             continue  # its lead is still building it: the lead's own deadline watches that
         key = str(row["number"])
         seen = prs.get(key) or {}
+        if row["number"] in memo["held"]:
+            # no read while held, but its head stays first-seen and it is due at once: it stalls as before when released
+            prs[key] = {
+                "head": row["head"]["sha"],
+                "updated": row.get("updated_at"),
+                "said": seen.get("said"),
+                "seen_at": seen.get("seen_at", 0.0)
+                if seen.get("head") == row["head"]["sha"]
+                else last,
+                "due": 0,
+            }
+            continue
         same = seen.get("head") == row["head"]["sha"] and seen.get("updated") == row.get(
             "updated_at"
         )
@@ -6941,6 +7014,31 @@ def pr_label(label: object) -> tuple[str, int] | None:
     return (m[1], int(m[2])) if m else None
 
 
+def label_refs(label: object) -> list[str]:
+    """The ``owner/name#N`` entries of a ``PR_LABEL`` value: one, or several joined by commas (a lead that lands
+    several PRs, or took one over: ``own_pr`` adds each)."""
+    return [p.strip() for p in str(label).split(",") if p.strip()]
+
+
+def pr_labels(label: object) -> list[tuple[str, int]]:
+    """The repository and PR number of every PR a ``PR_LABEL`` value names, in order; none that does not parse."""
+    return [found for ref in label_refs(label) if (found := pr_label(ref))]
+
+
+def own_pr(og: Omnigent, sid: str, refs: list[str]) -> str:
+    """Add PRs ``refs`` (``owner/name#N``) to ``sid``'s ``PR_LABEL`` list in one write, so a dequeue of any reaches
+    ``sid``: what a lead's ``land`` and a takeover write. Idempotent; the labels it holds already are kept."""
+    for ref in refs:
+        if not pr_label(ref):
+            raise Fail(f"own-pr needs owner/name#N, not {ref!r}")
+    held = label_refs((og.info(sid).get("labels") or {}).get(PR_LABEL, ""))
+    added = [r for r in dict.fromkeys(refs) if r not in held]
+    if not added:
+        return f"{sid}: already owns {', '.join(refs)}"
+    og.label(sid, {PR_LABEL: ",".join([*held, *added])})
+    return f"{sid}: owns {', '.join(added)}"
+
+
 def pr_hold(repo: str, pr: int) -> str | None:
     """Why a worker of PR ``pr`` of ``repo`` is still held: the PR is open; None once it is merged
     or closed. A PR that can't be read holds the worker, saying so. The lookup names ``repo``, never
@@ -7035,7 +7133,7 @@ def running_twin(og: Omnigent, label: str, role: str) -> str:
         labels = s.get("labels") or {}
         if (
             not s.get("archived")
-            and str(labels.get(PR_LABEL, "")) == label
+            and label in label_refs(labels.get(PR_LABEL, ""))
             and labels.get("omni.role") == role
             and str(s.get("status")) in RUNNING
         ):
@@ -7095,12 +7193,14 @@ def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
     page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
     found = []
     for s in page.get("data", []):
-        label = pr_label(held_by(s))
+        labelled = pr_labels(held_by(s))
         named = getattr(pr, "repo", "")
         if (
             not s.get("archived")
-            and label
-            and (pr is None or (label[1] == pr and (not named or label[0] == named)))
+            and labelled
+            and (
+                pr is None or any(n == pr and (not named or repo == named) for repo, n in labelled)
+            )
         ):
             found.append(str(s["id"]))
     return found
@@ -7185,15 +7285,19 @@ def finish_delivered(
         and (label := held_by(info))
         and not (force and (twin_stop or replaced(og, sid, info)))
     ):
-        found = pr_label(label)
-        if found and found not in held:
-            held[found] = pr_hold(*found)
-        if why := held[found] if found else f"label {label!r} names no PR":
+        found = pr_labels(label)
+        for each in found:
+            if each not in held:
+                held[each] = pr_hold(*each)
+        if why := next((held[each] for each in found if held[each]), "") or (
+            "" if found else f"label {label!r} names no PR"
+        ):
             return f"{name}: kept ({why})", False
-        if found and found not in cleared and not elsewhere(og, info):
-            cleared.add(found)  # the PR is merged or closed: its steps' events are over
-            prune_demo_branch(*found)
-            clear_closed_pr_events(*found, info.get("workspace"))
+        for each in found:
+            if each not in cleared and not elsewhere(og, info):
+                cleared.add(each)  # the PR is merged or closed: its steps' events are over
+                prune_demo_branch(*each)
+                clear_closed_pr_events(*each, info.get("workspace"))
     # an open card is the owner's question: archiving ends its way back, --force too
     if cards := cards_of(info) or [_asks(e) for e in getattr(og, "cards", {}).get(sid) or []]:
         return f"{name}: kept (card open: {'; '.join(cards)})", False
@@ -9866,7 +9970,7 @@ def supervise_registry(
                 told_any = False
                 for lead_sid in owed:
                     lead = state["leads"].get(lead_sid) or {}
-                    own = pr_label(
+                    own = pr_labels(
                         (looks.get(lead_sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")
                     )
                     named = {  # a wait is a set, and may share it with the supervisor: each PR it names
@@ -9876,7 +9980,7 @@ def supervise_registry(
                         and m[1] in (None, repo)
                     }
                     if repos.get(lead_sid) == repo and (
-                        merged_prs & (named | ({own[1]} if own and own[0] == repo else set()))
+                        merged_prs & (named | {n for r, n in own if r == repo})
                     ):
                         head = f"{lead_sid} {lead.get('title') or ''}".rstrip()
                         # a lead waiting on the supervisor has no one else to tell it
@@ -10077,6 +10181,9 @@ def supervise_registry(
         for cid, entry in sorted(entries.items(), key=lambda x: x[1]["left_at"]):
             if entry["state"] != "dequeued" or entry.get("told"):
                 continue
+            if entry["pr"] in (state["pr_stalls"].get(repo) or {}).get("held", []):
+                entry["told"] = True  # parked on purpose: its drop is no news (#2316)
+                continue
             if sessions is None:
                 try:
                     sessions = every_session()
@@ -10087,13 +10194,17 @@ def supervise_registry(
                     )
                     return
                 log(("queue-sessions", repo), None)
+            ties.pop((repo, entry["pr"]), None)
             lead = pr_lead(repo, entry["pr"], sessions)
             entry["told"] = True  # on disk with the event it raises: each comment is sent once
             tries = entry.get(
                 "tries", 0
             )  # each try its own event: a settled id is never settled again
             eid = f"dequeued:{repo}:{cid}" + (f":{tries}" if tries else "")
-            say(dequeue_message(repo, entry, flakes), lead, eid, "dequeued")
+            text = dequeue_message(repo, entry, flakes)
+            if not lead and (both := ties.get((repo, entry["pr"]))):
+                text += f"\nFollowed leads whose reports name it: {', '.join(both)}; tell the one that owns it."
+            say(text, lead, eid, "dequeued")
             if any(
                 i["id"] == f"dequeued:{lead}:{eid}" and i["status"] == "offline"
                 for i in state["intents"]
@@ -10115,7 +10226,7 @@ def supervise_registry(
     def pr_lead(repo: str, pr: int, sessions: list[dict]) -> str:
         """The lead that owns PR ``pr`` of ``repo``, else empty: a lead (followed, or any ``omni.role`` lead, archived
         too) whose own ``PR_LABEL`` names it; else the lead that started a session labelled with it (a ``start --pr``
-        worker, archived too), found up its ``parent_session_id`` chain; else a followed lead whose wait names it."""
+        worker, archived too), found up its ``parent_session_id`` chain; else a followed lead whose wait names it, or whose report head names ``owner/name#N`` or its URL."""
         label = f"{repo}#{pr}"
         followed = [s for s, owes in owed.items() if owes[3]]
         by_id = {str(s.get("id")): s for s in sessions}
@@ -10129,9 +10240,9 @@ def supervise_registry(
             return sid in followed or labels(sid).get("omni.role") == "lead"
 
         for sid in [*followed, *by_id]:
-            if is_lead(sid) and str(labels(sid).get(PR_LABEL, "")) == label:
+            if is_lead(sid) and label in label_refs(labels(sid).get(PR_LABEL, "")):
                 return sid
-        for start in [s for s in by_id if str(labels(s).get(PR_LABEL, "")) == label]:
+        for start in [s for s in by_id if label in label_refs(labels(s).get(PR_LABEL, ""))]:
             sid, seen = start, set()
             while sid and sid not in seen:  # the list holds every session, so each parent is in it
                 seen.add(sid)
@@ -10144,6 +10255,16 @@ def supervise_registry(
                 m = re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", ref.strip())
                 if m and int(m[2]) == pr and (m[1] == repo or not m[1] and repos.get(sid) == repo):
                     return sid
+        url = rf"github\.com/{re.escape(repo)}/pull/{pr}(?!\d)"
+        named = []  # a lead that took the PR over, or lands it with others: its report head names it
+        for sid in followed:
+            head = report_head((state["leads"].get(sid) or {}).get("last_text") or "")
+            if re.search(rf"(?<![\w/.-]){re.escape(label)}(?!\d)|{url}", head):
+                named.append(sid)
+        if len(named) == 1:  # a label owner won above; two leads naming it is no owner
+            return named[0]
+        if named:
+            ties[(repo, pr)] = named  # the coordinator sees the dequeue, with both leads named
         return ""
 
     def alive(other: str, info: dict) -> bool:
@@ -10166,9 +10287,9 @@ def supervise_registry(
         then reads this directory's, and its refusal is the reason shown."""
         if named:
             return named
-        label = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
+        label = pr_labels((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
         if label:
-            return label[0]
+            return label[0][0]
         if sid not in repos:
             try:
                 repos[sid] = workspace_repo(og, sid)
@@ -10176,6 +10297,9 @@ def supervise_registry(
                 return ""
         return repos[sid]
 
+    ties: dict[
+        tuple[str, int], list[str]
+    ] = {}  # PR -> the followed leads whose heads both name it (pr_lead)
     pr_shared: dict[str, list] = {}  # key -> the last read, whichever lead made it
 
     def settled(lead: dict, pr: int, repo: str, fresh: bool = False, run: bool = False):
@@ -10368,8 +10492,7 @@ def supervise_registry(
     def lead_branches(sid: str, lead: dict) -> set[str]:
         """The head branches of the PRs ``lead``'s wait names and of its own (its ``PR_LABEL``) in its own repository:
         its events' branches. A PR of another repository has its events there, which are not read."""
-        own = pr_label((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, ""))
-        found = {(own[0], own[1])} if own else set()
+        found = set(pr_labels((looks.get(sid, ({}, []))[0].get("labels") or {}).get(PR_LABEL, "")))
         for item in (lead.get("wait") or "").split(", "):
             if m := re.fullmatch(r"(?:([\w.-]+/[\w.-]+))?#(\d+)", item.strip()):
                 found.add((m[1] or "", int(m[2])))
@@ -10910,7 +11033,11 @@ def supervise_registry(
                 or og.info(sid).get("archived")  # the listing may be 30 s old
             ):
                 continue
-            made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            try:
+                made = float(row.get("created_at") or og.info(sid).get("created_at") or 0)
+            except (TypeError, ValueError):
+                log("adopt", f"{sid}: skipped, its created_at is not a number")
+                continue  # one odd record skips that session, not the sweep (#2319)
             if made and time.time() - made < ADOPT_GRACE_SECONDS:
                 continue  # its launcher may not have written its registry line yet: a later poll adopts it (#2313)
             # ponytail: the lead's real report is unknown; follow reads none, and a path in its workspace costs nothing.
@@ -11495,6 +11622,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             help="the child's workspace (default: this directory); the report must be inside it",
         )
         p.add_argument(
+            "--cloud-env",
+            default="",
+            metavar="NAME",
+            help="a claude-cloud start's environment, by its name on this host's claude login, in place of the"
+            " project's; the workspace must be a launch dir pinned to it (`launch-dir <remote> <branch> <env-id>"
+            " <path>`)",
+        )
+        p.add_argument(
             "--host",
             help="with --top-level, the Omnigent host (name or id) to start the lead, the --pr"
             " cloud worker, or a verifier (one loop.md's Placement: hosts: line lists) on; without"
@@ -11531,6 +11666,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p.add_argument("session")
     p.add_argument("brief", help="the answer or follow-up: a file, or the text itself")
     p.add_argument("report", type=Path)
+    p.add_argument(
+        "--unarchive",
+        action="store_true",
+        help="unarchive an archived session even when the registry does not list it; a listed"
+        " one is unarchived without it, and an unlisted one exits 4",
+    )
     p.add_argument("--confirm-seconds", type=float, default=60.0)
     p.add_argument(
         "--expires", type=float, default=EXPIRES_MINUTES, metavar="MINUTES", help=EXPIRES_HELP
@@ -11692,6 +11833,13 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
     p = sub.add_parser("approve")
     p.add_argument("session")
     p.add_argument("--decline", action="store_true", help="decline instead of accept")
+    p = sub.add_parser(
+        "own-pr",
+        description="add a PR (owner/name#N) to this session's `omni.pr` label list, so the merge queue's"
+        " dequeue of it reaches this lead: what `land` and a takeover write",
+    )
+    p.add_argument("pr", nargs="+", help="owner/name#N, each")
+    p.add_argument("--session", default="", help="the session to label; default: this one")
     p = sub.add_parser("status")
     p.add_argument("sessions", nargs="+")
     p = sub.add_parser(
@@ -12234,6 +12382,9 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             lines, failed = approve(og, args.session, args.decline)
             print("\n".join(lines))
             return 1 if failed else 0
+        if args.cmd == "own-pr":
+            print(own_pr(og, args.session or own_id(), args.pr))
+            return 0
         if args.cmd == "status":
             # a snapshot: an idle look reads as a turn ended, which a notice has confirmed
             print("\n".join(observe(og, s, {}, baseline=True)[1] for s in args.sessions))
@@ -12350,10 +12501,20 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise Fail(
                     f"--host {args.host} is no verifier host loop.md lists: {', '.join(allowed)}"
                 )
+        if args.cmd in ("run", "start") and args.cloud_env:
+            if args.agent in AGENTS or og.harness(args.agent) != CLOUD_HARNESS:
+                raise Fail(
+                    f"--cloud-env: {args.agent} is not a cloud agent; it names a claude-cloud start's environment"
+                )
+            if args.host and og.host(args.host) != og.host_id:
+                raise Fail(
+                    f"--cloud-env: the launch dir's pin is read on this host, not on {args.host}: drop --host"
+                )
         if (
             args.cmd in ("run", "start")
             and not args.host
             and not args.top_level
+            and not args.cloud_env  # ponytail: its launch dir is here; another host's isn't checked
             and args.agent not in AGENTS
             and og.harness(args.agent) == CLOUD_HARNESS
             and (args.workspace is None or args.workspace.is_absolute())
@@ -12449,12 +12610,22 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             baseline = tracked_changes(workspace) if not args.pr else None  # as run's
             undeleted = None
             try:
-                send(og, args.session, f"{mark}\n{text}", report, args.confirm_seconds, far=far)
+                # an archived lead the registry still lists is the supervisor's own archive after
+                # its DONE, so its next brief resumes it; an unlisted one was reaped (#2420)
+                listed = bool(registry) and args.session in registered(Path(registry))[0]
+                send(
+                    og,
+                    args.session,
+                    f"{mark}\n{text}",
+                    report,
+                    args.confirm_seconds,
+                    far=far,
+                    unarchive=args.unarchive or listed,
+                )
             except Undeleted as e:  # the answer landed: supervise it, then fail on the question
                 undeleted = e
-            # armed once the message is in the history, as start arms: before it, the report or
-            # question of the turn before reads as newer than the last instruction; never for
-            # --pr, as start skips it
+            # armed once the message is in the history: before it, the report or question of the
+            # turn before reads as newer than the last instruction; never for --pr
             if not args.pr:
                 arm_quietly(
                     registry,
@@ -12526,7 +12697,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             refuse_unfit_cloud_host(og, host, workspace)
         # The aliases are native harnesses.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
-            pin_environment(workspace)
+            pin_environment(workspace, args.cloud_env)
             refuse_untrusted_launch_dir(workspace)
             if args.pr:
                 named = getattr(args.pr, "repo", "")
@@ -12573,6 +12744,28 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             registry = None
         survivors: list[str] = []
 
+        def arm_launched(s: str) -> None:
+            # a supervisor reads the report file, which for --pr only wait writes: it would revive
+            # and nudge a cloud worker toward a host path it can't write
+            if (not remote or (registry and args.top_level)) and not args.pr:
+                arm_quietly(
+                    registry,
+                    s,
+                    report,
+                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
+                    verdict=verifier,
+                    followed=args.top_level,
+                    after=args.after or "",
+                    leads=str(args.leads.resolve()) if args.leads else "",
+                    direct=args.direct,
+                )
+
+        def line_for(s: str, live: bool) -> None:
+            # the line is written when the session exists, before its brief is sent: confirming
+            # the brief can outlast ADOPT_GRACE_SECONDS, and a second supervisor adopts a lead
+            # no registry holds (#2319); an abandoned session's line goes
+            arm_launched(s) if live else arm_quietly(registry, s)
+
         def launch() -> str:
             """Start the child and arm it; again (``wait``'s ``relaunch``) for a setup failure."""
             nonlocal sid
@@ -12600,22 +12793,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 files=args.file,
                 about=verifies,
                 keep=bool(args.keep),
+                registered=line_for,
             )
             survivors.extend(abandoned)
-            # a supervisor reads the report file, which for --pr only wait writes: it would revive
-            # and nudge a cloud worker toward a host path it can't write
-            if (not remote or (registry and args.top_level)) and not args.pr:
-                arm_quietly(
-                    registry,
-                    sid,
-                    report,
-                    [brief_of(report)] if briefed_by_file(og, args.agent, host) else None,
-                    verdict=verifier,
-                    followed=args.top_level,
-                    after=args.after or "",
-                    leads=str(args.leads.resolve()) if args.leads else "",
-                    direct=args.direct,
-                )
+            arm_launched(sid)  # again: a held session attached to (no create) was never armed above
             print(sid, flush=True)
             return sid
 

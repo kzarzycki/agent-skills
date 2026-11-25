@@ -9,6 +9,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from approvals_harness import approvals, git_in
+from test_approvals_select import (  # noqa: F401  (the fixture, by name)
+    SELECT,
+    base_of_work,
+    head_of,
+    worker,
+)
 
 from tools import affected_tests as a
 from tools import cross_change_tests as c
@@ -337,12 +344,14 @@ def test_a_failing_affected_tests_run_records_nothing(worker_head) -> None:
     assert c.recorded(head, point)[0] is False
 
 
-def test_a_run_that_cant_tell_records_nothing(worker_head, capsys) -> None:
+def test_a_base_git_cant_resolve_records_against_the_merge_base(worker_head, capsys) -> None:
+    """#2217: an all-zeros base (a new branch's push) selects against the merge base, so the record is the branch
+    point's, the one the floor reads."""
     g, affected = worker_head
     point, head = affected("true")
     assert g.main(["affected-tests", "--record", "--base", "0" * 40]) == 0
-    assert "affected-tests: nothing: no base to select against" in capsys.readouterr().err
-    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 1
+    assert "it selects against the merge base" in capsys.readouterr().err
+    assert g.main(["gate-record", head, "--", *narrowed_words(point, "true")]) == 0
 
 
 def test_without_record_a_passing_run_records_nothing(worker_head) -> None:
@@ -368,3 +377,31 @@ def test_with_gate_steps_affected_tests_record_records_nothing_and_says_so(
     assert g.main(["affected-tests", "--record"]) == 0
     assert "the gate has `gate_steps`" in capsys.readouterr().err
     assert g.main(["gate-record", head, "--", "true"]) == 1
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [["docs/guide.md"], ["apm.yml", "apm.lock.yaml"], ["src/app.py"]],
+    ids=["docs", "pack-bump", "build-input"],
+)
+def test_the_floor_finds_a_select_prs_record_from_a_batch_checkout(
+    worker: dict,
+    paths: list[str],
+) -> None:
+    """Under gatekeeper.md's `select`, the floor keys a PR's record by the PR's head, not by the batch: the batch
+    holds another PR's code change, so its diff has a build input that a docs or pack-bump PR's record doesn't."""
+    worker["start"](SELECT)
+    worker["commit"](*paths)
+    point = base_of_work()
+    assert approvals.main(["affected-tests", "--record"]) == 0
+    head = head_of()
+    repo = Path.cwd()
+    git_in(repo, "checkout", "-q", "-b", "other", "main")
+    (repo / "src" / "other.py").write_text("value = 4\n")
+    git_in(repo, "add", "-A")
+    git_in(repo, "commit", "-qm", "other")
+    git_in(repo, "checkout", "-q", "-b", "batch", "main")
+    git_in(repo, "merge", "-q", "--no-ff", "-m", "Merge of PR 8", "other")
+    git_in(repo, "merge", "-q", "--no-ff", "-m", "Merge of PR 7", "work")
+    found, line = c.recorded(head, point)
+    assert found, line

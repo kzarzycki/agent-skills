@@ -35,6 +35,7 @@ from approvals_harness import (  # noqa: F401
     graphql_answers,
     hub,
     merging,
+    reran,
     others_open,
     pushed,
     refs,
@@ -256,6 +257,20 @@ def _no_loop_events_read(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     module = sys.modules.get("omnigent_agent")
     if module and request.module.__name__ not in READS_LOOP_EVENTS:
         monkeypatch.setattr(module, "read_loop_events", lambda cwd=None: None)
+
+
+# The one module that runs land's `own-pr` start for real, against a fake script.
+STARTS_OWN_PR = {"test_approvals_own_prs"}
+
+
+@pytest.fixture(autouse=True)
+def _no_own_pr_start(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """land starts omnigent_agent.py `own-pr` for each PR it names (#2161): a test of land starts none."""
+    if request.module.__name__ in STARTS_OWN_PR:
+        return
+    from approvals_harness import approvals
+
+    monkeypatch.setattr(approvals, "own_prs", lambda pulls: None)
 
 
 @pytest.fixture(autouse=True)

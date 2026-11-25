@@ -341,13 +341,6 @@ def this_repo(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def no_loop_events(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No loop events on origin: the supervisor's `ls-remote` is a real git call whose time would move these tests'
-    clocks (#1377; test_omnigent_agent_events.py reads a bare remote)."""
-    monkeypatch.setattr(omnigent_agent, "read_loop_events", lambda cwd=None: None)
-
-
-@pytest.fixture(autouse=True)
 def no_model(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """The small model faked: never a real call. Each event it is asked about is recorded, and
     it answers ``none`` (mid-work)."""
@@ -3689,8 +3682,6 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     og = FakeOmnigent()
     og.fail.add("create")  # the lookup after a failed create is the top-level one too
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    # the checkout's own policy delegates (#1551): the plain wording is what a policy without it gets
-    monkeypatch.setattr(omnigent_agent, "lead_delegation", lambda *_: "")
     sid, _ = omnigent_agent.start(
         og, "claude", "t", "do X", tmp_path / "r.md", None, 0, top_level=True
     )
@@ -14795,3 +14786,50 @@ def test_several_waits_on_one_pr_read_it_once(
     monkeypatch.setattr(omnigent_agent, "gh", pr_rest(calls))
     supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
     assert len([c for c in calls if c[-1].endswith("/pulls/976")]) == 1
+
+
+def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = FakeOmnigent(reply="https://github.com/o/r/pull/7#issuecomment-42")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    fake_gh(monkeypatch, {"42": on_pr(7, "done")})
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "fix.md").write_text("fix it")
+    listed, unlisted, forced = (og.create("claude", t) for t in ("a", "b", "c"))
+    og.archived += [listed, unlisted, forced]
+    registry = tmp_path / "leads.registry"
+    registry.write_text(f"{listed}=old.md\n")
+    send = [
+        "send",
+        "fix.md",
+        "tmp/loop/r.md",
+        "--pr",
+        "7",
+        "--registry",
+        str(registry),
+        "--confirm-seconds",
+        "0",
+    ]
+    assert omnigent_agent.main(["send", listed, *send[1:]]) == 0
+    assert listed not in og.archived
+    assert any("fix it" in omnigent_agent.text_of(i) for i in og.sessions[listed])
+    assert omnigent_agent.main(["send", unlisted, *send[1:]]) == omnigent_agent.GONE
+    assert unlisted in og.archived and f"session {unlisted} is archived" in capsys.readouterr().err
+    assert (
+        omnigent_agent.main(["send", forced, "fix.md", "tmp/loop/c.md", *send[3:], "--unarchive"])
+        == 0
+    )
+    assert forced not in og.archived
+    # the registry named by the environment lists a session as well as --registry
+    via_env = og.create("claude", "d")
+    og.archived.append(via_env)
+    registry.write_text(f"{via_env}=old.md\n")
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    assert (
+        omnigent_agent.main(
+            ["send", via_env, "fix.md", "tmp/loop/d.md", "--pr", "7", "--confirm-seconds", "0"]
+        )
+        == 0
+    )
+    assert via_env not in og.archived

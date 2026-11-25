@@ -193,3 +193,31 @@ def test_under_spec_auto_true_a_row_the_rating_leaves_to_the_owner_is_credited_n
         " `levels.low.spec` is `owner`"
     )
     assert approvals.holds(pr, [child("Replace the pin.\n", story())], policy) == [held]
+
+
+def test_a_row_the_parent_does_not_cover_passes_on_its_own_owner_approval(
+    writers: list[str],
+) -> None:
+    """A row line that doesn't credit the parent explains why the spec is the owner's only while the owner's approval
+    is missing: with the owner's record and `approved:spec` on the row, nothing is left to say."""
+    approved = issue(
+        1,
+        "kind:chore",
+        "area:web",
+        "size:S",
+        "approved:spec",
+        body=ROW.replace("#9", "#8"),
+        comments=(record("spec", "owner", spec=AS_WRITTEN),),
+    )
+    spec = {**approved, "parent": story(), "author": {"login": "worker"}}
+    assert approvals.proofs("build", pull(files=("app.py",)), [spec], POLICY) == []
+    assert approvals.proofs("build", pull(files=("billing/pay.py",)), [spec], POLICY) == []
+    unapproved = child(ROW.replace("#9", "#8"), story())
+    line = (
+        '#1: its spec is the owner\'s to approve, though its body names row "pack pin" of #8,'
+        " since its row line names #8, but its parent is #9"
+    )
+    assert approvals.proofs("build", pull(files=("app.py",)), [unapproved], POLICY) == [
+        line,
+        *OWNER,
+    ]

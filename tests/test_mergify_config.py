@@ -89,7 +89,11 @@ def test_every_batch_is_tested_on_a_draft_pr_from_the_prefix_ci_tests() -> None:
     [rule] = config()["queue_rules"]
     assert rule["max_checks_retries"] >= 1
     [tests] = runs("mise run test-batch")
-    assert tests["if"] == f"startsWith(github.head_ref, '{rule['queue_branch_prefix']}')"
+    # but not on a rerun attempt that read the red attempt's failed tests: rerun-tests runs the selection then (R5, #1794)
+    assert tests["if"] == (
+        f"startsWith(github.head_ref, '{rule['queue_branch_prefix']}')"
+        " && steps.read.outputs.red != 'read'"
+    )
 
 
 def test_the_queue_never_checks_a_pr_in_place() -> None:
@@ -125,10 +129,12 @@ def test_a_pr_head_runs_only_cheap_checks_and_the_batch_runs_the_tests() -> None
         step
         for step in job["steps"]
         if "pytest" in step.get("run", "")
+        or "approvals.py rerun-tests" in step.get("run", "")
         or step.get("run") in ("mise run test-batch", "mise run check")
     ]
     assert [step["if"] for step in testing] == [
-        "startsWith(github.head_ref, 'mergify/merge-queue/')",
+        "startsWith(github.head_ref, 'mergify/merge-queue/') && steps.read.outputs.red != 'read'",
+        "steps.read.outputs.red == 'read'",
         "github.event_name == 'workflow_dispatch' && inputs.tests != ''",
         "github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'",
     ]
@@ -171,6 +177,18 @@ def test_the_repo_file_is_the_rendered_template_and_the_head_check_catches_drift
     assert "approvals.py queue-config | cmp - .mergify.yml" in cheap
 
 
+def test_the_rendered_queue_timeout_follows_timeouts_run() -> None:
+    """#2228: `checks_timeout` is `timeouts.run`; this repo sets none, so it keeps the template's 1 hour."""
+    assert "timeouts" not in policy()
+    [rule] = config()["queue_rules"]
+    assert rule["checks_timeout"] == "1 hour"
+    policy_text = approvals.Policy(
+        "## Policy\n\n```yaml\nland:\n  queue: mergify\ntimeouts:\n  run: 4h\n```\n"
+    )
+    [rendered_rule] = yaml.safe_load(approvals.queue_config(policy_text))["queue_rules"]
+    assert rendered_rule["checks_timeout"] == "4 hours"
+
+
 def test_a_batch_merges_only_once_its_test_step_ran_its_selection() -> None:
     """R6's refusal (#2169, #2121): `queue-run`, the one merge condition beside `-conflict`, runs only on a batch
     branch after `qualify` and passes only on the output the step after the batch's test step sets once it passed."""
@@ -186,7 +204,7 @@ def test_a_batch_merges_only_once_its_test_step_ran_its_selection() -> None:
     [batch] = [s for s in qualify()["steps"] if s.get("id") == "batch"]
     assert batch["run"] == "mise run test-batch"
     [ran] = [s for s in qualify()["steps"] if s.get("id") == "selection"]
-    assert ran["if"] == "steps.batch.outcome == 'success'"
+    assert ran["if"] == "steps.batch.outcome == 'success' || steps.rerun.outcome == 'success'"
     assert ran["run"] == 'echo selection=ran >> "$GITHUB_OUTPUT"'
 
 

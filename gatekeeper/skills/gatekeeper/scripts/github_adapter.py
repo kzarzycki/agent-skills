@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 import zipfile
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
@@ -1719,7 +1720,7 @@ def dequeue_pull(number: int, node: str) -> None:
 
 def commit_checks(ref: str) -> dict[str, dict[str, Any]]:
     """The newest run of each check on commit (or branch) `ref`, by name: its conclusion as GraphQL spells it, link,
-    id, which for an Actions job is the job's, and its output's title. ponytail: check runs only, one per name; read status contexts and
+    id, which for an Actions job is the job's, and its output's title and summary. ponytail: check runs only, one per name; read status contexts and
     workflow names when a queue's required check is a status or one name runs in two workflows."""
     runs = rest_pages(f"commits/{ref}/check-runs?filter=latest&per_page=100", ".check_runs[]")
     return {
@@ -1728,6 +1729,8 @@ def commit_checks(ref: str) -> dict[str, dict[str, Any]]:
             "url": run.get("html_url") or "",
             "id": run.get("id"),
             "title": (run.get("output") or {}).get("title") or "",
+            "summary": (run.get("output") or {}).get("summary") or "",
+            "completed_at": run.get("completed_at") or "",
         }
         for run in runs
     }
@@ -1789,6 +1792,23 @@ def file_at(ref: str, path: str, repo: str | None = None) -> str | None:
         raise
 
 
+def pusher(ref: str) -> dict[str, Any] | None:
+    """The newest push to the branch `ref` (`refs/heads/<name>`), from the repository's activity: `after`, the commit
+    it set the branch to, `login`, the account that pushed, and `app`, true where that account is an app's (GitHub's
+    actor type `Bot`, as a workflow's token pushes), which no person's token can act as; None when it lists none."""
+    found = rest(
+        f"repos/{{owner}}/{{repo}}/activity?ref={urllib.parse.quote(ref, safe='')}&per_page=1"
+    )
+    if not found:
+        return None
+    who = found[0].get("actor") or {}
+    return {
+        "after": found[0].get("after") or "",
+        "login": who.get("login"),
+        "app": who.get("type") == "Bot",
+    }
+
+
 class Port:
     """One port's operations, each this module's function of that name, looked up at the call, so a stub set on the
     module (a test's) is the one called."""
@@ -1840,5 +1860,6 @@ forge = Port(
     "repo_tags",
     "tag_tree",
     "file_at",
+    "pusher",
 )
 evidence = Port("statuses", "post_status", "post_review", "minimize")
