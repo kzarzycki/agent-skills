@@ -55,9 +55,12 @@ def test_a_lower_codex_tier_is_still_refused_for_high_risk(
     )
 
 
-def test_the_dated_override_is_gone(monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(approvals.Refused, match="lower_tier_until"):
-        gate("codex/terra-6.1/med", "low", monkeypatch, "lower_tier_until: 2099-01-01\n")
+def test_the_dated_override_is_gone(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The key is unknown now: it warns (#2475) and has no effect, so the lower tier stays the default tier's."""
+    gate("codex/terra-6.1/med", "low", monkeypatch, "lower_tier_until: 2099-01-01\n")
+    assert "lower_tier_until" in capsys.readouterr().err
 
 
 def test_a_codex_family_naming_no_fallback_is_the_default_tier() -> None:
