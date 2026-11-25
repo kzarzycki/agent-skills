@@ -65,12 +65,6 @@ select:
     - conftest.py
     - tools/affected_tests.py
     - gatekeeper/skills/gatekeeper/scripts/gatekeeper.py
-  # The build inputs whose change selects the whole suite, which CI then runs: `affected-tests` runs no test for one (#2621).
-  whole_suite:
-    - pyproject.toml
-    - uv.lock
-    - mise.toml
-    - conftest.py
   # What a change with no build input runs: this repo's tests read prose and agent config (the skill-reference and layer
   # tests), so a change to one still runs the `Affected tests:` command, as before `select` was set.
   checks:
