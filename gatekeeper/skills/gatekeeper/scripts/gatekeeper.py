@@ -250,7 +250,7 @@ Each named PR's branch carries the `land` event (events.md): `waiting` rewritten
 merged (its refs cleared EVENT_GRACE seconds later, so a `wait land <branch>` finds the end), `failed` when evicted (its
 `url` the log comment), `needs-owner` at the owner's go or at the ceiling while nothing moves the PR. A write that fails changes no exit code.
 The GitHub merge queue takes no landing lock (GitHub orders the entries, and two lands enqueueing one PR change
-nothing), builds no local batch, runs no local gate, publishes no pass and deletes no record branch. Once it has fetched
+nothing), builds no local batch, runs no local gate, publishes no pass. Its record branches are swept all the same: `landing()` ends every land, this path included, with `drop_records` (#1869, #2692). Once it has fetched
 the base (the base-drift refusal below), each of step 2's candidates, oldest PR first, goes in with GraphQL
 `enqueuePullRequest`, `expectedHeadOid` the head the proofs judged, and GitHub drops an entry whose head moves, so no
 proof outlives a push. Where GraphQL answers 403 it goes in with auto-merge on (REST `ccr/auto_merge`, the queue's
