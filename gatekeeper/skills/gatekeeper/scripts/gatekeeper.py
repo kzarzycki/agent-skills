@@ -9272,6 +9272,22 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
                     f"{where}: Mergify dequeued it at {head} on a timeout ({timeout}): queued again, not evicted"
                 )
                 return 0
+            if ours and unreachable_dequeue(pull):
+                comment(number, REQUEUE + "\n")
+                label(number, DEQUEUED, add=False)
+                comment(
+                    number,
+                    fold(
+                        UNREACHABLE_RED,
+                        "Dequeued on a red no path the PR changes can reach: queued again, not counted.",
+                        f"Head: {head}",
+                    ),
+                )
+                print(
+                    f"{where}: Mergify dequeued it at {head}, but no path it changes can reach a test: queued again,"
+                    " not evicted"
+                )
+                return 0
             if ours:
                 mergify_evict(pull, labels)
                 return 1
@@ -9375,6 +9391,21 @@ def requeue(pull: dict[str, Any]) -> None:
             return
     comment(pull["number"], REQUEUE + "\n")
     print(f"PR #{pull['number']}: asked Mergify to queue {head} again, which it evicted before")
+
+
+# the record of a Mergify dequeue taken back because the diff reaches no test (#2146), once per retry
+UNREACHABLE_RED = "Queued again: red on a test no changed path reaches"
+
+
+def unreachable_dequeue(pull: dict[str, Any]) -> bool:
+    """Whether a Mergify dequeue at the head is retried, not counted: unreachable, and fewer than UNREACHABLE_RETRIES
+    earlier retries at this head (their UNREACHABLE_RED records)."""
+    head = pull["headRefOid"]
+    tried = sum(
+        note["body"].startswith(UNREACHABLE_RED) and f"Head: {head}" in note["body"]
+        for note in notes(pull)
+    )
+    return tried < UNREACHABLE_RETRIES and unreachable(pull)
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
@@ -9588,10 +9619,17 @@ def queue_step(
         return WAITING, False
     if reason == FAILED_CHECKS:
         main_red(base, required)
-        reds = own_reds(where, base, removals, required)
+        spared: list[str] = []
+        reds = own_reds(where, base, removals, required, pull, spared)
         if reds is None:
             return WAITING, True
         group = group_of(removals[-1])
+        if group in spared:
+            print(
+                f"{where} was red in the merge queue at {head}, but no path it changes can reach a test: it counts"
+                " for nothing, enqueued again"
+            )
+            return enqueue(pull, method)
         if not reds or reds[-1] != group:
             print(
                 f"{where} was red in the merge queue on a red {base}: it counts for nothing, enqueued again"
@@ -9666,15 +9704,39 @@ def group_of(removal: dict[str, Any]) -> str:
     return (removal.get("beforeCommit") or {}).get("oid") or "unknown"
 
 
+# how many reds on one head a diff no test can reach is retried for, uncounted: a red that comes again and again is
+# the diff's after all (or a suite broken on every machine), so past it the red counts as any other (#2146)
+UNREACHABLE_RETRIES = 3
+
+
+def unreachable(pull: dict[str, Any]) -> bool:
+    """Whether no path the PR changes can reach a test, by gatekeeper.md's `select` (selected, the cut `affected-tests`
+    uses): no build input and no `select.checks` command among its files, so a red test on it is the machine's or a
+    flaky test's, not the diff's (#2146). False without `select.build_inputs`, or when the change can't be listed."""
+    head = pull["headRefOid"]
+    if not fetched(head):
+        return False
+    point = merge_base_of(pull["baseRefName"], head)
+    cut = selected(point, head) if point else None
+    return cut is not None and not cut[0] and not cut[1]
+
+
 def own_reds(
-    where: str, base: str, removals: list[dict[str, Any]], required: set[str]
+    where: str,
+    base: str,
+    removals: list[dict[str, Any]],
+    required: set[str],
+    pull: dict[str, Any] | None = None,
+    spared: list[str] | None = None,
 ) -> list[str] | None:
     """The groups of the `failed_checks` removals that count against the PR: each built on a commit of `base` whose
     required checks are green, since one built on a red commit failed for `base`'s fault, and one GitHub can't place
     counts. A group whose required checks failed only by timing out (`TIMED_OUT`) counts for nothing, as a
     `checks_timed_out` removal does: a timeout is no test's failure (#2228). None while a group's base commit is still
-    running them: whose fault it was isn't known yet."""
+    running them: whose fault it was isn't known yet. With the `pull`, a red on a diff no test can reach (unreachable)
+    counts for nothing too, its group added to `spared`, for UNREACHABLE_RETRIES reds of the head (#2146)."""
     reds = []
+    free = pull is not None and unreachable(pull)
     for removal in removals:
         if removal.get("reason") != FAILED_CHECKS:
             continue
@@ -9688,6 +9750,10 @@ def own_reds(
                 return None
             if red:
                 continue
+        if free and len(spared or []) < UNREACHABLE_RETRIES:
+            if spared is not None:
+                spared.append(group)
+            continue
         reds.append(group)
     return reds
 
