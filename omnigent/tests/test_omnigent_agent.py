@@ -12831,6 +12831,7 @@ def test_supervise_install_writes_a_restarting_service_per_registry(
     """The unit and plist run the supervise command less --install and --log, restart it and
     log to the file, in directive forms systemd accepts; each registry gets its own name; only
     the variables the script reads are carried over. Neither systemctl nor launchctl runs."""
+    monkeypatch.setenv("AGENT_SKILLS_CHECKOUT", "1")  # this test runs from the pack's own checkout
     one, two = tmp_path / "a.registry", tmp_path / "b.registry"
     log, cwd = tmp_path / "supervise.log", tmp_path / "work dir"
     argv = omnigent_agent.service_argv(
@@ -12958,6 +12959,7 @@ def test_supervise_install_arms_its_pairs_and_uninstall_removes_the_service(
     monkeypatch.setattr(
         omnigent_agent, "_service_call", lambda cmd, check=True: calls.append(cmd) or ""
     )
+    monkeypatch.setenv("AGENT_SKILLS_CHECKOUT", "1")  # this test runs from the pack's own checkout
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)
     registry, log = tmp_path / "r.registry", tmp_path / "s.log"
@@ -15335,3 +15337,49 @@ def test_a_child_that_is_no_lead_gets_no_session_link_line(
         else omnigent_agent.brief_of(report).read_text()
     )
     assert "OMNIGENT_SESSION_LINK" not in brief
+
+
+def _pack_script(tmp_path: Path, git: bool) -> Path:
+    """A copy of this script laid out as a pack: a checkout (a .git and the marketplace file) or an installed copy."""
+    root = tmp_path / ("checkout" if git else "installed")
+    scripts = root / "omnigent/skills/omnigent-agents/scripts"
+    shutil.copytree(
+        Path(omnigent_agent.__file__).parent, scripts, ignore=shutil.ignore_patterns("__pycache__")
+    )
+    (scripts.parent / "SKILL.md").write_text("x")
+    script = scripts / "omnigent_agent.py"
+    if git:
+        (root / ".git").mkdir()
+        (root / ".claude-plugin").mkdir()
+        (root / ".claude-plugin/marketplace.json").write_text("{}")
+    return script
+
+
+def _service_script_of(script: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    for var in ("AGENT_SKILLS_CHECKOUT", "GITHUB_WORKSPACE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    spec = importlib.util.spec_from_file_location(f"copy_{abs(hash(script))}", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.service_script()
+
+
+def test_supervise_install_from_a_developer_checkout_refuses_and_names_the_installed_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2761: a service never runs a developer checkout: the install refuses, naming the installed copy (or saying
+    there is none), and no unit is written; an installed copy's own path is unchanged."""
+    checkout = _pack_script(tmp_path, git=True)
+    with pytest.raises(Exception, match="no installed copy"):
+        _service_script_of(checkout, monkeypatch, tmp_path)
+    cached = tmp_path / "home/.claude/plugins/cache/m/omnigent/1.0.0/skills/omnigent-agents"
+    (cached / "scripts").mkdir(parents=True)
+    (cached / "SKILL.md").write_text("x")
+    with pytest.raises(Exception, match=re.escape(str(cached / "scripts"))) as err:
+        _service_script_of(checkout, monkeypatch, tmp_path)
+    assert str(checkout) in str(
+        err.value
+    )  # names the checkout it refused, not as the service's script
+    installed_script = _pack_script(tmp_path, git=False)
+    assert _service_script_of(installed_script, monkeypatch, tmp_path) == installed_script.resolve()

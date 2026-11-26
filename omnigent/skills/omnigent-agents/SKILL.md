@@ -974,7 +974,8 @@ python3 <abs-path>/scripts/omnigent_agent.py --server "$RUNNER_SERVER_URL" super
 ```
 
 It writes a service running that same command line less `--install` and `--log`, from this
-directory, then enables and starts it. On Linux that is a systemd user unit
+directory (an installed copy: from a developer checkout of the pack, which never sees a release, `--install`
+refuses and names the installed script to run it from, #2761), then enables and starts it. On Linux that is a systemd user unit
 `~/.config/systemd/user/omnigent-supervise-<hash>.service` with `Restart=always` (`systemctl
 --user status omnigent-supervise-<hash>` shows it); on macOS a LaunchAgent
 `~/Library/LaunchAgents/omnigent.supervise.<hash>.plist` with `KeepAlive` and `RunAtLoad`
