@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.20 - 2026-11-26
+
+- The `land` docstring now says the GitHub merge queue path still sweeps `loop-gate/` record branches (#2785).
+
 ## 0.1.19 - 2026-11-26
 
 - The first claim from a cloud session now sets the issue `Session` field where no issue holds a value yet: `check setup` reads the field's id over GraphQL (else REST) and records it as `loop.session_field_id` in `docs/agents/gatekeeper.md` (commit it), and a claim where GraphQL is refused reads it first. A repo with no recorded id behaves as before (#2690).
