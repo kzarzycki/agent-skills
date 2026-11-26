@@ -387,7 +387,9 @@ def test_a_low_level_asking_the_owners_spec_holds_every_spec_nothing_raises(
     assert "#5 lacks the `approved:spec` label" in approvals.proofs("build", low, [bug], loop)
     lines = approvals.holds(low, [bug], loop)
     assert len(lines) == 1
-    assert lines[0].endswith("nothing rates it above low, and `levels.low.spec` is `owner`")
+    assert lines[0].endswith(
+        "nothing rates it above low, and `levels.low.spec` is `owner`; it still awaits their approval"
+    )
     # a spec rated high or critical takes that level's `policy`
     for path in ("billing/pay.py", "src/orders/place.py"):
         raised = pull(reviews=(judging("low — fine"),), files=(path,))

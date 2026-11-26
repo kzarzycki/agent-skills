@@ -190,7 +190,7 @@ def test_under_spec_auto_true_a_row_the_rating_leaves_to_the_owner_is_credited_n
     ]
     held = (
         "#1: its spec is the owner's to approve under `spec.auto: true`, since nothing rates it above low, and"
-        " `levels.low.spec` is `owner`"
+        " `levels.low.spec` is `owner`; it still awaits their approval"
     )
     assert approvals.holds(pr, [child("Replace the pin.\n", story())], policy) == [held]
 

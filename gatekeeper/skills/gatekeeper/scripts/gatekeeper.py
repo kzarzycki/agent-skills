@@ -3109,11 +3109,24 @@ def scoped(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str
     return None
 
 
+OWNER_APPROVED = "; the owner has approved it"
+OWNER_AWAITED = "; it still awaits their approval"
+
+
+def spec_state(pull: dict[str, Any], issue: dict[str, Any], loop: str | None) -> str:
+    """The ending of a holds() line: whether the spec's approval (the record and label approvals() reads, the same
+    ones proofs() judges) is on the issue, so a held spec that is approved doesn't read as a missing approval."""
+    lacking = approvals(f"#{issue['number']}", issue, "spec", spec_holder(issue), pull, loop)
+    return OWNER_AWAITED if lacking else OWNER_APPROVED
+
+
 def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> list[str]:
     """A line per issue whose spec `spec.auto: true` leaves to the owner (spec_hold), approved or not, so a gate run says
     why that spec needed them and its merge waits for no `approved:merge`; without it, per issue a kind `spec.auto`
-    names would cover but whose rating leaves to the owner (spec_owned). A migration row its approved parent covers
-    says so instead (credits). A mechanical pack bump holds none (mechanical)."""
+    names would cover but whose rating leaves to the owner (spec_owned). Each such line ends with the spec's state
+    (spec_state): OWNER_APPROVED or OWNER_AWAITED; missing_holds() keeps the approved ones out of the missing items. A
+    migration row its approved parent covers says so instead (credits). A mechanical pack bump holds none
+    (mechanical)."""
     if issues and loop is not None and "number" in pull and mechanical(pull, loop) is None:
         return []
     credited = credits(pull, issues, loop)
@@ -3122,6 +3135,7 @@ def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) 
         kinds = spec_kinds(loop)
         return list(credited.values()) + [
             f"#{issue['number']}: its spec is the owner's to approve, though `spec.auto` names its kind, since {why}"
+            + spec_state(pull, issue, loop)
             for issue in issues
             if kinds
             and not any(label.startswith("wayfinder:") for label in names(issue))
@@ -3130,10 +3144,20 @@ def holds(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) 
         ]
     return list(credited.values()) + [
         f"#{issue['number']}: its spec is the owner's to approve under `spec.auto: true`, since {why}"
+        + spec_state(pull, issue, loop)
         for issue in issues
         if not any(label.startswith("wayfinder:") for label in names(issue))
         and (why := spec_hold(pull, issue, loop))
     ]
+
+
+def missing_holds(lines: list[str]) -> list[str]:
+    """holds() lines for the gate's list of what is missing: those whose spec the owner has approved go to stderr,
+    beside the rating line, so the list names only what is still to do."""
+    for line in lines:
+        if line.endswith(OWNER_APPROVED):
+            print(line, file=sys.stderr)
+    return [line for line in lines if not line.endswith(OWNER_APPROVED)]
 
 
 def assignees(node: dict[str, Any]) -> set[str]:
@@ -6610,7 +6634,9 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     if point == "merge":
         said, red = red_base(pull["baseRefName"], loop)
         advice += said
-    for line in holds(pull, issues, loop) + found + waiting + after + used + advice + red:
+    for line in (
+        missing_holds(holds(pull, issues, loop)) + found + waiting + after + used + advice + red
+    ):
         print(line)
     return 1 if found or red else WAITING if waiting else 0
 
@@ -6636,7 +6662,7 @@ def unbuilt(number: int, tracker: str | None, loop: str | None) -> int:
     issues, pull = adopted([issue_node(number)], loop), unopened()
     found = problems(issues, None if tracker is None else label_names(tracker))
     found += proofs("build", pull, issues, loop) + held_claims(issues, loop)
-    for line in holds(pull, issues, loop) + found:
+    for line in missing_holds(holds(pull, issues, loop)) + found:
         print(line)
     if not found:
         print(f"#{number}: every build proof holds; no PR yet")
@@ -8033,7 +8059,7 @@ def proof_gaps(
         return [why], None
     found, issues = gated("merge", pull, tracker, loop)
     if found:
-        return holds(pull, issues, loop) + found, issues
+        return missing_holds(holds(pull, issues, loop)) + found, issues
     if (proof := head_proof(loop)) and not proved(pull["headRefOid"], proof["status"]):
         names = f", with the tier set in {', '.join(proof['env'])}" if proof["env"] else ""
         gone = (

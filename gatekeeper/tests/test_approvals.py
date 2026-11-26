@@ -7059,7 +7059,7 @@ def test_check_build_before_the_pr_judges_the_files_the_branch_changed(
         [
             (
                 "#1: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path"
-                " `billing/**`)"
+                " `billing/**`); it still awaits their approval"
             ),
             "#1 has no `Approved: spec` record by the owner",
             "#1 lacks the `approved:spec` label",
@@ -7115,8 +7115,8 @@ def test_spec_auto_approves_every_spec_a_writer_opened_but_one_a_risk_rule_holds
         by("drive-by", specced(6, "kind:bug")),
     )
     assert approvals.holds(pull(), [feature, held, outsider], AUTO) == [
-        "#4: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (label `area:api`)",
-        "#6: its spec is the owner's to approve under `spec.auto: true`, since its author @drive-by can't write to the repo",
+        "#4: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (label `area:api`); it still awaits their approval",
+        "#6: its spec is the owner's to approve under `spec.auto: true`, since its author @drive-by can't write to the repo; it still awaits their approval",
     ]
     assert approvals.proofs("build", pull(), [held, outsider], AUTO) == [
         "#4 has no `Approved: spec` record by the owner",
@@ -7129,13 +7129,77 @@ def test_spec_auto_approves_every_spec_a_writer_opened_but_one_a_risk_rule_holds
     assert approvals.proofs("build", pull(), [owned], AUTO) == []
 
 
+@pytest.mark.parametrize("auto", ["true", "\n    - bug"], ids=["auto", "kinds"])
+def test_a_held_spec_line_says_whether_the_owner_approved_it_and_an_approved_one_is_not_missing(
+    auto: str, writers: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A spec the owner approved is still held under `spec.auto` (it needed them), but its holds() line says the owner
+    approved it, and the gate's list of missing items leaves it out; one still awaiting them says so."""
+    loop = loop_md(
+        f"spec:\n  auto: {auto}\nrisk:\n  critical_paths:\n    - src/orders/**\nlevels:\n  critical:\n    spec: owner\n"
+    )
+    pr = pull(reviews=(judging("low — fine"),), files=("src/orders/place.py",))
+    waiting = by("worker", specced(1, "kind:bug"))
+    given = by("worker", approved(2, "kind:bug"))
+    head = "its spec is the owner's to approve" + (
+        " under `spec.auto: true`" if auto == "true" else ", though `spec.auto` names its kind"
+    )
+    lines = approvals.holds(pr, [waiting, given], loop)
+    assert [line.split(", since ")[0] for line in lines] == [f"#1: {head}", f"#2: {head}"]
+    assert lines[0].endswith("; it still awaits their approval")
+    assert lines[1].endswith("; the owner has approved it")
+    assert approvals.missing_holds(lines) == lines[:1]
+    assert lines[1] in capsys.readouterr().err
+
+
+def test_the_gates_list_of_missing_items_leaves_out_a_held_spec_the_owner_approved(
+    writers: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`check merge`, `check build` (no PR yet) and the pre-land check (proof_gaps) print a held spec's line among the
+    missing items only while it awaits the owner; one the owner approved goes to stderr."""
+    given = by("worker", approved(2, "kind:enhancement"))
+    waiting = by("worker", specced(1, "kind:enhancement"))
+    said = "its spec is the owner's to approve under `spec.auto: true`"
+    done, wait = "; the owner has approved it", "; it still awaits their approval"
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, AUTO))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", lambda *a: "origin/main\n")
+    monkeypatch.setattr(approvals, "issue_node", lambda n: {1: waiting, 2: given}[n])
+    monkeypatch.setattr(approvals, "unopened", lambda: pull(files=("billing/a.py",)))
+
+    def streams() -> tuple[str, str]:
+        out, err = capsys.readouterr()
+        return out, err
+
+    # check build with no PR yet
+    for number, shown in ((2, done), (1, wait)):
+        approvals.main(["check", "build", "--issue", str(number)])
+        out, err = streams()
+        assert (shown in out, shown in err) == (shown == wait, shown == done)
+    # check merge and the pre-land check, on a PR that lacks a verdict so both have something to say
+    pr = pull(files=("billing/a.py",))
+    for number, shown in ((2, done), (1, wait)):
+        pr["closingIssuesReferences"]["nodes"] = [{1: waiting, 2: given}[number]]
+        monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+        assert approvals.main(["check", "merge", "7"]) == 1
+        out, err = streams()
+        assert (shown in out, shown in err) == (shown == wait, shown == done)
+        lines, _ = approvals.proof_gaps(pr, TRACKER, AUTO)
+        assert any(said in line and line.endswith(wait) for line in lines) == (shown == wait)
+        assert not any(line.endswith(done) for line in lines)
+        assert (shown in streams()[1]) == (shown == done)
+
+
 def test_under_spec_auto_a_file_the_spec_did_not_foresee_holds_the_spec(
     writers: list[str],
 ) -> None:
     feature = by("worker", specced(1, "kind:enhancement"))
     pushed = pull(files=("app.py", "billing/a.py"))
     assert approvals.holds(pushed, [feature], AUTO) == [
-        "#1: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path `billing/**`)"
+        "#1: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path `billing/**`); it still awaits their approval"
     ]
     assert approvals.proofs("build", pushed, [feature], AUTO) == [
         "#1 has no `Approved: spec` record by the owner",
@@ -7148,7 +7212,7 @@ def test_under_spec_auto_a_file_the_spec_did_not_foresee_holds_the_spec(
     assert approvals.holds(crowded, [feature], AUTO) == [
         (
             "#1: its spec is the owner's to approve under `spec.auto: true`, since the gate can't read every file"
-            " the PR changes, so the risk rule's `paths` hold until a person judges them"
+            " the PR changes, so the risk rule's `paths` hold until a person judges them; it still awaits their approval"
         )
     ]
 
