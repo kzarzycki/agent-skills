@@ -7384,6 +7384,8 @@ def poll_seconds(quiet: int = 0) -> float:
     return base + github.random.randint(0, POLL_JITTER)
 
 
+# the heads of the PRs this land read as merged already (land_base, queue_landed), which no later step names
+merged_heads: list[str] = []
 # whether drop_records ran in this land already, so the sweep at its end doesn't fetch the records again
 RECORDS_DROPPED: list[bool] = [False]
 
@@ -7394,6 +7396,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     that is merged by now, are deleted from origin (#1869). A failed delete or read is one warning line, never a
     failure of the land."""
     RECORDS_DROPPED[0] = False
+    merged_heads.clear()
     try:
         code, again = landing_run(pr, only)
     except Exception:
@@ -7413,7 +7416,7 @@ def sweep_records() -> None:
             for pull in watched.get("pulls", [])
             if (head := pull.get("headRefOid")) and pull_status(pull["number"])["state"] == "MERGED"
         ]
-        drop_records(merged)
+        drop_records(list(dict.fromkeys([*merged_heads, *merged])))
     except Exception as exc:  # noqa: BLE001 - a sweep must never fail or mask the land
         print(f"the record sweep after land failed: {' '.join(str(exc).split())}")
 
@@ -7480,6 +7483,7 @@ def land_base(
         pull = pull_request(number)
         if pull["state"] == "MERGED":
             print(f"PR #{number} is merged")
+            merged_heads.append(pull["headRefOid"])  # for the sweep that ends this land (#1869)
             queue_landed(pull)
         elif pull["state"] != "OPEN":
             if len(numbers) == 1:
@@ -8971,7 +8975,10 @@ def queue_trail(base: str) -> None:
         return
     for number in listed:
         try:
-            queue_landed(pull_request(number))
+            trailed = pull_request(number)
+            if trailed.get("state") == "MERGED":
+                merged_heads.append(trailed["headRefOid"])
+            queue_landed(trailed)
         except (Refused, subprocess.CalledProcessError) as exc:
             print(f"PR #{number}: land could not write its `{LANDED}` comment: {stderr_of(exc)}")
 

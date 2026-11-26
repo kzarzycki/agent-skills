@@ -10376,8 +10376,8 @@ def test_prune_records_leaves_origin_no_record_of_a_pr_merged_or_closed_without_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """#1869: a PR merged by a merge queue, Mergify or by hand, or closed unmerged, never reaches `land`'s
-    drop_records, so its `loop-gate/` records piled up on origin. `prune-records --head <sha>`, run by
-    .github/workflows/prune-records.yml when a PR closes, deletes that head's tree's records at once (its record is
+    drop_records, so its `loop-gate/` records piled up on origin. `prune-records --head <sha>` (the sweep every land
+    ends with, or run by hand) deletes that head's tree's records at once (its record is
     fresh, so only the closed head's name saves it), keeps a fresh record of an unopened tree and an open PR's
     record, and with no head deletes the old record of no open PR."""
     head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
@@ -10436,3 +10436,18 @@ def test_every_land_ends_with_the_record_sweep_and_a_failed_sweep_never_fails_it
     monkeypatch.setattr(approvals, "landing_run", run(0, False))
     assert approvals.landing(None) == (0, False)
     assert "the record sweep after land failed: proxy refuses deletes" in capsys.readouterr().out
+
+
+def test_a_land_that_finds_its_pr_already_merged_sweeps_that_prs_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1869 F1: land_base and queue_landed read a PR merged by Mergify, a queue or by hand, and land_base leaves it out
+    of `named`, so `watched["pulls"]` never holds it; the real landing_run, not a stub, still hands its head to the
+    sweep, for a named PR and for bare `land`'s trail alike."""
+    swept: list[list[str]] = []
+    monkeypatch.setattr(approvals, "drop_records", lambda heads: swept.append(list(heads)))
+    merged = {"number": 42, "state": "MERGED", "headRefOid": "a" * 40}
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: merged)
+    monkeypatch.setattr(approvals, "queue_landed", lambda _pull: None)
+    assert approvals.landing(42) == (0, False)
+    assert swept == [["a" * 40]]
