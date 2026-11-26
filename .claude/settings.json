@@ -11,12 +11,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/engineering/hooks/heavy_run_guard.py\"",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/engineering/hooks/secret_env_guard.py\"",
             "timeout": 10
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/engineering/hooks/secret_env_guard.py\"",
+            "command": "python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/engineering/hooks/heavy_run_guard.py\"",
             "timeout": 10
           }
         ]
