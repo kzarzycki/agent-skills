@@ -1,0 +1,21 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Follow the pack's stable release line: `<package>-vX.Y.Z` tags pinned by `ref:` under a `- git: owner/repo/<package>` line in apm.yml.",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Pack pin in apm.yml, stable tags only",
+      "managerFilePatterns": [
+        "/(^|/)apm\\.yml$/"
+      ],
+      "matchStrings": [
+        "git:\\s*(?<owner>[\\w.-]+)/(?<repo>[\\w.-]+)/(?<package>[\\w.-]+)[ \\t]*\\r?\\n\\s*ref:\\s*[\\w.-]+-v(?<currentValue>\\d+\\.\\d+\\.\\d+)[ \\t]*(?:\\r?\\n|$)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "{{{owner}}}/{{{repo}}}",
+      "depNameTemplate": "{{{owner}}}/{{{repo}}}/{{{package}}}",
+      "extractVersionTemplate": "^{{{package}}}-v(?<version>\\d+\\.\\d+\\.\\d+)$",
+      "versioningTemplate": "semver"
+    }
+  ]
+}
