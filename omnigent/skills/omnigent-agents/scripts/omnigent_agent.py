@@ -856,6 +856,7 @@ Ask the owner your own questions on your own question card (`sys_ask_user_questi
 Write your final report to {report}. End every turn with one line that opens with an ending word and gives the report path on that same line: `DONE: <result in one line>. Report: {report}`, `STILL WORKING: waiting on <verifier, worker, lead, CI or a session id>. Report: {report}`, `USER NEEDED: <the question>. Report: {report}`. The supervisor routes on that line, and the owner reads it.
 A message that adds no task (a relay, a notice, a correction) is answered in the turn's ending line only: the report changes only through work on the task, and an acknowledgement never replaces an earlier report's results.
 A wait on a person (a decision, an approval, a pick, a sign-off) ends `USER NEEDED`, never `STILL WORKING`. Only a message that starts with `Park: ` tells you to park; after it, end `PARKED: <why>. Report: {report}`, and never otherwise.
+Your own session link is the `OMNIGENT_SESSION_LINK=<link>` line atop this brief (`<server>/c/<your session id>`, nothing after the id): put `OMNIGENT_SESSION_LINK=<link>` before each `approvals.py` call that claims or builds (`check build`, `claim`), since a shell keeps no variable between calls, so the claim names you and not the session your runner started under. With no such line, set nothing: the claim records no session.
 
 """
 # A top-level lead's extra brief where the project's base policy sets `loop.delegate: all` (#1551): the owner has
@@ -5226,7 +5227,10 @@ def start(
                 abandon(sid)
                 raise failed(f"start failed: {sid}: not labelled --keep: {e}") from e
         sig = signature(harness, took.get("model_override"), took.get("reasoning_effort"))
-        full = f"AGENT_SIGNATURE={sig}\n" + body
+        # a lead's own link, known only now that its session exists: the runner's primary session names the root
+        # of its tree, which is not the lead when the lead was started under another session
+        link = f"OMNIGENT_SESSION_LINK={og.base}/c/{sid}\n" if top_level and not pr else ""
+        full = f"AGENT_SIGNATURE={sig}\n" + link + body
         text = message(full)
         if by_file:
             brief_file.parent.mkdir(parents=True, exist_ok=True)
