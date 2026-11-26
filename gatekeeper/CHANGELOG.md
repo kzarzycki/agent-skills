@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.18 - 2026-11-26
+
+- gatekeeper: the forge's remote is the current branch's upstream's remote, else `forge_remote` in the policy's `loop` section, else `origin`, one helper (`events.forge_remote`) every fetch, push and policy read of `approvals.py` and the loop events goes through, so a worktree whose branch tracks a fork judges and lands against the fork's repo and base (#2710).
+
 ## 0.1.17 - 2026-11-26
 
 gatekeeper: a cloud session's loop event is also pushed as the branch `loop-event/<kind>/<branch>`, which its proxy lets a VM write, so a supervisor reading `events.py read` sees a cloud lead's `wait-on`, `end-on done` and `end-on needs-owner`; `read`, `wait` and `clear` take the branch form (either `loop-event/` or `claude/loop-event/`) beside `refs/loop/`, so `land` and `reap` remove it with the PR's other refs (#1603).
