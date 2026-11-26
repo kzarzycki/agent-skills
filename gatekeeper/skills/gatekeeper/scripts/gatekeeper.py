@@ -79,7 +79,7 @@ PR, an issue another open PR closes too (a closing keyword, or `Implements` unde
 and its branch, since each build runs its own verifier, gate and queue. When every build proof holds, it assigns each issue no one holds to its approver, comments a record that the loop did, and gives
 the PR its issues' assignees, reporting a refusal and carrying on. A flow that releases the claim (the loop's `release`) removes an assignee that record names,
 unless someone assigned them again after it, and keeps every other: a claim a person made stays.
-Under Omnigent (`OMNIGENT_RUNNER_PRIMARY_SESSION_ID` and `RUNNER_SERVER_URL` set) the record's details add `Session:
+Under Omnigent (the lead's own `OMNIGENT_SESSION_LINK`, else `OMNIGENT_RUNNER_PRIMARY_SESSION_ID` and `RUNNER_SERVER_URL` set) the record's details add `Session:
 <server>/c/<lead's session id>`, which names the lead from inside its workers and verifiers too, and the issue's `Session`
 issue field is set to the same link. The field is optional: the account's owner creates it (a text field); without it,
 the run says so in one line after one lookup, the record still carries the link, and the claim and the exit code are
@@ -2428,7 +2428,7 @@ SESSION_FIELD = "Session"
 unfielded: str | None = None
 
 
-# the variable a cloud lead, with no server variables, sets to its own session link, and the form that link must have
+# the variable a lead is given its own session link in (a cloud lead has no server variables), and the form it must have
 SESSION_LINK_ENV = "OMNIGENT_SESSION_LINK"
 SESSION_LINK_FORM = re.compile(
     r"https?://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[A-Za-z0-9._~-]+)*/c/[A-Za-z0-9_-]+"
@@ -2436,17 +2436,16 @@ SESSION_LINK_FORM = re.compile(
 
 
 def session_link() -> str | None:
-    """The lead's Omnigent session link, `<server>/c/<session id>`; None outside Omnigent. The lead's id names the
-    lead inside its workers and verifiers too, since they run as its children."""
+    """The lead's Omnigent session link, `<server>/c/<session id>`; None outside Omnigent. The link the lead was given
+    (`OMNIGENT_SESSION_LINK`) wins: the runner's primary session names the root of the session tree, which is a
+    manager and not the lead when the lead was started under it. Without one, the primary names the lead inside its
+    workers and verifiers, since they run as its children."""
+    given = os.environ.get(SESSION_LINK_ENV, "").strip().rstrip("/")
+    if SESSION_LINK_FORM.fullmatch(given):
+        return given
     lead = os.environ.get("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "").strip()
     server = os.environ.get("RUNNER_SERVER_URL", "").strip().rstrip("/")
-    if lead and server:
-        return f"{server}/c/{lead}"
-    # ponytail: epic #2458 open question "how a cloud lead learns its own link", narrower reading: the host cannot
-    # put the link atop a cloud brief (the session's id exists only after the session does), so the lead exports its
-    # own link (nothing in the cloud brief says so yet: a follow-up), and this reads it when the server variables are absent (a cloud VM has none)
-    given = os.environ.get(SESSION_LINK_ENV, "").strip().rstrip("/")
-    return given if SESSION_LINK_FORM.fullmatch(given) else None
+    return f"{server}/c/{lead}" if lead and server else None
 
 
 def issue_field(number: int, name: str) -> tuple[str | None, str]:
