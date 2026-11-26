@@ -5677,6 +5677,7 @@ PORTS = {
         "compare",  # (base, head) -> {status, ahead_by, behind_by} of head against base
         "commit_checks",  # (ref) -> {name: {conclusion, url, id, title, summary}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
+        "flaky_issue_ids",  # () -> the test ids of the open issues titled `Flaky: <test id>`
         "commit_tree",  # (sha) -> the commit's tree SHA
         "repo_tags",  # (repo) -> {name: commit} of every tag of `repo`
         "tag_tree",  # (repo, tag) -> (commit, {path: (mode, blob)}) of tag `tag` of `repo`, or None when it has none
@@ -5786,6 +5787,7 @@ github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_r
 open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
+flaky_issue_ids = through("forge", "flaky_issue_ids")
 pusher = through("forge", "pusher")
 run_info, run_jobs = through("forge", "run_info"), through("forge", "run_jobs")
 workflow_runs, run_artifact = through("forge", "workflow_runs"), through("forge", "run_artifact")
@@ -9272,6 +9274,27 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
                     f"{where}: Mergify dequeued it at {head} on a timeout ({timeout}): queued again, not evicted"
                 )
                 return 0
+            if ours and unreachable_dequeue(pull):
+                comment(number, REQUEUE + "\n")
+                label(number, DEQUEUED, add=False)
+                comment(
+                    number,
+                    fold(
+                        UNREACHABLE_RED,
+                        "Dequeued on a red no path the PR changes can reach, or on tests with open `Flaky:` issues: queued again, not counted.",
+                        f"Head: {head}",
+                    ),
+                )
+                print(
+                    f"{where}: Mergify dequeued it at {head}, but "
+                    + (
+                        "no path it changes can reach a test"
+                        if unreachable(pull)
+                        else "every test that failed has an open `Flaky:` issue"
+                    )
+                    + ": queued again, not evicted"
+                )
+                return 0
             if ours:
                 mergify_evict(pull, labels)
                 return 1
@@ -9375,6 +9398,94 @@ def requeue(pull: dict[str, Any]) -> None:
             return
     comment(pull["number"], REQUEUE + "\n")
     print(f"PR #{pull['number']}: asked Mergify to queue {head} again, which it evicted before")
+
+
+# the record of a Mergify dequeue taken back because the diff reaches no test (#2146), once per retry
+UNREACHABLE_RED = "Queued again: red on a test no changed path reaches"
+
+
+def unreachable_dequeue(pull: dict[str, Any]) -> bool:
+    """Whether a Mergify dequeue at the head is retried, not counted: unreachable or known flaky (mergify_flaky), and
+    fewer than UNREACHABLE_RETRIES earlier retries at this head (their UNREACHABLE_RED records)."""
+    head = pull["headRefOid"]
+    # since it last went ready, so a ready-again starts the count anew, as the GitHub queue's removals do
+    ready = max(
+        (
+            event.get("createdAt") or ""
+            for event in (pull.get("timelineItems") or {}).get("nodes") or []
+            if event.get("__typename") == "ReadyForReviewEvent"
+        ),
+        default="",
+    )
+    tried = sum(
+        note["body"].startswith(UNREACHABLE_RED)
+        and f"Head: {head}" in note["body"]
+        and (note.get("createdAt") or "") > ready
+        for note in notes(pull)
+    )
+    return tried < UNREACHABLE_RETRIES and (unreachable(pull) or mergify_flaky(pull))
+
+
+# a failing job in Mergify's queue status comment on the PR, which links each attempt's failed jobs
+MERGIFY_JOB = re.compile(r"/actions/runs/\d+/job/(\d+)")
+
+
+def instant(text: str) -> datetime | None:
+    """A GitHub or Mergify timestamp as a time, None where it is not one."""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def mergify_flaky(pull: dict[str, Any]) -> bool:
+    """Whether every test that failed in the last attempt of Mergify's newest dequeued status comment on the PR has an
+    open `Flaky: <test id>` issue: the failed jobs it links (`/job/<id>`), their logs' `FAILED <id>` lines. Only a
+    comment of this dequeue counts: its payload's `left_at` is after the head's push, the PR's last ready and the last
+    UNREACHABLE_RED record at this head, so an earlier head's or an already-retried dequeue's comment, which Mergify
+    leaves until it posts the next, reads nothing. A comment that links no job, a log with no such line or one GitHub
+    can't give is no known flake (#2146)."""
+    head = pull["headRefOid"]
+    comments = [
+        note["body"]
+        for note in notes(pull)
+        if "Mergify Payload" in note["body"] and '"state": "dequeued"' in note["body"]
+    ]
+    if not comments or "**Checks failed" not in comments[-1]:
+        return False
+    try:
+        left = instant(
+            json.loads(comments[-1].split("-*- Mergify Payload -*-", 1)[1].split("-*-", 1)[0]).get(
+                "left_at", ""
+            )
+        )
+    except (IndexError, ValueError, AttributeError):
+        return False
+    since = [
+        *(
+            event.get("createdAt") or ""
+            for event in (pull.get("timelineItems") or {}).get("nodes") or []
+            if event.get("__typename") == "ReadyForReviewEvent"
+        ),
+        *(
+            note.get("createdAt") or ""
+            for note in notes(pull)
+            if note["body"].startswith(UNREACHABLE_RED) and f"Head: {head}" in note["body"]
+        ),
+        head_pushed(pull) or "",
+    ]
+    if left is None or any(
+        (when := instant(each)) is not None and when >= left for each in since if each
+    ):
+        return False
+    last = comments[-1].split("**Checks failed")[-1].split("\n- ")[0]
+    failed: set[str] = set()
+    try:
+        for job in dict.fromkeys(MERGIFY_JOB.findall(last)):
+            failed |= set(FAILED_TEST.findall(job_log(int(job))))
+        return bool(failed) and failed <= flaky_issue_ids()
+    except subprocess.CalledProcessError:
+        return False
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
@@ -9588,10 +9699,22 @@ def queue_step(
         return WAITING, False
     if reason == FAILED_CHECKS:
         main_red(base, required)
-        reds = own_reds(where, base, removals, required)
+        spared: list[str] = []
+        reds = own_reds(where, base, removals, required, pull, spared)
         if reds is None:
             return WAITING, True
         group = group_of(removals[-1])
+        if group in spared:
+            print(
+                f"{where} was red in the merge queue at {head}, but "
+                + (
+                    "no path it changes can reach a test"
+                    if unreachable(pull)
+                    else "every test that failed has an open `Flaky:` issue"
+                )
+                + ": it counts for nothing, enqueued again"
+            )
+            return enqueue(pull, method)
         if not reds or reds[-1] != group:
             print(
                 f"{where} was red in the merge queue on a red {base}: it counts for nothing, enqueued again"
@@ -9666,15 +9789,66 @@ def group_of(removal: dict[str, Any]) -> str:
     return (removal.get("beforeCommit") or {}).get("oid") or "unknown"
 
 
+# how many reds on one head a diff no test can reach is retried for, uncounted: a red that comes again and again is
+# the diff's after all (or a suite broken on every machine), so past it the red counts as any other (#2146)
+UNREACHABLE_RETRIES = 3
+
+
+def unreachable(pull: dict[str, Any]) -> bool:
+    """Whether no path the PR changes can reach a test, by gatekeeper.md's `select` (selected, the cut `affected-tests`
+    uses): no build input and no `select.checks` command among its files, so a red test on it is the machine's or a
+    flaky test's, not the diff's (#2146). False without `select.build_inputs`, or when the change can't be listed."""
+    head = pull["headRefOid"]
+    if not fetched(head):
+        return False
+    point = merge_base_of(pull["baseRefName"], head)
+    cut = selected(point, head) if point else None
+    return cut is not None and not cut[0] and not cut[1]
+
+
+# a failed test in a pytest run's short summary, after the Actions log's timestamp
+FAILED_TEST = re.compile(r"\bFAILED (\S+)")
+
+
+def known_flaky(group: str, required: set[str]) -> bool:
+    """Whether every test that failed on the queue's commit `group` has an open `Flaky: <test id>` issue: the failed
+    ids read from the failing check's whole job log (`FAILED <id>` lines), at least one, none without an issue. A log
+    with no such line, one GitHub can't give, or a runner that prints no such line is no known flake (#2146)."""
+    try:
+        checks = commit_checks(group)
+        red = sorted(name for name, run in checks.items() if run["conclusion"] in RED)
+        # every red required check, not the first: one failing on a real test must not hide behind another's flake
+        names = [name for name in red if name in required] or red[:1]
+        if not names:
+            return False
+        failed: set[str] = set()
+        for name in names:
+            ids = set(FAILED_TEST.findall(job_log(checks[name]["id"])))
+            if not ids:
+                return False
+            failed |= ids
+        return failed <= flaky_issue_ids()
+    except subprocess.CalledProcessError:
+        return False
+
+
 def own_reds(
-    where: str, base: str, removals: list[dict[str, Any]], required: set[str]
+    where: str,
+    base: str,
+    removals: list[dict[str, Any]],
+    required: set[str],
+    pull: dict[str, Any] | None = None,
+    spared: list[str] | None = None,
 ) -> list[str] | None:
     """The groups of the `failed_checks` removals that count against the PR: each built on a commit of `base` whose
     required checks are green, since one built on a red commit failed for `base`'s fault, and one GitHub can't place
     counts. A group whose required checks failed only by timing out (`TIMED_OUT`) counts for nothing, as a
     `checks_timed_out` removal does: a timeout is no test's failure (#2228). None while a group's base commit is still
-    running them: whose fault it was isn't known yet."""
+    running them: whose fault it was isn't known yet. With the `pull`, a red on a diff no test can reach (unreachable)
+    counts for nothing too, its group added to `spared`, and so does one whose every failed test has an open `Flaky:`
+    issue (known_flaky), for UNREACHABLE_RETRIES such reds of the head together (#2146)."""
     reds = []
+    free = pull is not None and unreachable(pull)
     for removal in removals:
         if removal.get("reason") != FAILED_CHECKS:
             continue
@@ -9688,6 +9862,10 @@ def own_reds(
                 return None
             if red:
                 continue
+        if len(spared or []) < UNREACHABLE_RETRIES and (free or known_flaky(group, required)):
+            if spared is not None:
+                spared.append(group)
+            continue
         reds.append(group)
     return reds
 
