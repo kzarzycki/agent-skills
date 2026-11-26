@@ -228,10 +228,12 @@ def validate_release_candidate(package_root: Path, tag: str) -> None:
     package = package_root.resolve()
     component = r"(?:0|[1-9]\d*)"
     match = re.fullmatch(
-        rf"{re.escape(package.name)}-v({component}\.{component}\.{component})", tag
+        rf"{re.escape(package.name)}-v({component}\.{component}\.{component})(?:-next)?", tag
     )
     if not match:
-        raise ConfigurationError(f"release tag must match {package.name}-vX.Y.Z: {tag}")
+        raise ConfigurationError(
+            f"release tag must match {package.name}-vX.Y.Z or {package.name}-vX.Y.Z-next: {tag}"
+        )
     tag_version = match.group(1)
     try:
         apm = _mapping(yaml.safe_load((package / "apm.yml").read_text()), "apm.yml")
@@ -265,8 +267,9 @@ def validate_release_candidate(package_root: Path, tag: str) -> None:
         if name is None or name == package.name:
             continue
         version = package_version(repository / name)
-        if f"{name}-v{version}" not in tagged:
-            untagged.append(f"{path} ({name}-v{version} is not tagged on this commit)")
+        released = f"{name}-v{version}"
+        if released not in tagged and f"{released}-next" not in tagged:
+            untagged.append(f"{path} ({released} is not tagged on this commit)")
     if untagged:
         raise ConfigurationError(
             "release commit changes package manifest(s) it doesn't release: " + ", ".join(untagged)
