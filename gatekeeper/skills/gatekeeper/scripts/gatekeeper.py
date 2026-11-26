@@ -5863,7 +5863,8 @@ def forge(root: Path | str | None = None) -> str:
     """The remote this checkout's forge is on: the current branch's upstream's, else `forge_remote` in
     docs/agents/gatekeeper.md, else `origin` (loop_events.forge_remote), so a worktree whose branch tracks a fork
     judges and fetches from the fork's repo, not the upstream's."""
-    return loop_events.forge_remote(root)
+    prefix = ["-C", str(root)] if root else []
+    return loop_events.forge_remote(root, lambda *args: git(*prefix, *args))
 
 
 def working_tree(root: Path) -> bool:

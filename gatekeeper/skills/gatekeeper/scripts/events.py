@@ -30,6 +30,7 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -133,31 +134,33 @@ def local_sha(cwd: Path | str | None, ref: str) -> str | None:
 FORGE_SETTING = re.compile(r"^\s*forge_remote:\s*[\"']?([\w.-]+)", re.MULTILINE)
 
 
-def forge_remote(cwd: Path | str | None = None) -> str:
+def forge_remote(cwd: Path | str | None = None, git: Callable[..., str] | None = None) -> str:
     """The remote the forge's repo is on, for the checkout at `cwd`: the current branch's upstream's remote
     (`git rev-parse --abbrev-ref @{u}`), else `forge_remote` in docs/agents/gatekeeper.md's policy, else `origin`.
     A worktree whose branch tracks a fork then fetches, pushes and reads policy from the fork's repo, whatever
     `origin` is. Both the gatekeeper and omnigent-agents' `claude-cloud-run` call it, so they agree. A name that is
-    no remote of the checkout is passed over."""
+    no remote of the checkout is passed over. `git` runs one git call and returns its output (default: `run` in
+    `cwd`), so a caller with its own git runner keeps it."""
+    ask = git or (lambda *args: run(cwd, *args))
     try:
-        remotes = run(cwd, "remote").split()
+        remotes = ask("remote").split()
     except (OSError, subprocess.SubprocessError):
         return "origin"
     try:
-        upstream = run(cwd, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").strip()
+        upstream = ask("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").strip()
     except (OSError, subprocess.SubprocessError):
         upstream = ""
     if not upstream:  # the tracking ref may be gone (pruned, or not fetched yet) while the branch still names its remote
         try:
-            branch = run(cwd, "symbolic-ref", "--short", "HEAD").strip()
-            upstream = run(cwd, "config", f"branch.{branch}.remote").strip() + "/"
+            branch = ask("symbolic-ref", "--short", "HEAD").strip()
+            upstream = ask("config", f"branch.{branch}.remote").strip() + "/"
         except (OSError, subprocess.SubprocessError):
             upstream = ""
     for name in sorted(remotes, key=len, reverse=True):  # a remote's name may hold a slash
         if upstream.startswith(f"{name}/"):
             return name
     try:
-        top = run(cwd, "rev-parse", "--show-toplevel").strip()
+        top = ask("rev-parse", "--show-toplevel").strip()
         found = FORGE_SETTING.search((Path(top) / "docs" / "agents" / "gatekeeper.md").read_text())
     except (OSError, subprocess.SubprocessError, ValueError):
         found = None
