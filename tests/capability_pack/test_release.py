@@ -12,7 +12,12 @@ import pytest
 
 from capability_pack import cli
 from capability_pack.qualify import ConfigurationError
-from capability_pack.release import cut_release, release_tags, verify_release
+from capability_pack.release import (
+    check_changelog_names,
+    cut_release,
+    release_tags,
+    verify_release,
+)
 
 TODAY = datetime.date(2026, 11, 22)
 
@@ -266,3 +271,20 @@ def test_release_tags_skips_a_plugin_only_package(tmp_path: Path) -> None:
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "a plugin-only package")
     assert release_tags(repo) == []
+
+
+def test_changelog_check_refuses_a_misnamed_entry_with_the_cuts_message(
+    tmp_path: Path, capsys
+) -> None:
+    repo = _repository(tmp_path)
+    assert cli.main(["changelog-check", "--root", str(repo)]) == 0
+    (repo / "gamma" / "changelog.d" / "foo.md").write_text("- gamma: stray\n")
+    assert cli.main(["changelog-check", "--root", str(repo)]) == 2
+    message = "gamma/changelog.d entries must be named <issue>.md: foo.md"
+    assert message in capsys.readouterr().err
+    with pytest.raises(ConfigurationError, match="must be named <issue>.md: foo.md"):
+        cut_release(repo)  # the cut refuses with the same rule
+
+
+def test_the_repos_own_changelog_entries_are_named_for_issues() -> None:
+    check_changelog_names(Path(__file__).resolve().parents[2])

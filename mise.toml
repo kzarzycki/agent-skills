@@ -128,9 +128,10 @@ description = "ruff check and format check over the repo's Python"
 run = """uv run ruff check tools vendoring tests engineering/tests engineering/skills/browsing/scripts engineering-hooks/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools vendoring tests engineering/tests engineering/skills/browsing/scripts engineering-hooks/hooks gatekeeper loop github chief-of-staff omnigent"""
 
 [tasks.lint-changed]
-description = "The lint-only PR push check: ruff check and format check on the Python files changed against GATE_BASE (default origin/main) and `git diff --check`, no tests and no build. The `lint` job of CI runs it on every PR push (#2687)."
+description = "The lint-only PR push check: ruff check and format check on the Python files changed against GATE_BASE (default origin/main) and `git diff --check` and the changelog.d entry-name check (#2713), no tests and no build. The `lint` job of CI runs it on every PR push (#2687)."
 run = """base="${GATE_BASE:-origin/main}"
 git diff --check "$base"...HEAD
+PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli changelog-check
 files=$(git diff --name-only --diff-filter=d "$base"...HEAD -- '*.py')
 [ -n "$files" ] || { echo 'lint-changed: no Python file changed'; exit 0; }
 printf '%s\\n' $files | xargs uv run ruff check --force-exclude
