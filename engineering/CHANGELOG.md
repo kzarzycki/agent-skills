@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.13 - 2026-11-26
+
+- engineering: each release ships `bump-from.yml` naming the oldest pin it can be bumped from in one PR and the release to stop at first, and the README says to bump in steps across a larger gap, since the loop's gate cannot judge a bump PR whose gate files are that much newer than the base's (#2709).
+
 ## 0.35.12 - 2026-11-26
 
 - engineering: every PR push now checks that `changelog.d/` entries are named `<issue>.md`, with the rule the release cut uses, so a misnamed entry fails its PR instead of the next cut (#2713).
