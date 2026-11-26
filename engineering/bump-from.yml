@@ -1,0 +1,8 @@
+# The oldest pin this release can be bumped from in one PR (#2709). A jump from an older pin
+# cannot land through the loop: the base's own gate cannot judge a head whose gate files are
+# newer, and the new gatekeeper refuses to be judged by the PR's own copy. The pin updater reads
+# this file at the new tag and, for an older pin, names `via` as the release to stop at first.
+# Set `oldest` to the release the gate files of every later release can follow, and `via` to a
+# release a pin of any older version can reach.
+oldest: 0.29.0
+via: 0.29.0

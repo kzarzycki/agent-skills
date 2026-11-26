@@ -156,3 +156,30 @@ def test_rollback_survives_a_new_untracked_file_in_the_lock(world):
     assert r.returncode == 1
     assert (world["repo"] / "apm.yml").read_text() == APM_YML
     assert not (world["repo"] / ".agents/skills/added.md").exists()
+
+
+def release_with_floor(w, oldest, via):
+    """The newest release ships `bump-from.yml` in its package folder, as the pack does."""
+    remote = w["remote"]
+    (remote / "engineering").mkdir()
+    (remote / "engineering" / "bump-from.yml").write_text(f"oldest: {oldest}\nvia: {via}\n")
+    sh(remote, "git", "add", "-A")
+    sh(remote, "git", "commit", "-qm", "floor")
+    sh(remote, "git", "tag", "engineering-v2.0.0")
+
+
+def test_a_jump_past_the_releases_floor_is_refused_naming_the_stepping_stone(world):
+    """#2709: a pack-bump PR from too old a base passes neither gate, so the updater stops at the stone."""
+    release_with_floor(world, "1.5.0", "1.9.0")
+    r = run(world)
+    assert r.returncode == 0, r.stderr
+    assert "refused" in r.stdout and "engineering-v1.9.0 first" in r.stdout
+    assert "from 1.5.0 or newer" in r.stdout
+    assert (world["repo"] / "apm.yml").read_text() == APM_YML
+    assert (world["repo"] / ".agents/skills/a.md").read_text() == "orig"
+
+
+def test_a_pin_at_the_floor_moves(world):
+    release_with_floor(world, "1.2.0", "1.9.0")
+    r = run(world)
+    assert "ref: engineering-v2.0.0" in (world["repo"] / "apm.yml").read_text(), r.stdout
