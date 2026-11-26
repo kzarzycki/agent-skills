@@ -157,3 +157,23 @@ def test_a_report_with_links_and_dates_survives_post_with_both_logins_loaded(
     cv.post(7, report)
     cv.post(7, report + "leak ya29.secret-access-token codex-secret-refresh")
     assert sent == [report, report + "leak [secret] [secret]"]
+
+
+def test_the_post_time_edit_does_not_undo_the_redaction(monkeypatch) -> None:
+    redact = cv.Redactor()
+    redact.gemini({"access_token": "ya29.secret-access-token"})
+    monkeypatch.setattr(cv, "REDACT", redact)
+    sent: list[tuple] = []
+
+    def run(*cmd, **kw):
+        sent.append((cmd, kw["input"]))
+        return type("R", (), {"stdout": "https://example.com/c/1\n12345"})()
+
+    monkeypatch.setattr(cv, "run", run)
+    cv.publish(
+        7,
+        "report ya29.secret-access-token end",
+        {"start": 1, "setup": 2, "review": 3, "post": None},
+    )
+    assert len(sent) == 2 and "PATCH" in sent[1][0]
+    assert all("ya29.secret-access-token" not in text for _, text in sent)

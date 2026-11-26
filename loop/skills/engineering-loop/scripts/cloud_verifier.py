@@ -750,7 +750,9 @@ def publish(pr: int, body: str, phases: dict[str, int | None]) -> str:
             f"Seconds: {n} {'unknown' if times[n] is None else times[n]}" for n in PHASES
         )
 
-    plain = body.rstrip("\n") + "\n\n"
+    plain = (
+        REDACT(body.rstrip("\n")) + "\n\n"
+    )  # every send below carries it: the edit must not undo post()'s masking
 
     def timed(times: dict[str, int | None]) -> str:
         # folded, so the visible part stays the report's summary; each `Seconds:` line still starts its own line
