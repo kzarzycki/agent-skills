@@ -234,3 +234,15 @@ def test_an_apm_only_package_is_found_versioned_bumped_and_tagged_beside_its_dep
     _cut_and_commit(repo)
     assert "version: 0.1.1  # bumped by the release" in (repo / "hooks" / "apm.yml").read_text()
     assert "hooks-v0.1.1" in release_tags(repo)
+
+
+def test_release_tags_skips_a_plugin_only_package(tmp_path: Path) -> None:
+    """A directory with a plugin manifest and no `apm.yml` is no APM release: its manifest change names no tag and
+    raises nothing, where reading its version would fail (#2683)."""
+    repo = _repository(tmp_path)
+    plugin_only = repo / "pluginonly" / ".claude-plugin"
+    plugin_only.mkdir(parents=True)
+    (plugin_only / "plugin.json").write_text(json.dumps({"name": "pluginonly", "version": "1.0.0"}))
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "a plugin-only package")
+    assert release_tags(repo) == []
