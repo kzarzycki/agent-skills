@@ -214,6 +214,10 @@ board:
 | `renames` | an old label name: its new one (issues.md, Labels) | the loop's own renames only |
 | `board` | a loop column: the board's column (github.md, Board) | each column keeps its own name |
 
+## A PR head's lint
+
+A project's `docs/agents/gatekeeper.md` (its `gate` comment, a "runs nothing" line about a PR head) states what a PR head runs. Where it says a PR head runs no check, or only what a gate record skips, rewrite it to the rule of engineering-loop's R1: every PR push runs lint and format checks on its changed files, with no tests and no build, in a separate always-on `lint` job that is a required check, and only the tests run once per tree, in the queue. A gate record skips lint only when it shows lint ran on that tree. `queue-only-ci.yml` is the job's shape, and the cost is about 1 minute of Actions time a push (#2687).
+
 ## Independent rerun
 
 A record (`loop-gate/<tree>-<key>`) proves a run of a command on a tree, not who ran it: workers share one forge
