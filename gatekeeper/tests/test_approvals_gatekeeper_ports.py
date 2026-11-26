@@ -94,6 +94,7 @@ class Memory:
             "run_artifact": lambda run, name: None,
             "compare": lambda base, head: {"status": "identical", "ahead_by": 0, "behind_by": 0},
             "job_log": lambda job: "",
+            "flaky_issue_ids": lambda: set(),
             "commit_tree": lambda sha: sha,
             "repo_tags": lambda repo: {},
             "tag_tree": lambda repo, tag: None,
