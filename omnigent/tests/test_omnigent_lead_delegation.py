@@ -479,3 +479,21 @@ def test_unasked_end_counts_a_named_card_open_on_a_top_level_leads_creator() -> 
     named = [ending("USER NEEDED: owner's answer on card question_top1", 1)]
     assert omnigent_agent.unasked_end(Og(), "c", lead, named, False) is False
     assert omnigent_agent.unasked_end(Og(), "c", {}, named, False) is True
+
+
+def test_unasked_end_counts_a_card_open_on_the_notify_session() -> None:
+    """#2145: a top-level lead has no parent link; the manager the supervisor reports to holds the card."""
+    card = {**CARD, "elicitation_id": "question_mgr1"}
+    tree = {"m": {"pending_elicitations": [card]}, "gp": {"pending_elicitations": [card]}}
+    tree["m2"] = {"parent_session_id": "gp"}
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return tree.get(sid, {})
+
+    named = [ending("USER NEEDED: owner's answer on card question_mgr1", 1)]
+    assert omnigent_agent.unasked_end(Og(), "c", {}, named, False, "m") is False
+    assert omnigent_agent.unasked_end(Og(), "c", {}, named, False, "m2") is False  # via its parent
+    tree["m"], tree["gp"] = {}, {}  # answered: the usual event resumes
+    assert omnigent_agent.unasked_end(Og(), "c", {}, named, False, "m") is True
+    assert omnigent_agent.unasked_end(Og(), "c", {}, named, False, None) is True

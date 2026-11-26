@@ -2663,7 +2663,12 @@ UNASKED_LINE = (
 
 
 def unasked_end(
-    og: Omnigent, sid: str, info: dict, items: list[dict], carded: bool = False
+    og: Omnigent,
+    sid: str,
+    info: dict,
+    items: list[dict],
+    carded: bool = False,
+    notify: str | None = None,
 ) -> bool:
     """Whether ``sid``'s last message ends ``USER NEEDED`` (its ending line, which a lead's brief puts in the message itself) while it holds no open question
     card (``CARD_ID``; ``carded`` when a ``Recorded`` look already took them out of ``info``): the owner is asked in
@@ -2674,17 +2679,24 @@ def unasked_end(
     text = text_of(said[-1]).strip() if said else ""
     if ending_of(text) != "USER NEEDED":
         return False
-    return not named_card_open(og, sid, info, text)
+    return not named_card_open(og, sid, info, text, notify)
 
 
-def named_card_open(og: Omnigent, sid: str, info: dict, text: str) -> bool:
+def named_card_open(
+    og: Omnigent, sid: str, info: dict, text: str, notify: str | None = None
+) -> bool:
     """Whether a ``question_<id>`` card ``text`` names is open on ``sid`` or up the sessions above it: its
     ``parent_session_id`` chain and, for a ``--top-level`` lead (no parent), the sessions that created it
-    (``creators``). A lead ends ``USER NEEDED`` on the card its manager posted, so the owner gets one card.
+    (``creators``), and the ``notify`` session the supervisor reports to (a top-level lead's manager). A lead ends ``USER NEEDED`` on the card its manager posted, so the owner gets one card.
     An unreadable session counts as holding none."""
     ids = set(re.findall(rf"\b{CARD_ID}[A-Za-z0-9_-]+", text))
     seen: set[str] = set()
     todo = [(sid, info)]
+    if notify and notify != sid:
+        try:
+            todo.append((notify, og.info(notify)))
+        except Fail:
+            pass
     while ids and todo:
         at, looked = todo.pop(0)
         if at in seen:
@@ -11939,7 +11951,7 @@ def supervise_registry(
                     if kind == "ended" and event:
                         looked_at = (rec.info(sid), rec.items(sid))
                         carded = bool(getattr(rec, "cards", {}).get(sid))
-                        if unasked_end(rec, sid, *looked_at, carded):
+                        if unasked_end(rec, sid, *looked_at, carded, notify):
                             kind = UNASKED
                             first, nl, rest = event.partition("\n")
                             event = (
