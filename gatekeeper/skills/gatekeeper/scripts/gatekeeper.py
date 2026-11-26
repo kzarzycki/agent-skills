@@ -31,6 +31,7 @@
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
+    uv run scripts/approvals.py prune-records [--head <sha>...]  # delete origin's `loop-gate/` record branches no open PR head needs: the trees of the given (closed or merged) heads at once, any other tree over a day old with no open PR; every `land` ends with it, so a merge by Mergify or a queue, or a closed PR, leaves none (#1869); needs a token that can delete refs
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
     uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -754,7 +755,8 @@ CHECKED = "Local check passed"
 # a gate pass published as a commit status: its context, and its description (described): tree, commit, command
 PUBLISHED = "gate"
 # where publish() pushes a pass in origin, the one route another clone reads it by: a branch, since a cloud session's
-# proxy refuses a push outside refs/heads/; land deletes it once no head needs it (drop_records)
+# proxy refuses a push outside refs/heads/; land deletes it once no head needs it (drop_records), and
+# every land ends with that sweep, so a merge it only handed to a queue leaves none either (#1869)
 RECORD_BRANCH = "refs/heads/loop-gate/{}"
 # how old a record branch whose tree is no open PR's head must be before land deletes it: a record may be pushed
 # before its PR is opened
@@ -7382,7 +7384,44 @@ def poll_seconds(quiet: int = 0) -> float:
     return base + github.random.randint(0, POLL_JITTER)
 
 
+# the heads of the PRs this land read as merged already (land_base, queue_landed), which no later step names
+merged_heads: list[str] = []
+# whether drop_records ran in this land already, so the sweep at its end doesn't fetch the records again
+RECORDS_DROPPED: list[bool] = [False]
+
+
 def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
+    """landing_run(), then the record sweep of every land, whatever path it took (a local merge, a hand-over to
+    Mergify or GitHub's queue, a refusal): the record branches no open PR's head needs, and those of each named PR
+    that is merged by now, are deleted from origin (#1869). A failed delete or read is one warning line, never a
+    failure of the land."""
+    RECORDS_DROPPED[0] = False
+    merged_heads.clear()
+    try:
+        code, again = landing_run(pr, only)
+    except Exception:
+        sweep_records()
+        raise
+    if not again:  # a round a wait will repeat sweeps once, at its end, not on every poll
+        sweep_records()
+    return code, again
+
+
+def sweep_records() -> None:
+    if RECORDS_DROPPED[0]:
+        return
+    try:
+        merged = [
+            head
+            for pull in watched.get("pulls", [])
+            if (head := pull.get("headRefOid")) and pull_status(pull["number"])["state"] == "MERGED"
+        ]
+        drop_records(list(dict.fromkeys([*merged_heads, *merged])))
+    except Exception as exc:  # noqa: BLE001 - a sweep must never fail or mask the land
+        print(f"the record sweep after land failed: {' '.join(str(exc).split())}")
+
+
+def landing_run(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bool]:
     """Land every landable PR into the base (the first named PR's, else the default branch) through its merge queue,
     the GitHub merge queue where its rules require one, else the local merge queue, where loop.md lets land run (placed)
     (`only`: the named PRs alone); the exit, and whether a wait would end it (lock, CI on a head, a queue entry), so
@@ -7444,6 +7483,7 @@ def land_base(
         pull = pull_request(number)
         if pull["state"] == "MERGED":
             print(f"PR #{number} is merged")
+            merged_heads.append(pull["headRefOid"])  # for the sweep that ends this land (#1869)
             queue_landed(pull)
         elif pull["state"] != "OPEN":
             if len(numbers) == 1:
@@ -8935,7 +8975,10 @@ def queue_trail(base: str) -> None:
         return
     for number in listed:
         try:
-            queue_landed(pull_request(number))
+            trailed = pull_request(number)
+            if trailed.get("state") == "MERGED":
+                merged_heads.append(trailed["headRefOid"])
+            queue_landed(trailed)
         except (Refused, subprocess.CalledProcessError) as exc:
             print(f"PR #{number}: land could not write its `{LANDED}` comment: {stderr_of(exc)}")
 
@@ -13769,6 +13812,7 @@ def drop_records(heads: list[str]) -> None:
     cloud session can't delete a ref; a refusal is said, and the branch stays for the next land. The open PRs
     unreadable, or an open PR's head tree unknown here (a fork's head this clone can't fetch): only the landed trees'
     branches go, since the unknown tree may be one an old record holds."""
+    RECORDS_DROPPED[0] = True
     landed = {held for head in heads if (held := tree_of(head))}
     try:
         open_trees: set[str | None] | None = {tree_of(head) for head in open_heads()}
@@ -14448,6 +14492,8 @@ def main(argv: list[str]) -> int:
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
     rerunning.add_argument("--base", metavar="REV")
+    pruning = commands.add_parser("prune-records")
+    pruning.add_argument("--head", action="append", default=[], metavar="SHA")
     sharding = commands.add_parser("shards")
     sharding.add_argument("--suite", required=True)
     sharding.add_argument("--selection")
@@ -14519,6 +14565,9 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         args.command == "queue-config"
     ):  # the checkout's own policy, so a PR's change to `land` renders with it
         print(queue_config(), end="")
+        return 0
+    if args.command == "prune-records":
+        drop_records(args.head)
         return 0
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)
