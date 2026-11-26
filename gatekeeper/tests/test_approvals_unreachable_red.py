@@ -157,3 +157,58 @@ def test_a_mergify_unreachable_retry_count_starts_anew_when_the_pr_is_ready_agai
             {"__typename": "ReadyForReviewEvent", "createdAt": "2026-10-02T09:00:00Z"}
         )
         assert approvals.unreachable_dequeue(pull)
+
+
+def flaky_reds(queue: dict[str, Any], failed: list[str]) -> tuple[int, list[str]]:
+    """Two queue reds on a diff that reaches a test (a build input), whose job log lists `failed`."""
+    queue["opened"](7)
+    for at, group, job in ((RED_AT, "g1", 410), (AGAIN_AT, "g2", 420)):
+        queue["remove"](7, approvals.FAILED_CHECKS, at=at, group=group)
+        red_group(queue, group, job)
+        queue["logs"][job] = [f"2026-10-02T09:00:00Z FAILED {test} - timeout" for test in failed]
+        code, lines = queue["land"]("7")
+    return code, lines
+
+
+def test_a_second_red_whose_every_failed_test_has_a_flaky_issue_is_retried(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cut(monkeypatch, ["src/app.py"], [])
+    monkeypatch.setattr(approvals, "flaky_issue_ids", lambda: {"tests/a.py::t1", "tests/b.py::t2"})
+    code, lines = flaky_reds(queue, ["tests/a.py::t1", "tests/b.py::t2"])
+    assert code == 0, lines
+    assert any("every test that failed has an open `Flaky:` issue" in line for line in lines)
+    assert not queue["pulls"][7]["isDraft"]
+
+
+def test_one_failed_test_without_a_flaky_issue_still_counts(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cut(monkeypatch, ["src/app.py"], [])
+    monkeypatch.setattr(approvals, "flaky_issue_ids", lambda: {"tests/a.py::t1"})
+    code, lines = flaky_reds(queue, ["tests/a.py::t1", "tests/b.py::real"])
+    assert code == 1, lines
+    assert queue["pulls"][7]["isDraft"]
+
+
+def test_a_log_with_no_failed_test_id_is_no_known_flake(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cut(monkeypatch, ["src/app.py"], [])
+    monkeypatch.setattr(approvals, "flaky_issue_ids", lambda: {"tests/a.py::t1"})
+    code, _ = flaky_reds(queue, [])
+    assert code == 1
+
+
+def test_the_adapter_reads_flaky_issue_ids_from_the_titles_of_open_issues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[str, ...]] = []
+
+    def gh(*args: str, **_: Any) -> str:
+        seen.append(args)
+        return "Flaky: tests/a.py::t1\nFlaky:  tests/b.py::t2 \nFlaky:\nFlaky-ish thing\n"
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    assert approvals.github.flaky_issue_ids() == {"tests/a.py::t1", "tests/b.py::t2"}
+    assert seen[0][:3] == ("issue", "list", "--state")

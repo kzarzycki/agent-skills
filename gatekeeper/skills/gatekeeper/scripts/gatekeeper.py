@@ -5677,6 +5677,7 @@ PORTS = {
         "compare",  # (base, head) -> {status, ahead_by, behind_by} of head against base
         "commit_checks",  # (ref) -> {name: {conclusion, url, id, title, summary}} of the newest run of each check on the commit
         "job_log",  # (job) -> a check run's job log
+        "flaky_issue_ids",  # () -> the test ids of the open issues titled `Flaky: <test id>`
         "commit_tree",  # (sha) -> the commit's tree SHA
         "repo_tags",  # (repo) -> {name: commit} of every tag of `repo`
         "tag_tree",  # (repo, tag) -> (commit, {path: (mode, blob)}) of tag `tag` of `repo`, or None when it has none
@@ -5786,6 +5787,7 @@ github_repo, one_repo = through("forge", "github_repo"), through("forge", "one_r
 open_heads, open_pull_files = through("forge", "open_heads"), through("forge", "open_pull_files")
 enqueue_pull, dequeue_pull = through("forge", "enqueue_pull"), through("forge", "dequeue_pull")
 commit_checks, job_log = through("forge", "commit_checks"), through("forge", "job_log")
+flaky_issue_ids = through("forge", "flaky_issue_ids")
 pusher = through("forge", "pusher")
 run_info, run_jobs = through("forge", "run_info"), through("forge", "run_jobs")
 workflow_runs, run_artifact = through("forge", "workflow_runs"), through("forge", "run_artifact")
@@ -9637,8 +9639,13 @@ def queue_step(
         group = group_of(removals[-1])
         if group in spared:
             print(
-                f"{where} was red in the merge queue at {head}, but no path it changes can reach a test: it counts"
-                " for nothing, enqueued again"
+                f"{where} was red in the merge queue at {head}, but "
+                + (
+                    "no path it changes can reach a test"
+                    if unreachable(pull)
+                    else "every test that failed has an open `Flaky:` issue"
+                )
+                + ": it counts for nothing, enqueued again"
             )
             return enqueue(pull, method)
         if not reds or reds[-1] != group:
@@ -9732,6 +9739,27 @@ def unreachable(pull: dict[str, Any]) -> bool:
     return cut is not None and not cut[0] and not cut[1]
 
 
+# a failed test in a pytest run's short summary, after the Actions log's timestamp
+FAILED_TEST = re.compile(r"\bFAILED (\S+)")
+
+
+def known_flaky(group: str, required: set[str]) -> bool:
+    """Whether every test that failed on the queue's commit `group` has an open `Flaky: <test id>` issue: the failed
+    ids read from the failing check's whole job log (`FAILED <id>` lines), at least one, none without an issue. A log
+    with no such line, one GitHub can't give, or a runner that prints no such line is no known flake (#2146)."""
+    try:
+        checks = commit_checks(group)
+        red = sorted(name for name, run in checks.items() if run["conclusion"] in RED)
+        name = next((name for name in red if name in required), red[0] if red else None)
+        if name is None:
+            return False
+        log = job_log(checks[name]["id"])
+        failed = set(FAILED_TEST.findall(log))
+        return bool(failed) and failed <= flaky_issue_ids()
+    except subprocess.CalledProcessError:
+        return False
+
+
 def own_reds(
     where: str,
     base: str,
@@ -9745,7 +9773,8 @@ def own_reds(
     counts. A group whose required checks failed only by timing out (`TIMED_OUT`) counts for nothing, as a
     `checks_timed_out` removal does: a timeout is no test's failure (#2228). None while a group's base commit is still
     running them: whose fault it was isn't known yet. With the `pull`, a red on a diff no test can reach (unreachable)
-    counts for nothing too, its group added to `spared`, for UNREACHABLE_RETRIES reds of the head (#2146)."""
+    counts for nothing too, its group added to `spared`, and so does one whose every failed test has an open `Flaky:`
+    issue (known_flaky), for UNREACHABLE_RETRIES such reds of the head together (#2146)."""
     reds = []
     free = pull is not None and unreachable(pull)
     for removal in removals:
@@ -9761,7 +9790,7 @@ def own_reds(
                 return None
             if red:
                 continue
-        if free and len(spared or []) < UNREACHABLE_RETRIES:
+        if len(spared or []) < UNREACHABLE_RETRIES and (free or known_flaky(group, required)):
             if spared is not None:
                 spared.append(group)
             continue

@@ -1847,6 +1847,20 @@ def job_log(job: int) -> str:
     return gh("api", f"repos/{{owner}}/{{repo}}/actions/jobs/{job}/logs")
 
 
+def flaky_issue_ids() -> set[str]:
+    """The test ids of the open issues titled `Flaky: <test id>` (engineering-loop's Flaky tests): the loop's own
+    record of a test that passed only on a retry."""
+    out = gh(
+        "issue", "list", "--state", "open", "--search", "Flaky: in:title",
+        "--json", "title", "--limit", "200", "--jq", ".[].title",
+    )  # fmt: skip
+    return {
+        title.split(":", 1)[1].strip()
+        for title in out.splitlines()
+        if title.startswith("Flaky:") and title.split(":", 1)[1].strip()
+    }
+
+
 def commit_tree(sha: str) -> str:
     """Commit `sha`'s tree SHA."""
     return gh("api", f"repos/{{owner}}/{{repo}}/commits/{sha}", "--jq", ".commit.tree.sha").strip()
@@ -1962,6 +1976,7 @@ forge = Port(
     "run_artifact",
     "compare",
     "job_log",
+    "flaky_issue_ids",
     "commit_tree",
     "repo_tags",
     "tag_tree",
