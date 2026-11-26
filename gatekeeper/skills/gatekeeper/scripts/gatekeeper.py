@@ -10266,7 +10266,7 @@ def installed_scripts(skill: str) -> Path | None:
     skill folder (APM's one skills directory), a sibling plugin's (a marketplace Claude Code loads in place), a
     native plugin APM deployed to the project's `.agents/plugins/`, else the newest version of a plugin in Claude
     Code's cache (`<marketplace>/<plugin>/<version>/`, beside the script or in `~/.claude/plugins/cache`) that no
-    update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
+    update has orphaned, else a user-level install (`~/.agents/skills/<skill>`, `~/.claude/skills/<skill>`). A developer checkout of the pack (a git tree holding the marketplace file) is never
     searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
     tests set it, or the checkout is the GITHUB_WORKSPACE of the CI job running there. None when none holds it."""
     # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
@@ -10292,6 +10292,9 @@ def installed_scripts(skill: str) -> Path | None:
         *(sorted(root.glob(f"[!.]*/skills/{skill}")) if laid else []),
         *(sorted(root.glob(f".agents/plugins/*/skills/{skill}")) if laid else []),
         *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
+        # a skill installed at user level, which a checkout's source tree has no sibling for (#2664)
+        Path.home() / ".agents" / "skills" / skill,
+        Path.home() / ".claude" / "skills" / skill,
     ]:
         if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
             return folder / "scripts"
