@@ -721,6 +721,8 @@ HEAD_SECONDS = 300.0
 # Each followed repo's `check stalled` (the gatekeeper's: an approved, verified PR its queue never took) runs at most
 # this often, and is stopped past STALLED_TIMEOUT, so a hung GitHub read never holds the next one off.
 STALLED_SECONDS = 3600.0
+LOGIN_POLL = 3600.0  # ``login_watch`` runs ``omnigent login-status --live`` at most this often
+LOGIN_TIMEOUT = 120.0  # one ``--live`` run renews the grant over the network
 STALLED_TIMEOUT = 900.0
 # a landable PR its queue never took, or a verified one idle on a go or record it lacks (`... missing: go`)
 STALLED_LINE = re.compile(
@@ -8718,6 +8720,67 @@ class Uncarded:
         return {**info, "pending_elicitations": [e for e in pending if e not in cards]}
 
 
+def login_watch(
+    server: str,
+    memo: dict,
+    now: float,
+    alert: Callable[[str, str], None],
+    note: Callable[[object, str | None], None],
+    data_dir: Path | None = None,
+) -> None:
+    """Watch the login of ``server``: once per ``LOGIN_POLL`` run ``omnigent login-status <server> --live --json``
+    (exit 0 ok, 1 ends within its ``--warn-hours``, 2 cannot renew), and each call read ``host_auth_rejected.json``
+    in the host data dir (``$OMNIGENT_DATA_DIR``, else ``~/.omnigent``), which the host writes after repeated
+    tunnel rejections and removes once the server accepts it again. ``memo`` is what it keeps between calls
+    (``fresh_state``'s ``login``). A change of state to ``expiring``, ``cannot-renew`` or ``rejected`` calls
+    ``alert(event id, line)`` once, not once per run; the return to ok is ``note``d once. A missing ``omnigent`` or one
+    without ``login-status`` is ``note``d once, never alerted, and not run again until the next ``LOGIN_POLL``.
+    ``login-status`` prints no credential, and nothing it prints but ``reason`` is kept."""
+    root = data_dir or Path(os.environ.get("OMNIGENT_DATA_DIR") or Path.home() / ".omnigent")
+    rejected = (root / "host_auth_rejected.json").is_file()
+    if now - memo.get("checked_at", -LOGIN_POLL) >= LOGIN_POLL:
+        memo["checked_at"] = now
+        cmd = ["omnigent", "login-status", server, "--live", "--json"]
+        try:
+            done = subprocess.run(
+                cmd, capture_output=True, text=True, check=False, timeout=LOGIN_TIMEOUT
+            )
+        except FileNotFoundError:
+            note("login-cli", "omnigent is not on PATH: its login is not watched")
+        except subprocess.TimeoutExpired:
+            note("login-cli", f"omnigent login-status gave no answer in {LOGIN_TIMEOUT:.0f}s")
+        else:
+            if done.returncode == 2 and "No such command" in done.stderr:
+                note("login-cli", "this omnigent has no login-status: its login is not watched")
+            elif done.returncode in (0, 1, 2):
+                note("login-cli", None)
+                memo["cli"] = ("ok", "expiring", "cannot-renew")[done.returncode]
+                try:
+                    why = str(json.loads(done.stdout).get("reason") or "")
+                except (ValueError, AttributeError):
+                    why = ""
+                memo["why"] = why[:200]
+            else:
+                note("login-cli", f"omnigent login-status exited {done.returncode}")
+    problems = [p for p in (memo.get("cli", "ok"),) if p != "ok"] + (
+        ["rejected"] if rejected else []
+    )
+    label = "+".join(problems) or "ok"
+    if label == memo.get("label", "ok"):
+        return
+    memo["label"] = label
+    if label == "ok":
+        note("login-ok", f"the Omnigent login of {server} is ok again")
+        note("login-ok", None)
+        return
+    detail = f" ({memo['why']})" if memo.get("why") and memo.get("cli", "ok") != "ok" else ""
+    alert(
+        f"login:{label}:{now:.0f}",
+        f"USER NEEDED: the Omnigent login of {server} is {label.replace('+', ' and ')}{detail}:"
+        f" run `omnigent login {server}`",
+    )
+
+
 def fresh_state() -> dict:
     """An empty ``state.json``."""
     return {
@@ -8735,6 +8798,7 @@ def fresh_state() -> dict:
         "stalled_blind": {},  # each repo whose last sweep judged none of its PRs: the first reason
         "events": {},  # loop event refs: sha, stamp (when it last moved), state, beat, told
         "pr_stalls": {},  # per watched repo, what ``pr_stalls`` keeps between sweeps
+        "login": {},  # what ``login_watch`` keeps: when it ran, the last status and the last label alerted
         "queue": {},  # per watched repo, its merge-queue entries and alarms (``queue_read``, ``queue_alarms``)
         "cards": {},  # each open question card's first sight by ``<session>:<card>``, None once reminded
     }
@@ -9255,6 +9319,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "an approved, verified PR its queue never took: land it or flag it"
     if kind == "pr-stall":  # read from GitHub, never from a lead's words
         return "rule", "act", "a PR stalled: clear its blocker, or card the owner the fix"
+    if kind == "login":  # read from the host and the CLI, never from a lead's words
+        return "rule", "owner", "the Omnigent login ends or is rejected: only the owner logs in"
     if kind == "dequeued":  # a Mergify comment, raised on the lead that owns the PR, else on none
         if event.get("session"):
             return (
@@ -11782,6 +11848,17 @@ def supervise_registry(
         except Exception as e:  # noqa: BLE001 - never fatal; swept again next poll
             log("stalled", f"check stalled not swept: {reason(e)}")
         stalls()
+        try:
+            if server := getattr(og, "base", ""):  # no server named, no login to watch
+                login_watch(
+                    server,
+                    state.setdefault("login", {}),
+                    time.time(),
+                    lambda eid, line: say(line, "", eid, "login"),
+                    log,
+                )
+        except Exception as e:  # noqa: BLE001 - never fatal; watched again next poll
+            log("login", f"login not watched: {reason(e)}")
         if console:
             if read:  # a session gone from the registry leaves the state with it
                 for part in ("leads", "settled"):
