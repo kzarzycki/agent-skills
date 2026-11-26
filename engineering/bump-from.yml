@@ -4,5 +4,9 @@
 # this file at the new tag and, for an older pin, names `via` as the release to stop at first.
 # Set `oldest` to the release the gate files of every later release can follow, and `via` to a
 # release a pin of any older version can reach.
-oldest: 0.29.0
-via: 0.29.0
+oldest: 0.26.6
+via: 0.26.6
+# Why 0.26.6: a base's own gate judges the bump PR, so the base must already read what the new
+# release writes: the policy in gatekeeper.md (0.26.5, 3b1d6392) and the `loop-gate/` check record
+# (0.26.6, db7f494f). The refusal of a PR's own gate copy (0.27.0, e4f4a9fb) costs a base nothing,
+# since the base judges with its own code. The first stop short of that is 0.26.6.
