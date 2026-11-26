@@ -277,23 +277,28 @@ _RELEASE_FILE = re.compile(r"([^/]+)/(?:\.claude-plugin/plugin\.json|apm\.yml|CH
 
 
 def released_package_of(repository: Path, path: str) -> str | None:
-    """The released package a changed repository path belongs to, by its manifest or changelog, or None. A released
-    package is a top-level directory with `apm.yml` and `changelog.d/`; its Claude Code plugin manifest is optional,
-    since an APM-only package (`engineering-hooks`) has none. The one place that says which paths a release changes."""
+    """The package a changed repository path is a release of, or None. A package's Claude Code plugin manifest is a
+    release of it as it always was; its `apm.yml` or `CHANGELOG.md` is one only for a released package (a top-level
+    directory with both `apm.yml` and `changelog.d/`), which covers an APM-only package (`engineering-hooks`) that has
+    no plugin manifest. The one place that says which paths a release changes."""
     found = _RELEASE_FILE.fullmatch(path)
     if not found:
         return None
-    package = repository / found.group(1)
-    if (package / "apm.yml").is_file() and (package / "changelog.d").is_dir():
-        return found.group(1)
-    return None
+    name = found.group(1)
+    if path.endswith("plugin.json"):
+        return name
+    package = repository / name
+    return name if (package / "apm.yml").is_file() and (package / "changelog.d").is_dir() else None
 
 
 def package_version(package: Path) -> str | None:
-    """The version `apm.yml` sets, the one place a package with no plugin manifest keeps it."""
+    """The version a package releases at: its plugin manifest's, or `apm.yml`'s where it has none."""
+    manifest = package / ".claude-plugin" / "plugin.json"
     try:
+        if manifest.is_file():
+            return json.loads(manifest.read_text()).get("version")
         return yaml.safe_load((package / "apm.yml").read_text()).get("version")
-    except OSError, yaml.YAMLError, AttributeError:
+    except OSError, json.JSONDecodeError, yaml.YAMLError, AttributeError:
         return None
 
 

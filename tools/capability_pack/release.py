@@ -312,6 +312,6 @@ def release_tags(repository: Path, commit: str = "HEAD") -> list[str]:
     tags = []
     for path in changed:
         name = released_package_of(repository, path)
-        if name:
+        if name and (repository / name / "apm.yml").is_file():
             tags.append(f"{name}-v{_current_version(repository / name)}")
     return sorted(set(tags))
