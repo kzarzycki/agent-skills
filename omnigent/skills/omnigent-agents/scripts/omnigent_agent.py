@@ -9400,9 +9400,9 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if kind == "deadline":
         if wait == "parked":
             return "rule", "record", "parked: no deadline"
+        if event.get("offline"):  # nothing wakes it: its wait can never end
+            return "rule", "revive", f"no live runner while it {waits(wait)}: revive it"
         if wait != "unknown":
-            if event.get("offline"):  # nothing wakes it: its wait can never end
-                return "rule", "revive", f"no live runner while it {waits(wait)}: revive it"
             if event.get("due"):  # quiet since its time: nothing else wakes it then
                 return "rule", "wake", f"its time passed while it {waits(wait)}: wake it"
             return "rule", "act", f"no progress while it {waits(wait)}: inspect the wait"
@@ -10962,6 +10962,8 @@ def supervise_registry(
         lead idle between its own background jobs has a recent item."""
         if info.get("archived") or str(info.get("status")) == "failed" or prompts_of(info):
             return False
+        if not info.get("runner_online", True):
+            return False  # no runner: nothing it did lately can go on (#2667)
         if str(info.get("status")) in RUNNING or live_tasks(info):
             return True
         last = max(float(info.get("updated_at") or 0), active(other))
@@ -11327,6 +11329,17 @@ def supervise_registry(
             lead["state"] == "idle" and lead["ending"]
         ):
             return  # its follower was told and it waits on them
+        try:
+            lost = not og.info(sid).get("runner_online", True)
+        except Exception:  # noqa: BLE001 - unread: the deadline decides
+            lost = False
+        if lost:
+            # no runner: nothing wakes it, whether or not its deadline fired before it dropped (#2667).
+            # One event per progress chain, which ``route`` revives.
+            head = f"{sid} {lead['title']}".rstrip()
+            line = f"{head}: no live runner ({lead['wait']})\nlast message: {lead['last_line']}"
+            say(line, sid, f"deadline:{sid}:offline:{lead['progress_at']:.0f}", "deadline")
+            return
         if due is None and time.time() - lead["progress_at"] < DEADLINE_SECONDS:
             return
         # read only once due
@@ -11343,6 +11356,7 @@ def supervise_registry(
         # a session its STILL WORKING line names that shows life is progress, one that is archived,
         # unknown or unread is quiet
         quiet_named, mutual = [], ""
+        no_runner = {}  # a named session with no runner: its last activity, not "quiet" (#2667)
         parked = []  # the named sessions whose turn ended PARKED
 
         def owns(parent: str, child: str, child_info: dict) -> bool:
@@ -11366,6 +11380,9 @@ def supervise_registry(
             if alive(other, info):
                 return
             quiet_named.append(other)
+            if not info.get("runner_online", True):
+                last = max(float(info.get("updated_at") or 0), og.active(other))
+                no_runner[other] = datetime.fromtimestamp(last, timezone.utc).strftime("%H:%MZ")
             try:
                 over = lead_status(info, og.items(other))
             except Exception as e:  # noqa: BLE001 - unread: quiet, as without it
@@ -11407,8 +11424,10 @@ def supervise_registry(
                 why = f"no progress {quiet / 60:.0f}m{then * (nudged == ':nudged')}"
                 what = mutual or f"{why} ({lead['wait']}{'; ' * bool(silent)}{silent})"
                 line = f"{head}: {what}\nlast message: {lead['last_line']}"
-                if quiet_named:
-                    line += f"\nquiet: {', '.join(quiet_named)}"
+                for other, at in no_runner.items():
+                    line += f"\n{other} has no runner (last activity {at})"
+                if still := [n for n in quiet_named if n not in no_runner]:
+                    line += f"\nquiet: {', '.join(still)}"
                 # a wait that names no session is one event per wait text, not per progress chain;
                 # one that names some (a session, a group, a PR, a task) is keyed on its text and
                 # the sessions it names, so a reply that restates it starts no new chain, and it
