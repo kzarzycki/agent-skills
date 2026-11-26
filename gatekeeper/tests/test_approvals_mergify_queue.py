@@ -382,13 +382,36 @@ def test_a_dequeue_newer_than_the_last_hand_over_still_evicts(
     assert len(notes_on(clocked, 7, approvals.QUEUE_EVICTED)) == 1
 
 
-def test_a_manual_dequeue_never_evicts(clocked: dict[str, Any]) -> None:
+def test_a_manual_dequeue_never_evicts_and_is_left_out_until_a_go_follows(
+    clocked: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Mergify's real manual dequeue: the `Merge Queue` run neutral, the rule's run cancelled, no word `manual` in
+    the second. No eviction and no requeue while it is the newest; a go after it queues the head again."""
     head = clocked["opened"](7)
     assert clocked["land"]("7")[0] == 0
-    dequeued_at(
-        clocked, head, "2026-11-23T04:30:00Z", "The pull request has been manually dequeued"
+    clocked["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    neutral = run("Mergify Merge Queue", "neutral", 551)
+    neutral["output"] = {"title": "Dequeued \u2014 pull request manually dequeued"}
+    cancelled = run("Rule: queue what land handed over (queue)", "cancelled", 552)
+    cancelled["output"] = {
+        "summary": "Pull request #7 has been dequeued by @a with a `dequeue` command"
+    }
+    for each in (neutral, cancelled):
+        each["completed_at"] = "2026-11-23T04:30:00Z"
+    clocked["checks"][head] = [run("qualify", "success", 550), neutral, cancelled]
+    code, lines = clocked["land"]("7")
+    assert code == 0 and "dequeued by hand" in lines[0], lines
+    assert notes_on(clocked, 7, approvals.QUEUE_EVICTED) == []
+    assert notes_on(clocked, 7, approvals.REQUEUE) == []
+    hub[head].insert(
+        0,
+        {
+            "context": "owner",
+            "state": "success",
+            "description": "go",
+            "created_at": "2026-11-23T05:00:00Z",
+        },
     )
     code, lines = clocked["land"]("7")
-    assert code == 0 and "a manual one" in lines[0], lines
-    assert notes_on(clocked, 7, approvals.QUEUE_EVICTED) == []
+    assert code == 0 and "queued again, not evicted" in lines[0], lines
     assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 1

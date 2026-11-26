@@ -9295,11 +9295,18 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
                     + ": queued again, not evicted"
                 )
                 return 0
-            if ours and (stale := stale_dequeue(pull)):
-                # an old or manual dequeue at this head is no new failure (#2638): queue it again, evict no one
+            stale = stale_dequeue(pull) if ours else ""
+            if stale == "manual":
+                # a person's dequeue is no failure and no one's to undo (#2638): left out until a go follows it
+                print(f"{where}: dequeued by hand at {head}: left out of the queue, not evicted")
+                return 0
+            if stale:
+                # an older dequeue at this head is no new failure (#2638): queue it again, evict no one
                 comment(number, REQUEUE + "\n")
                 label(number, DEQUEUED, add=False)
-                print(f"{where}: Mergify's dequeue at {head} is {stale}: queued again, not evicted")
+                print(
+                    f"{where}: Mergify's dequeue at {head} is older than land's hand-over: queued again, not evicted"
+                )
                 return 0
             if ours:
                 mergify_evict(pull, labels)
@@ -9513,27 +9520,23 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
 
 
 # a Mergify queue check run's text for a dequeue a person asked for, which counts for nothing (stale_dequeue)
-MANUAL_TEXT = re.compile(r"\bmanual(?:ly)?\b|@mergifyio\s+dequeue", re.IGNORECASE)
+MANUAL_TEXT = re.compile(r"\bmanual(?:ly)?\b|@mergifyio\s+dequeue|`dequeue` command", re.IGNORECASE)
 
 
 def stale_dequeue(pull: dict[str, Any]) -> str:
-    """Why Mergify's dequeue at the head is no eviction (#2638), else "": its queue check run's text says a person
-    dequeued it by hand ("manual"), or the run completed before land's newest hand-over at the head (its `land` success
-    or a go's status, OWNER_GO), so the dequeue was already answered by it. A dequeue newer than that, or one whose
-    time or hand-over time GitHub doesn't give, evicts as before."""
+    """How Mergify's dequeue at the head is no eviction (#2638), else "": "older" when its queue check run completed
+    before land's newest hand-over at the head (its `land` success or a go's status, OWNER_GO), so the dequeue was
+    already answered by it, and "manual" when the check run's text says a person dequeued it by hand (whatever its
+    conclusion, since Mergify leaves a manual dequeue's `Merge Queue` run neutral) and no hand-over follows it: that
+    one stays out, since a person asked for it. A dequeue newer than the hand-over, or one whose time or hand-over
+    time GitHub doesn't give, evicts as before."""
     head = pull["headRefOid"]
     try:
         checks = commit_checks(head)
     except subprocess.CalledProcessError:
         return ""
-    ran = [
-        run
-        for name, run in checks.items()
-        if re.search(r"mergify|queue", name, re.IGNORECASE)
-        and run["conclusion"] not in ("SUCCESS", "NEUTRAL", "")
-    ]
-    if any(MANUAL_TEXT.search(f"{run.get('title', '')}\n{run.get('summary', '')}") for run in ran):
-        return "a manual one"
+    ran = [run for name, run in checks.items() if re.search(r"mergify|queue", name, re.IGNORECASE)]
+    red = [run for run in ran if run["conclusion"] not in ("SUCCESS", "NEUTRAL", "")]
     handed = max(
         (
             each.get("created_at") or ""
@@ -9542,10 +9545,18 @@ def stale_dequeue(pull: dict[str, Any]) -> str:
         ),
         default="",
     )
-    times = [run.get("completed_at") or "" for run in ran]
+    times = [run.get("completed_at") or "" for run in red]
     # ISO 8601 in UTC, so it orders as text
     if handed and times and all(times) and max(times) < handed:
-        return "older than land's last hand-over there"
+        return "older"
+    manual = [
+        run
+        for run in ran
+        if MANUAL_TEXT.search(f"{run.get('title', '')}\n{run.get('summary', '')}")
+    ]
+    if manual:
+        done = [run.get("completed_at") or "" for run in manual]
+        return "older" if handed and all(done) and max(done) < handed else "manual"
     return ""
 
 
