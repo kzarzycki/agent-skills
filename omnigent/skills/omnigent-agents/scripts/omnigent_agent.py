@@ -869,7 +869,7 @@ A change on the policy's `risk.critical_paths` stays the owner's: the script ref
 """
 
 
-def installed(skill: str) -> Path | None:
+def installed(skill: str, own_ok: bool = True) -> Path | None:
     """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
     skill folder (APM's one skills directory), a sibling plugin's (a marketplace Claude Code loads in place), a
     native plugin APM deployed to the project's `.agents/plugins/`, else the newest version of a plugin in Claude
@@ -877,7 +877,8 @@ def installed(skill: str) -> Path | None:
     update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
     searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
     tests set it, the checkout is the GITHUB_WORKSPACE of the CI job running there, or this script is the pack's own
-    `omnigent-agents` script running from it (#2670: its siblings are the code it already runs). None when none holds it."""
+    `omnigent-agents` script running from it (#2670: its siblings are the code it already runs; `own_ok=False` drops that
+    exception, for a caller that asks where a service should run from). None when none holds it."""
     # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
     import os
 
@@ -891,7 +892,7 @@ def installed(skill: str) -> Path | None:
         not checkout
         or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
         or bool(workspace and Path(workspace).resolve() == root)
-        or own.name == "omnigent-agents"
+        or (own_ok and own.name == "omnigent-agents")
     )
     cached = [
         *(root.parent.glob(f"[!.]*/[!.]*/skills/{skill}") if laid else []),
@@ -12209,6 +12210,25 @@ def service_label(registry: Path) -> str:
     return "omnigent.supervise." + service_name(registry).rsplit("-", 1)[1]
 
 
+def service_script() -> Path:
+    """The script a service may run: this one, unless it is a developer checkout of the pack, which sits on any branch
+    and never sees a release (#2761). Where `installed()` (the #2485 test, without its own-script exception) finds this
+    script's own folder it is this one; else the install refuses, naming the installed copy to run it from."""
+    me = Path(__file__).resolve()
+    folder = installed("omnigent-agents", own_ok=False)
+    if folder and folder.resolve() == me.parent:
+        return me
+    raise Fail(
+        f"supervise --install is run from a developer checkout ({me}), which a service would run for ever, never"
+        " seeing a release: "
+        + (
+            f"run it from the installed copy, {folder / me.name}"
+            if folder
+            else "no installed copy of omnigent-agents was found; install the plugin and run it from there"
+        )
+    )
+
+
 def service_argv(argv: list[str], owed: tuple[str, ...] | list[str] = ()) -> list[str]:
     """The command a supervise service runs: this interpreter and script with ``argv`` less
     ``--install``, ``--uninstall``, ``--log`` and the ``<session>=<report>`` pairs (the install
@@ -12223,7 +12243,7 @@ def service_argv(argv: list[str], owed: tuple[str, ...] | list[str] = ()) -> lis
             skip = True
         elif arg not in owed:
             kept.append(arg)
-    return [sys.executable, str(Path(__file__).resolve()), *kept]
+    return [sys.executable, str(service_script()), *kept]
 
 
 def service_env(env: dict[str, str]) -> dict[str, str]:
@@ -13066,13 +13086,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 return 0
             if not args.log:
                 raise Fail("--install needs --log: a service has no terminal to print to")
+            service = service_argv(
+                sys.argv[1:] if argv is None else argv, args.owed
+            )  # refuses a checkout first
             for s, r in owed.items():
                 arm(args.registry, s, r)
-            install_service(
-                service_argv(sys.argv[1:] if argv is None else argv, args.owed),
-                args.log,
-                args.registry,
-            )
+            install_service(service, args.log, args.registry)
             return 0
         if args.cmd == "supervise" and args.log:
             raise Fail("--log needs --install")
