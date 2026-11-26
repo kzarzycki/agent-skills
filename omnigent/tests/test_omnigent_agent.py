@@ -3881,6 +3881,34 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
 
+def test_a_pr_cloud_start_with_a_registry_is_followed_not_owed_a_host_report_2718(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude/settings.local.json").write_text(
+        '{"remote": {"defaultEnvironmentId": "env_a"}}'
+    )
+    registry = tmp_path / "registry"
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setenv("OMNIGENT_SUPERVISE_REGISTRY", str(registry))
+    calls = fake_gh(monkeypatch, {})
+    del calls
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("do X")
+    argv = ["start", "claude-cloud", "t", "b.md", "r.md", "--pr", "7", "--confirm-seconds", "0"]
+    assert omnigent_agent.main(argv) == 0
+    # a followed line with no brief file: the supervisor reads the last message, never r.md
+    assert registry.read_text() == f"s0={tmp_path / 'r.md'}\tfollow\n"
+    # the supervisor tells its end and sends the session nothing toward the host path
+    lead = Lead(told("brief", 60), ending("DONE: shipped", 5))
+    registry.write_text(f"a={tmp_path / 'r.md'}\tfollow\n")
+    supervised(lead, registry, monkeypatch, 3, notify="cos")
+    assert [p.splitlines()[1] for p in posted(lead)] == ["last message: DONE: shipped"]
+    assert not [m for m in lead.histories["a"] if "r.md" in omnigent_agent.text_of(m)]
+
+
 def checkout_with_worktree(tmp_path: Path, pin: dict | None) -> tuple[Path, Path]:
     """A main checkout, with ``pin`` as its settings.local.json when given, and a worktree of it."""
     main, tree = (
