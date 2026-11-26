@@ -25,15 +25,28 @@
 #       with:
 #         task: ${{ inputs.task }}
 #         test_command: <the project's test command>
+#         issue: <the number of the issue the PR closes, in this repo>
 #       secrets:
 #         NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
 #
 # The fork needs Actions enabled and "Allow GitHub Actions to create and approve pull requests"
 # on (Settings, Actions, General) for the draft PR. A PR opened with the job token starts no
 # workflow on the fork, and a patch that changes .github/workflows cannot be pushed with it.
-# If the fork has a ruleset that restricts branch creation, its rules must let the Actions token
-# create refs/heads/oss-agent/**: exclude that pattern from the ruleset, or the publish job's push
-# fails with GH013 after the agent job has spent its run.
+#
+# Branch push. The publish job pushes refs/heads/oss-agent/run-<run id>-<attempt> with the job
+# token, so the calling job must grant contents: write (the example above does), and the fork must
+# let that token create it (refs/heads/oss-agent/**). If it has a ruleset that restricts branch creation (one that
+# targets all branches, say), the push fails with GH013 after the agent job has spent its run.
+# Either of these lets it through, in Settings, Rules, Rulesets:
+#   - on the ruleset, under Target branches, add an Exclude by pattern entry `oss-agent/**`; or
+#   - on the ruleset, under Bypass list, add the GitHub Actions app with the Always bypass mode,
+#     which lets its token create any branch the ruleset covers (the wider of the two).
+#
+# The PR. It opens as a draft with no labels, which stay with the project's loop. Its body has
+# `Closes #<issue>` when `issue` is given, and an `## Evidence` section, the form the gatekeeper's
+# `check merge` reads: the `test_command` result, and on a failure the tail of its output (the
+# last 60 lines, at most 3000 characters), so a reader can tell a failure the change brought from
+# one that was there before.
 name: OSS agent
 
 on:
@@ -53,6 +66,10 @@ on:
         default: nvidia_nim/nvidia/nemotron-3-ultra-550b-a55b
       test_command:
         description: The project's test command, run after the agent (empty runs none)
+        type: string
+        default: ""
+      issue:
+        description: Number of the issue the PR closes (a `Closes #<issue>` line in its body); empty adds none
         type: string
         default: ""
       timeout_minutes:
@@ -219,18 +236,24 @@ jobs:
         env:
           TEST_COMMAND: ${{ inputs.test_command }}
         run: |
-          if bash -c "$TEST_COMMAND"; then
-            echo "result=passed" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/out"
+          if bash -c "$TEST_COMMAND" > "$RUNNER_TEMP/tests.log" 2>&1; then
+            result=passed
           else
-            echo "result=failed" >> "$GITHUB_OUTPUT"
+            result=failed
             echo "::warning::the project's tests failed on the agent's change"
+          fi
+          cat "$RUNNER_TEMP/tests.log"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          if [ "$result" = failed ]; then
+            tail -n 60 "$RUNNER_TEMP/tests.log" | tail -c 3000 > "$RUNNER_TEMP/out/tests.txt"
           fi
 
       - if: ${{ steps.patch.outputs.has_patch == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-patch
-          path: ${{ runner.temp }}/out/agent.patch
+          path: ${{ runner.temp }}/out
           if-no-files-found: error
 
   publish:
@@ -251,7 +274,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: agent-patch
-          path: ${{ runner.temp }}/patch
+          path: ${{ runner.temp }}/agent
 
       - name: Apply and push
         env:
@@ -260,7 +283,7 @@ jobs:
           git config user.name "oss-agent"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$BRANCH"
-          git am "$RUNNER_TEMP/patch/agent.patch"
+          git am "$RUNNER_TEMP/agent/agent.patch"
           status=0
           push="$(git push origin "HEAD:refs/heads/$BRANCH" 2>&1)" || status=$?
           echo "$push"
@@ -278,12 +301,27 @@ jobs:
           TASK: ${{ inputs.task }}
           MODEL: ${{ inputs.model }}
           TESTS: ${{ needs.agent.outputs.tests || 'not run' }}
+          ISSUE: ${{ inputs.issue }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           {
             echo "Drafted by an agent on a free model ($MODEL) in [this run]($RUN_URL)."
             echo
-            echo "Project tests on the change: $TESTS."
+            if [[ $ISSUE =~ ^[0-9]+$ ]]; then
+              echo "Closes #$ISSUE"
+              echo
+            fi
+            echo "## Evidence"
+            echo
+            echo "Project tests on the change (the \`test_command\` input): $TESTS, in [this run]($RUN_URL)."
+            if [[ $TESTS == failed ]]; then
+              echo
+              echo "The tail of its output:"
+              echo
+              echo '````text'
+              echo "$(head -c 3000 "$RUNNER_TEMP/agent/tests.txt")"
+              echo '````'
+            fi
             echo
             echo "## Task"
             echo
