@@ -9520,7 +9520,8 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
 
 
 # a Mergify queue check run's text for a dequeue a person asked for, which counts for nothing (stale_dequeue)
-MANUAL_TEXT = re.compile(r"\bmanual(?:ly)?\b|@mergifyio\s+dequeue|`dequeue` command", re.IGNORECASE)
+MANUAL_TITLE = re.compile(r"\bmanually dequeued\b", re.IGNORECASE)
+MANUAL_SUMMARY = re.compile(r"dequeued by @\S+ with a `dequeue` command", re.IGNORECASE)
 
 
 def stale_dequeue(pull: dict[str, Any]) -> str:
@@ -9552,7 +9553,8 @@ def stale_dequeue(pull: dict[str, Any]) -> str:
     manual = [
         run
         for run in ran
-        if MANUAL_TEXT.search(f"{run.get('title', '')}\n{run.get('summary', '')}")
+        if MANUAL_TITLE.search(run.get("title") or "")
+        or MANUAL_SUMMARY.search(run.get("summary") or "")
     ]
     if manual:
         done = [run.get("completed_at") or "" for run in manual]

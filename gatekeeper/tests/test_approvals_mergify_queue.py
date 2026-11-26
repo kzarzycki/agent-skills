@@ -415,3 +415,14 @@ def test_a_manual_dequeue_never_evicts_and_is_left_out_until_a_go_follows(
     code, lines = clocked["land"]("7")
     assert code == 0 and "queued again, not evicted" in lines[0], lines
     assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 1
+
+
+def test_a_failed_job_named_manual_is_no_manual_dequeue(clocked: dict[str, Any]) -> None:
+    head = clocked["opened"](7)
+    assert clocked["land"]("7")[0] == 0
+    dequeued_at(
+        clocked, head, "2026-11-23T04:30:00Z", "The pull request has been removed from the queue"
+    )
+    clocked["checks"][head][1]["output"]["summary"] = "the manual-approval job failed"
+    code, lines = clocked["land"]("7")
+    assert code == 1 and "evicted" in lines[0], lines
