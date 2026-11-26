@@ -279,3 +279,17 @@ def test_the_values_file_is_the_only_source_of_settings(home):
     values(home, "hygiene:\n  board_max_kb: 100\n")
     r = run(home)
     assert r.returncode == 2 and "board_max_kb" in r.stderr
+
+
+def test_pack_lag_reads_every_package_in_the_lock_transitive_ones_too(home, tmp_path):
+    """#2706: a sibling the lock holds at an old ref is reported, not only the direct package."""
+    pack = make_pack_repo(tmp_path, ["engineering-v1.0.0", "omnigent-v2.0.0"])
+    values(home, "hosts:\n  table:\n    repo-a: [host-1]\n")
+    lock = tmp_path / "apm.lock.yaml"
+    lock.write_text(
+        "dependencies:\n- name: engineering\n  version: 1.0.0\n- name: omnigent\n  version: 1.0.0\n"
+    )
+    cmd = f"cat {lock}"
+    code, rep = scan(home, "--pack-repo", str(pack), "--installed-cmd", cmd)
+    assert code == 1
+    assert rep["pack lag"] == ["host-1: omnigent 1.0.0 is behind the release 2.0.0"]
