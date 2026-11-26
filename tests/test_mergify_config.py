@@ -240,3 +240,30 @@ def test_the_policy_names_mergify_as_mains_queue() -> None:
     """The switch that sends this repo's landings to Mergify instead of the host batch gate, and its batching."""
     assert policy()["land"]["queue"] == "mergify"
     assert (policy()["land"]["batch_size"], policy()["land"]["batch_wait_seconds"]) == (3, 300)
+
+
+def test_the_queue_only_variant_keeps_an_ungated_lint_job() -> None:
+    """#2687: a gate that runs only in the queue leaves a PR push with no check, so a lint failure first shows in the
+    queue and evicts the PR. The variant's CI has a `lint` job with no job-level `if`, which runs lint-only, and a
+    gate that stays gated to the queue's draft PRs."""
+    workflow = yaml.safe_load((TEMPLATE.parent / "queue-only-ci.yml").read_text())
+    jobs = workflow["jobs"]
+    assert "if" not in jobs["lint"]
+    assert "pull_request" in workflow[True]
+    commands = " ".join(step.get("run", "") for step in jobs["lint"]["steps"])
+    assert "lint" in commands and "test" not in commands and "build" not in commands
+    assert jobs["gate"]["if"] == "startsWith(github.head_ref, 'mergify/merge-queue/')"
+    assert "`lint` job" in TEMPLATE.read_text()
+
+
+def test_the_pack_ci_lints_every_pr_push_and_the_lint_task_runs_no_test() -> None:
+    """#2687: engineering-ci.yml follows the same rule: a `lint` job with no record read, on pull requests."""
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "engineering-ci.yml").read_text())
+    job = workflow["jobs"]["lint"]
+    assert job["if"] == "github.event_name == 'pull_request'"
+    assert [step["run"] for step in job["steps"] if "lint" in step.get("run", "")] == [
+        "mise run lint-changed"
+    ]
+    assert all("pr_head_record" not in step.get("run", "") for step in job["steps"])
+    task = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]["lint-changed"]["run"]
+    assert "ruff check" in task and "pytest" not in task and "build" not in task

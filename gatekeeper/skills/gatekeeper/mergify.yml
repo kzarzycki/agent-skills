@@ -29,14 +29,18 @@
 # reports, so Mergify would never queue the PR.
 #
 # Gate in the queue only, the setup for a repo with a merge queue and free CI minutes: the one gate run that proves a
-# PR is the queue's, on the tree that will merge, and a PR head runs none of it. Three changes from the above:
+# PR is the queue's, on the tree that will merge, and a PR head runs none of its tests. Four changes from the above
+# (queue-only-ci.yml is the CI it describes):
 # - the gate's job gets a job-level `if: startsWith(github.head_ref, 'mergify/merge-queue/')`, so it runs only on
 #   Mergify's draft PRs and a PR head shows it skipped;
 # - the base's ruleset drops the gate from its required checks, since a skipped required check never reports and
 #   Mergify would never queue the PR;
-# - the queue rule's `merge_conditions` becomes `[check-success = <gate>]`, so the gate is still what merges a batch.
+# - the queue rule's `merge_conditions` becomes `[check-success = <gate>]`, so the gate is still what merges a batch;
+# - a separate `lint` job with no job-level `if` runs lint and format checks on the PR's changed files on every push, no
+#   tests and no build, and is a required check of the base. Without it nothing checks a PR before the queue, and a
+#   lint failure there evicts it and costs a batch run (#2687). It costs about 1 minute of Actions time a push.
 # Its undo: add the gate back to the ruleset's required checks, drop the job-level `if`, and set `merge_conditions`
-# back to `[-conflict]` (see "Never in place" below).
+# back to `[-conflict]` (see "Never in place" below); the `lint` job stays.
 # Keep the step-level variant above in a repo that pays for CI minutes, or whose queue rejects PRs often: there a PR
 # head's run still catches what the queue would reject, before a queue run is spent on it. Either way a dequeue goes
 # back to the session that owns the PR: the supervisor reads Mergify's status comment on the PR and relays the failing

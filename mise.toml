@@ -123,8 +123,17 @@ run = """uv run python tools/gate_slot.py pytest -q -m 'slow and not live_agent'
 description = "ruff check and format check over the repo's Python"
 run = """uv run ruff check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent && uv run ruff format --check tools tests engineering/tests engineering/skills/browsing/scripts engineering/hooks gatekeeper loop github chief-of-staff omnigent"""
 
+[tasks.lint-changed]
+description = "The lint-only PR push check: ruff check and format check on the Python files changed against GATE_BASE (default origin/main) and `git diff --check`, no tests and no build. The `lint` job of CI runs it on every PR push (#2687)."
+run = """base="${GATE_BASE:-origin/main}"
+git diff --check "$base"...HEAD
+files=$(git diff --name-only --diff-filter=d "$base"...HEAD -- '*.py')
+[ -n "$files" ] || { echo 'lint-changed: no Python file changed'; exit 0; }
+printf '%s\\n' $files | xargs uv run ruff check --force-exclude
+printf '%s\\n' $files | xargs uv run ruff format --check --force-exclude"""
+
 [tasks.check-fast]
-description = "The PR head's check (`qualify`): vendor check, lint and the Mergify config drift check (the pack template rendered with gatekeeper.md's `land` and `timeouts`), no tests. The tests run once per tree, on the batch (test-batch)."
+description = "The PR head's check (`qualify`): vendor check, the whole-repo lint (the `lint` task; a PR push's own lint-only run is `lint-changed`) and the Mergify config drift check (the pack template rendered with gatekeeper.md's `land` and `timeouts`), no tests. The tests run once per tree, on the batch (test-batch)."
 run = """mise run vendor-engineering-check
 mise run lint
 uv run gatekeeper/skills/gatekeeper/scripts/approvals.py queue-config | cmp - .mergify.yml || { echo 'error: .mergify.yml drifted from `approvals.py queue-config`, the pack template rendered with gatekeeper.md'"'"'s land block: write its output to .mergify.yml' >&2; exit 1; }"""
