@@ -7,37 +7,17 @@ reports_dir: reports
 delegation:
   on: true
 owner_only: [publish, send, delete, credentials, public-packages]
-releases: continuous
-harness:
-  default: {repo-a: claude, repo-b: codex}
-  codex_opt_in: [repo-b]
 models:
   tiers:
     lead: model-large
     scheduled: {model: model-small, until: 2030-01-31}
-scheduled:
-  cap_usd: 2
 budget:
   weekly_limit: 50
   until: 2030-01-31
 parked: [{item: nightly-x, until: 2030-01-31}]
-prompts:
-  cos_approves: [read-only-shell]
 decisions:
   file: log/decisions.md
-  cos_line: "Chief of staff session: session-cos-2"
 hygiene:
   repos: [owner-a/repo-a]
-  retention_days: 30
 pin:
   tag_prefix: pack-v
-  notify: session-cos-2
-  schedule: "0 6 * * *"
-deps:
-  repos: [owner-a/repo-a]
-  schedule: "0 3 * * *"
-bridge:
-  never_crosses: [client-data]
-data:
-  allowed_hosts: [host-1]
-drafts_dir: drafts

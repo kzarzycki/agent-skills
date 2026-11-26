@@ -10,7 +10,7 @@ It only writes the log and prints a draft.
     decisions.py digest [--all]        # print the draft; changes nothing
     decisions.py sent --via <where>    # after you sent it by hand: marks the log up to here as sent
 
-Reads ``decisions.file`` (the log, beside the board), ``decisions.cos_line`` and ``cos_session``
+Reads ``decisions.file`` (the log, beside the board) and ``cos_session``
 through ``cos_values``, and the board's path from ``board``. Common options: ``--file`` (the
 values file), ``--home`` (the setup's home folder).
 
@@ -120,8 +120,6 @@ def digest(values: cos_values.Values, *, include_sent: bool = False) -> str:
     waiting = needs_the_owner(values.path("board"))
     session = values.get("cos_session")
     out = ["# Morning digest (DRAFT, not sent)", ""]
-    if line := values.get("decisions.cos_line"):
-        out += [line, ""]
     out.append(
         f"Reply in session {session}." if session else "Reply to the chief of staff's own session."
     )

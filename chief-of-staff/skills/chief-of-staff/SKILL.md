@@ -498,7 +498,7 @@ pack script imports (`load()`, then `get(key)` or `require(key)`); `check` valid
 names each unknown or mistyped key, `keys` lists every key with its default and meaning. The file is found by
 `--file`, else `$COS_VALUES`, else `cos-values.yml` in the home folder. Read
 `references/values-first-setup.yml` (a home of its own with project managers) or
-`references/values-second-setup.yml` (delegation, nightly jobs and a client-data rule) when writing a
+`references/values-second-setup.yml` (delegation, a decision log and nightly jobs) when writing a
 setup's file; both hold placeholder values only. A key the loader does not list is an error, never
 a default, so a typo is caught; a value that is a secret goes in the harness's credential store,
 never in this file.
