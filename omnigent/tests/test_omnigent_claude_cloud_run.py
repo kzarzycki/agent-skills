@@ -145,7 +145,7 @@ def test_it_refuses_tracked_changes_and_an_unpushed_head_before_any_session_exis
     assert ("is not on origin/main" if unpushed else "has tracked changes (a.txt)") in err
     assert "LOOP_HOST_RUN=<reason> pytest" in err  # the host fallback too (verifier m4)
     assert og.sessions == {}  # no session was made
-    assert not (checkout / ".worktrees").exists()
+    assert not (checkout.parent / "claude-cloud-run-main").exists()
 
 
 def test_it_runs_the_command_with_the_cheap_model_auto_and_no_keep_and_exits_with_its_code(
@@ -161,7 +161,7 @@ def test_it_runs_the_command_with_the_cheap_model_auto_and_no_keep_and_exits_wit
     assert cloud_run(checkout, "uv run pytest -q") == 3
     run = launched[1]  # the first is claude-cloud-run's own
     assert run[:2] == ["run", "claude-cloud"]
-    place = checkout / ".worktrees" / "claude-cloud-run-main"
+    place = checkout.parent / "claude-cloud-run-main"
     assert run[run.index("--workspace") + 1] == str(place)
     assert "--no-keep" in run
     assert run[run.index("--model") + 1] == "haiku"
@@ -190,7 +190,7 @@ def test_a_second_run_reuses_the_launch_dir_and_points_it_at_the_new_head(
         ),
     )
     assert cloud_run(checkout, "pytest") == 0
-    place = checkout / ".worktrees" / "claude-cloud-run-main"
+    place = checkout.parent / "claude-cloud-run-main"
     head = commit(checkout, "b.txt")
     git("push", "-q", cwd=checkout)
     assert cloud_run(checkout, "pytest", "-q") == 0
@@ -299,7 +299,7 @@ def test_a_caller_on_a_host_without_the_cloud_harness_starts_on_the_bridge_host_
     assert "opening with its ending line" not in brief  # no lead preamble
     report = Path(run[4])
     assert report.parent == checkout / "tmp" / "loop" and report.read_text().startswith("EXIT: 4")
-    assert not (checkout / ".worktrees").exists()  # no local launch dir
+    assert not (checkout.parent / "claude-cloud-run-main").exists()  # no local launch dir
     assert "exited 4" in capsys.readouterr().out
 
 
@@ -333,9 +333,7 @@ def test_without_a_usable_bridge_elsewhere_it_starts_here_from_the_local_launch_
     assert cloud_run(checkout, "pytest") == 0
     run = launched[1]
     assert "--host" not in run
-    assert run[run.index("--workspace") + 1] == str(
-        checkout / ".worktrees" / "claude-cloud-run-main"
-    )
+    assert run[run.index("--workspace") + 1] == str(checkout.parent / "claude-cloud-run-main")
     assert og.top_level == [False]
 
 

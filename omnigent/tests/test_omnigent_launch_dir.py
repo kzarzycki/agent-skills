@@ -118,7 +118,7 @@ def test_a_checkout_of_another_repository_gets_a_clone(
     assert git("rev-parse", "--git-common-dir", cwd=dest) == ".git"  # its own repository
 
 
-def test_trust_is_by_path_so_a_clone_inside_a_trusted_folder_is_untrusted(
+def test_a_clone_inside_a_trusted_folder_is_trusted(
     tmp_path: Path, bare: Path, real_trust: Path
 ) -> None:
     real_trust.write_text(
@@ -126,7 +126,7 @@ def test_trust_is_by_path_so_a_clone_inside_a_trusted_folder_is_untrusted(
     )
     dest = tmp_path / "launch"
     omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest, here=tmp_path)
-    assert not omnigent_agent.folder_trusted(dest)
+    assert omnigent_agent.folder_trusted(dest)  # the trusted parent covers it (#2710)
 
 
 def test_trust_flag_writes_the_entry_as_before(
@@ -257,14 +257,14 @@ def test_a_worktree_takes_the_trust_of_the_main_worktree_git_names(
     assert omnigent_agent.folder_trusted(dest)
 
 
-def test_a_trusted_folder_that_only_holds_the_git_dir_gives_no_trust(
+def test_a_trusted_folder_above_the_git_dir_covers_the_worktree(
     tmp_path: Path, bare: Path, real_trust: Path
 ) -> None:
     main, gitdir = separate_checkout(bare, tmp_path)
     trusting(real_trust, gitdir.parent)
     dest = tmp_path / "launch"
     omnigent_agent.launch_dir(f"file://{bare}", "main", "env_1", dest, here=main)
-    assert not omnigent_agent.folder_trusted(dest)
+    assert omnigent_agent.folder_trusted(dest)
 
 
 def test_a_worktree_of_a_worktree_takes_the_main_checkouts_trust(

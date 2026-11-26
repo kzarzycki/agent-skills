@@ -198,7 +198,7 @@ leave its patch applied); a running session with recent activity stays kept.
 
 ``claude-cloud-run`` runs one shell command in a Claude cloud session on the checkout's HEAD and exits with
 the command's code from its report's ``EXIT:`` line; it refuses tracked changes and an unpushed HEAD
-before any session exists, reuses ``<main checkout>/.worktrees/claude-cloud-run-<branch>`` as its launch dir,
+before any session exists, reuses ``claude-cloud-run-<branch>`` beside the worktree it serves as its launch dir,
 or, on a host that runs no cloud session, starts on the host and launch dir of the project's newest cloud
 session elsewhere (``cloud_placement``, read from the server), and exits ``CLOUD_RUN_FAILED`` (125) with the host fallback when the cloud route fails.
 
@@ -3941,8 +3941,8 @@ def claude_config() -> Path:
 
 
 def folder_trusted(path: Path, config: Path | None = None) -> bool:
-    """Whether Claude Code trusts ``path``. It trusts by path, so a separate clone is untrusted even
-    inside a trusted folder, while a linked worktree takes its main worktree's trust (``main_worktree``).
+    """Whether Claude Code trusts ``path``: its own folder, a folder above it, or, for a linked worktree, its
+    main worktree's (``main_worktree``) or a folder above that. A clone is untrusted unless it sits in a trusted folder.
     An unreadable config trusts nothing."""
     try:
         projects = json.loads((config or claude_config()).read_text()).get("projects")
@@ -3953,10 +3953,31 @@ def folder_trusted(path: Path, config: Path | None = None) -> bool:
     places = {str(path.resolve())}
     if main := main_worktree(path):  # a linked worktree
         places.add(str(main.resolve()))
+    for place in tuple(places):  # Claude Code trusts the folders under a trusted one
+        places.update(str(parent) for parent in Path(place).parents)
     return any(
         isinstance(projects.get(p), dict) and projects[p].get("hasTrustDialogAccepted") is True
         for p in places
     )
+
+
+def alternates_file(workspace: Path) -> Path | None:
+    """``objects/info/alternates`` of the repository ``workspace`` is in when it exists: the mark of a
+    ``--reference`` or ``--shared`` clone, whose objects live in another repository."""
+    common = git_dirs(workspace)[1:2]
+    path = Path(common[0]) / "objects" / "info" / "alternates" if common else None
+    return path if path and path.is_file() else None
+
+
+def refuse_alternates(workspace: Path) -> None:
+    """A cloud session cannot use a ``--reference``/``--shared`` clone: its objects are another repository's,
+    so it fails once it exists. Refuse before any session is created."""
+    if found := alternates_file(workspace):
+        raise Fail(
+            f"{workspace} borrows its objects from another repository ({found}), so a cloud session started"
+            " from it fails after it is created: run from a full clone (`git repack -a -d`, then remove"
+            " that file) or another checkout of the repository"
+        )
 
 
 def refuse_untrusted_launch_dir(workspace: Path) -> None:
@@ -4199,7 +4220,8 @@ def move_head(workspace: Path, pr: int, repo: str = "") -> None:
         return
     branch = pr_branch(pr, workspace, repo) if repo else pr_branch(pr, workspace)
     # the PR's own ref, which a fork's branch has too and a same-named origin branch can't shadow
-    repoint(workspace, "origin", f"refs/pull/{pr}/head", f"refs/remotes/origin/pr/{pr}", branch)
+    remote = forge_remote(workspace)
+    repoint(workspace, remote, f"refs/pull/{pr}/head", f"refs/remotes/{remote}/pr/{pr}", branch)
 
 
 def repoint(workspace: Path, remote: str, source: str, tracking: str, branch: str) -> None:
@@ -4275,7 +4297,7 @@ def check_out_head(workspace: Path, pr: int, repo: str = "") -> None:
             f"{workspace} is not at PR {pr}'s head {head[:12]} and has tracked changes: use a"
             " clean worktree for the verifier"
         )
-    run("fetch", "-q", "origin", f"pull/{pr}/head")
+    run("fetch", "-q", forge_remote(workspace), f"pull/{pr}/head")
     if run("rev-parse", "FETCH_HEAD") != head:
         raise Fail(f"PR {pr}'s head moved while it was fetched; start the verifier again")
     run("checkout", "-q", "--detach", head)
@@ -4335,6 +4357,19 @@ def cloud_run_failed(reason: str, command: str = "") -> Fail:
     return e
 
 
+def forge_remote(root: Path) -> str:
+    """The remote of ``root``'s forge: its branch's upstream, else the policy's ``forge_remote``, else
+    ``origin`` (the gatekeeper's ``events.forge_remote``, the one rule both tools share)."""
+    if EVENTS is not None and hasattr(EVENTS, "forge_remote"):
+        return EVENTS.forge_remote(root)
+    upstream = git_out(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    remotes = git_out(root, "remote").split()
+    return next(
+        (r for r in sorted(remotes, key=len, reverse=True) if upstream.startswith(f"{r}/")),
+        "origin",
+    )
+
+
 def git_out(root: Path, *args: str) -> str:
     """``git -C root <args>``'s output, ``""`` when it fails."""
     done = subprocess.run(
@@ -4352,6 +4387,10 @@ def run_head(checkout: Path, command: str = "") -> tuple[Path, str, str, str, st
     if not root:
         raise cloud_run_failed(f"claude-cloud-run: {checkout} is not inside a checkout", command)
     path = Path(root)
+    try:
+        refuse_alternates(path)
+    except Fail as e:
+        raise cloud_run_failed(f"claude-cloud-run: {e}", command) from e
     if changed := tracked_changes(path):
         listed = ", ".join(line.split("\t")[0][3:] for line in changed[:5])
         raise cloud_run_failed(
@@ -4365,7 +4404,7 @@ def run_head(checkout: Path, command: str = "") -> tuple[Path, str, str, str, st
             f"claude-cloud-run: {path} has a detached HEAD: check out a branch, `git push` it, and run it again",
             command,
         )
-    remote = git_out(path, "config", f"branch.{branch}.remote") or "origin"
+    remote = forge_remote(path)
     merge = git_out(path, "config", f"branch.{branch}.merge").removeprefix("refs/heads/") or branch
     head = git_out(path, "rev-parse", "HEAD")
     fetched = subprocess.run(
@@ -4392,10 +4431,9 @@ def run_head(checkout: Path, command: str = "") -> tuple[Path, str, str, str, st
 
 
 def cloud_run_dir(root: Path, branch: str, remote: str, merge: str) -> Path:
-    """The launch dir of ``root``'s branch, ``<main checkout>/.worktrees/claude-cloud-run-<branch>``:
+    """The launch dir of ``root``'s branch, ``claude-cloud-run-<branch>`` beside the worktree ``root`` it serves:
     ``launch_dir`` makes it the first time, later runs fetch and point its HEAD at the branch."""
-    main = listed_main(root) or root
-    path = main / ".worktrees" / f"claude-cloud-run-{re.sub(r'[^A-Za-z0-9._-]+', '-', branch)}"
+    path = root.parent / f"claude-cloud-run-{re.sub(r'[^A-Za-z0-9._-]+', '-', branch)}"
     if path.exists() and any(path.iterdir()):
         repoint(path, remote, f"refs/heads/{merge}", f"refs/remotes/{remote}/{merge}", merge)
     else:
@@ -13640,6 +13678,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         # The aliases are native harnesses.
         if not remote and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS:
             pin_environment(workspace, args.cloud_env)
+            refuse_alternates(workspace)
             refuse_untrusted_launch_dir(workspace)
             if args.pr:
                 named = getattr(args.pr, "repo", "")
