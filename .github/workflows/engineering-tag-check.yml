@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - engineering-v*
+      - "!engineering-v*-next" # the tag check runs on a stable promotion (#2678), not on every next cut
 
 permissions:
   contents: read

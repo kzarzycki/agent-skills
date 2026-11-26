@@ -65,7 +65,7 @@ def released_versions(repository: Path) -> dict[str, str]:
         raise ConfigurationError(f"git tag --list failed: {result.stderr.strip()}")
     newest: dict[str, tuple[int, int, int]] = {}
     for tag in result.stdout.split():
-        match = re.fullmatch(r"(.+)-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", tag)
+        match = re.fullmatch(r"(.+)-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-next)?", tag)
         if match:
             version = tuple(int(part) for part in match.groups()[1:])
             newest[match.group(1)] = max(newest.get(match.group(1), version), version)  # type: ignore[arg-type]

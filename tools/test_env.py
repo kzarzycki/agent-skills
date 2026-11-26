@@ -20,9 +20,12 @@ RUNNER = (
     "GITHUB_REF_NAME",
     "GITHUB_REPOSITORY",
     "GITHUB_SHA",
+    "GITHUB_STEP_SUMMARY",
     "GITHUB_TOKEN",
     "GITHUB_WORKFLOW_REF",
     "GITHUB_WORKSPACE",
+    "REPO",
+    "RUN_JSON",
 )
 
 # Which agent session the run is in: an Omnigent session, a cloud VM's marker, the host's model and effort defaults.
@@ -40,6 +43,7 @@ SESSION_PREFIXES = ("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_")
 # depends on one sets it itself.
 HOST_NEUTRAL = (
     "AGENT_HOST_COMMANDS",
+    "OMNIGENT_DATA_DIR",  # the host data dir a script reads for its own state; main already reads it (#2679)
     # the root conftest.py sets it to 1 for the whole run, as the pack's own tests need; clearing it would undo that
     "AGENT_SKILLS_CHECKOUT",
     "CDP_URL",

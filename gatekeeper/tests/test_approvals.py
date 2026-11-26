@@ -10370,3 +10370,125 @@ def test_approve_over_rest_records_the_text_and_minimizes_nothing_it_cannot_tell
         f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n{approvals.CHANGED['spec']}",
     )
     assert not any(call[0] == "minimize" for call in github)
+
+
+def test_prune_records_leaves_origin_no_record_of_a_pr_merged_or_closed_without_land(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1869: a PR merged by a merge queue, Mergify or by hand, or closed unmerged, never reaches `land`'s
+    drop_records, so its `loop-gate/` records piled up on origin. `prune-records --head <sha>` (the sweep every land
+    ends with, or run by hand) deletes that head's tree's records at once (its record is
+    fresh, so only the closed head's name saves it), keeps a fresh record of an unopened tree and an open PR's
+    record, and with no head deletes the old record of no open PR."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    a, b, origin = tmp_path / "a", tmp_path / "b", tmp_path / "origin.git"
+    commits = {}
+    for name in ("unopened", "open"):
+        (a / "app.py").write_text(f"value = {name!r}\n")
+        git_in(a, "commit", "-qam", name)
+        commits[name] = git_in(a, "rev-parse", "HEAD").strip()
+        git_in(a, "push", "-q", "origin", f"HEAD:refs/heads/{name}")
+    git_in(b, "fetch", "-q", "origin")
+    kept = {
+        recorded_in_origin(b, commits["unopened"], approvals.now()),
+        recorded_in_origin(b, commits["open"], "2026-01-01T00:00:00Z"),
+    }
+    monkeypatch.setattr(approvals.github, "gh", open_prs(commits["open"]))
+    assert branch_of(head) in loop_gate_branches(origin)
+    assert approvals.main(["prune-records", "--head", head]) == 0
+    assert loop_gate_branches(origin) == kept
+    assert approvals.main(["prune-records"]) == 0  # the daily run: nothing old and unneeded is left
+    assert loop_gate_branches(origin) == kept
+
+
+def test_every_land_ends_with_the_record_sweep_and_a_failed_sweep_never_fails_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1869: a land that handed its PR to a queue, or was refused, sweeps too: the merged named PR's head goes to
+    drop_records, an unmerged one's does not (its record is what the queue's check reads), a round a wait repeats
+    sweeps not at all, and a sweep that raises is one warning line with the land's own exit."""
+    swept: list[list[str]] = []
+    monkeypatch.setattr(approvals, "drop_records", lambda heads: swept.append(list(heads)))
+    state = {"1": "MERGED", "2": "OPEN"}
+    monkeypatch.setattr(approvals, "pull_status", lambda n: {"state": state[str(n)]})
+
+    def run(code: int, again: bool) -> Any:
+        def landing_run(*_a: Any, **_k: Any) -> tuple[int, bool]:
+            approvals.watched["pulls"] = [
+                {"number": 1, "headRefOid": "a" * 40},
+                {"number": 2, "headRefOid": "b" * 40},
+            ]
+            return code, again
+
+        return landing_run
+
+    monkeypatch.setattr(approvals, "landing_run", run(1, False))
+    assert approvals.landing(None) == (1, False)
+    assert swept == [["a" * 40]]
+    monkeypatch.setattr(approvals, "landing_run", run(3, True))
+    assert approvals.landing(None) == (3, True)
+    assert len(swept) == 1
+
+    def refused(_heads: list[str]) -> None:
+        raise OSError("proxy refuses deletes")
+
+    monkeypatch.setattr(approvals, "drop_records", refused)
+    monkeypatch.setattr(approvals, "landing_run", run(0, False))
+    assert approvals.landing(None) == (0, False)
+    assert "the record sweep after land failed: proxy refuses deletes" in capsys.readouterr().out
+
+
+def test_a_land_that_finds_its_pr_already_merged_sweeps_that_prs_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1869 F1: land_base and queue_landed read a PR merged by Mergify, a queue or by hand, and land_base leaves it out
+    of `named`, so `watched["pulls"]` never holds it; the real landing_run, not a stub, still hands its head to the
+    sweep for a named PR; the mixed land and bare `land`'s trail are the two tests below."""
+    swept: list[list[str]] = []
+    monkeypatch.setattr(approvals, "drop_records", lambda heads: swept.append(list(heads)))
+    merged = {"number": 42, "state": "MERGED", "headRefOid": "a" * 40}
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: merged)
+    monkeypatch.setattr(approvals, "queue_landed", lambda _pull: None)
+    assert approvals.landing(42) == (0, False)
+    assert swept == [["a" * 40]]
+
+
+def test_land_base_with_a_merged_and_an_open_pr_collects_the_merged_ones_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1869 F3: `land <merged> <open>` leaves the merged PR out of `named`, but its head is collected for the sweep."""
+    pulls = {
+        1: {"number": 1, "state": "MERGED", "headRefOid": "a" * 40, "baseRefName": "main"},
+        2: {"number": 2, "state": "OPEN", "headRefOid": "b" * 40, "baseRefName": "main"},
+    }
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pulls[n])
+    monkeypatch.setattr(approvals, "queue_landed", lambda _pull: None)
+    approvals.merged_heads.clear()
+    named, base, worst = approvals.land_base([1, 2])
+    assert [pull["number"] for pull in named or []] == [2]
+    assert (base, worst) == ("main", 0)
+    assert approvals.merged_heads == ["a" * 40]
+    approvals.merged_heads.clear()
+
+
+def test_bare_lands_queue_trail_collects_the_heads_of_the_prs_a_queue_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1869 F3: bare `land` reads the merged PRs into the base that still carry QUEUED through queue_trail; their
+    heads are collected for the sweep, a PR it reads as not merged is not."""
+
+    class Forge:
+        def merged_labelled(self, _base: str, _name: str) -> list[int]:
+            return [7, 8]
+
+    pulls = {
+        7: {"number": 7, "state": "MERGED", "headRefOid": "c" * 40},
+        8: {"number": 8, "state": "OPEN", "headRefOid": "d" * 40},
+    }
+    monkeypatch.setattr(approvals, "port", lambda _name: Forge())
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pulls[n])
+    monkeypatch.setattr(approvals, "queue_landed", lambda _pull: None)
+    approvals.merged_heads.clear()
+    approvals.queue_trail("main")
+    assert approvals.merged_heads == ["c" * 40]
+    approvals.merged_heads.clear()

@@ -20,8 +20,8 @@ report and no host or repo went unreached.
   release tag (``<package>-v<version>`` on ``--pack-repo``). ``--installed-cmd`` is run once per
   host with ``{host}`` replaced and prints ``{"<package>": "<version>"}``.
 * ``restate``: a setup file (``CLAUDE.md``, ``AGENTS.md``, ``docs/agents/*.md``) of a repo in
-  ``hygiene.repos``, found at ``--checkouts/<name>``, with a sentence copied from a skill of the
-  pack at ``--pack``.
+  ``hygiene.repos``, found at ``--checkouts/<name>``, or the ``## Standing decisions`` section of
+  the board, with a sentence copied from a skill of the pack at ``--pack``.
 * ``not reached``: every host and repo the scan could not read, since a skipped one looks the same
   as a clean one.
 
@@ -37,7 +37,6 @@ import datetime as dt
 import json
 import re
 import shlex
-import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -196,14 +195,17 @@ def latest_releases(pack_repo: str) -> dict[str, str]:
 def hosts_in_scope(values: cos_values.Values) -> list[str]:
     table = values.get("hosts.table")
     scoped = set(values.get("hygiene.repos")) or set(table)
-    hosts = sorted({h for repo, hs in table.items() if repo in scoped or not scoped for h in hs})
-    return hosts or [socket.gethostname()]
+    # No hosts in the values file means no host to reach: the scan once fell back to the local
+    # hostname, which no installed command was ever given, so it always read "not reached".
+    return sorted({h for repo, hs in table.items() if repo in scoped or not scoped for h in hs})
 
 
 def check_pack_lag(
     hosts: list[str], installed_cmd: str | None, pack_repo: str
 ) -> tuple[list[str], list[str]]:
     """(findings, hosts not reached)."""
+    if not hosts:
+        return [], []
     if not installed_cmd:
         return [], list(hosts)
     try:
@@ -248,16 +250,33 @@ def pack_sentences(pack: Path) -> dict[str, str]:
     return out
 
 
+def standing_decisions(board: Path) -> str:
+    """The text under the board's ``## Standing decisions`` heading, up to the next ``## ``."""
+    if not board.is_file():
+        return ""
+    m = re.search(
+        r"^## Standing decisions[^\n]*\n(.*?)(?=^## |\Z)",
+        board.read_text(),
+        re.MULTILINE | re.DOTALL,
+    )
+    return m[1] if m else ""
+
+
 def check_restate(
-    repos: list[str], checkouts: Path | None, pack: Path | None
+    repos: list[str], checkouts: Path | None, pack: Path | None, board: Path | None = None
 ) -> tuple[list[str], list[str]]:
     """(findings, repos not reached)."""
-    if not repos:
-        return [], []
-    if checkouts is None or pack is None or not pack.is_dir():
-        return [], [f"{r} (no --checkouts and --pack to read it with)" for r in repos]
-    rules = pack_sentences(pack)
     found, missed = [], []
+    if pack is not None and pack.is_dir() and board is not None:
+        body = _words(standing_decisions(board))
+        for rule, skill in pack_sentences(pack).items():
+            if rule in body:
+                found.append(f"board: Standing decisions restate the {skill} skill: “{rule[:70]}…”")
+    if not repos:
+        return found, []
+    if checkouts is None or pack is None or not pack.is_dir():
+        return found, [f"{r} (no --checkouts and --pack to read it with)" for r in repos]
+    rules = pack_sentences(pack)
     for repo in repos:
         root = checkouts / repo.rsplit("/", 1)[-1]
         if not root.is_dir():
@@ -289,6 +308,7 @@ def scan(values: cos_values.Values, args: argparse.Namespace) -> dict:
         values.get("hygiene.repos"),
         Path(args.checkouts).expanduser() if args.checkouts else None,
         Path(args.pack).expanduser() if args.pack else None,
+        values.path("board"),
     )
     return {
         "board": check_board(values.path("board")),

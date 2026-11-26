@@ -5,10 +5,30 @@ A release moves each package's entries in `changelog.d/` under a version heading
 with pending entries in one PR and one commit, and each package keeps its own tag, `<package>-vX.Y.Z`, since
 consumers pin each package separately (#1861).
 
-## Run the release
+## Two release lines
 
-`gh workflow run release.yml` (add `-f magnitude=minor` for a minor release; the default is patch) does all of it,
-with no agent:
+Each package has two, with no one asking for a release (#2678):
+
+- **`next`**, `<package>-vX.Y.Z-next`, after every tested merge. When a push run of the CI workflow on main goes
+  green and a merge-queue batch tested its tree (`nightly.py moved push` names the batch), `release.yml`'s `gate`
+  lets `cut` fold every package's `changelog.d/` as below. No entries is `nothing to release` (a green run, no PR);
+  while a `release/` PR is open no second one opens. A commit that reached main with no tested batch releases
+  nothing, and the step summary says why. The tag step pushes the `-next` tag on the release PR's squash commit.
+- **`stable`**, `<package>-vX.Y.Z`, promoted by a green nightly. When a scheduled run of the CI workflow on main
+  is green and ran the full suite (a run that skipped because main had not moved promotes nothing), `promote` tags,
+  for each package, the newest `-next` commit that run covered (its commit or an ancestor) as `<package>-vX.Y.Z`,
+  on that same commit: no rebuild, no second fold, so stable ships the tree the nightly tested. Older `next`
+  versions in between are skipped. A red nightly promotes nothing; a rerun of it that turns green does. Stable
+  tags start the tag check and the consumer-sync PR; `-next` tags start neither. Consumers pin stable
+  (`^<package>-v(\d+\.\d+\.\d+)$` never matches a `-next` tag).
+
+A release by a lead on request is replaced by these two lines. `workflow_dispatch` stays for a minor bump
+(`-f magnitude=minor`) or a rerun of a cut.
+
+## What a cut does
+
+`gh workflow run release.yml` (add `-f magnitude=minor` for a minor release; the default is patch) runs the same cut
+as a merge does, with no agent:
 
 1. It runs `PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli cut-release --magnitude <patch|minor>`, which folds every
    package's entries in issue order under `## X.Y.Z - <date>` (or extends that heading when it is already there),
@@ -21,10 +41,10 @@ with no agent:
    branch point and fails unless the PR's tree is identical: a hand edit beyond the fold fails the gate. Since
    nothing in it is a hand edit, a release PR is risk low and needs no verifier (`bot.release` in
    `docs/agents/gatekeeper.md`).
-3. When the squash commit reaches main, it creates every released package's tag on that commit, runs
+3. When the squash commit reaches main, it creates every released package's `-next` tag on that commit, runs
    `release-check <package> <tag>` for each, and pushes them all in one push. `release-check` passes a commit that
    releases several packages when every manifest the commit changes is tagged on it, and refuses one that changes
-   a manifest it doesn't tag. Each `engineering-v*` tag starts the tag check, which re-qualifies the release and
+   a manifest it doesn't tag. Each stable `engineering-v*` tag (not `-next`) starts the tag check, which re-qualifies the release and
    opens the consumer-sync PR. It skips `test` and `test-slow` when a green nightly already ran the tagged commit,
    since the nightly's `mise run check` runs those two (#2264); the release check, the vendor check and the package
    gate run on every tag.
