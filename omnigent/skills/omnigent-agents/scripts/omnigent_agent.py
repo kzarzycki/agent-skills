@@ -1386,9 +1386,10 @@ def repo_slug(cwd: Path | None = None) -> str:
 
 
 class Fail(Exception):
-    """A reason to exit nonzero."""
+    """A reason to exit nonzero. ``status`` is the HTTP status of the answer that caused it, when there was one."""
 
     code = 1
+    status: int | None = None
 
 
 class Asked(Fail):
@@ -1653,7 +1654,9 @@ class Omnigent:
                     print(f"{method} {path}: HTTP {e.code}; retrying", file=sys.stderr)
                     time.sleep(retries.pop(0))
                     continue
-                raise Fail(f"{method} {path}: HTTP {e.code} {e.reason}{error_body(e)}") from e
+                failure = Fail(f"{method} {path}: HTTP {e.code} {e.reason}{error_body(e)}")
+                failure.status = e.code
+                raise failure from e
             except (
                 OSError,
                 http.client.HTTPException,
@@ -5089,7 +5092,8 @@ def start(
         try:
             listed = og.models(agent, host_id)
         except Fail as e:
-            if "unsupported for harness" not in str(e):
+            # a current host answers an ACP harness with HTTP 501; an older one says "unsupported for harness" (#2797)
+            if e.status != 501 and "unsupported for harness" not in str(e):
                 raise Fail(
                     f"{source}: can't read {agent}'s model list ({e}), so can't check it"
                 ) from e
