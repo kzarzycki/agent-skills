@@ -105,6 +105,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -126,9 +127,17 @@ sys.path.insert(0, str(installed("gatekeeper")))
 from folding import fold
 
 VAR = "CODEX_AUTH_JSON"
-# Gemini's login: the Gemini CLI's own `oauth_creds.json` (under $GEMINI_CLI_HOME, else ~/.gemini), base64, put in the
-# cloud environment by the owner. Not seeded by this script: the owner's Google login is theirs to place.
-GEMINI_VAR = "GEMINI_OAUTH_JSON"
+# Gemini's login is the Antigravity CLI's (`agy`): the base64 of a tar holding its two login files, put in the cloud
+# environment by the owner. Not seeded by this script: the owner's Google login is theirs to place.
+GEMINI_VAR = "AGY_OAUTH_JSON"
+# The two files, relative to the home directory; a tar member under any other path is refused.
+AGY_FILES = (
+    ".gemini/antigravity-cli/antigravity-oauth-token",
+    ".config/antigravity/credential-user-scope",
+)
+AGY_INSTALL = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+# `agy -p` with no login runs until killed, so every run is bounded, under an hour's pass.
+AGY_PRINT_TIMEOUT = "3300s"
 HOSTS = ["chatgpt.com", "*.chatgpt.com", "auth.openai.com", "api.openai.com"]
 # ponytail: the refresh call mirrors the Codex CLI's own (codex-rs/login/src/auth/manager.rs: the endpoint, the
 # CLI's public client id, a JSON body), because the CLI only refreshes a token within 5 minutes of expiry and a
@@ -161,11 +170,16 @@ class Redactor:
         tokens = auth.get("tokens") if isinstance(auth, dict) else None
         self.add(*(tokens.values() if isinstance(tokens, dict) else ()))
 
-    def gemini(self, auth: object) -> None:
-        """The three tokens of a Gemini login, which keeps them at the top level beside values that are no secret
-        (`scope`, `token_type`, `expiry_date`): masking those would break every link in a report."""
+    def agy(self, content: str) -> None:
+        """A file of an `agy` login: the tokens when it is JSON (its other values, `scope` and the like, are no secret
+        and masking them would break every link in a report), else the whole text, which is the secret."""
+        try:
+            auth = json.loads(content)
+        except ValueError:
+            self.add(content.strip(), *content.split())
+            return
         if isinstance(auth, dict):
-            self.add(*(auth.get(k) for k in ("access_token", "refresh_token", "id_token")))
+            self.add(*(auth.get(k) for k in ("access_token", "refresh_token", "id_token", "token")))
 
     def seed(self, value: str) -> None:
         """The seeded variable and the tokens it decodes to, whatever state it is in."""
@@ -173,8 +187,12 @@ class Redactor:
         try:
             decoded = json.loads(base64.b64decode(value))
             self.login(decoded)
-            self.gemini(decoded)
         except ValueError:
+            pass
+        try:
+            for content in agy_login(value).values():
+                self.agy(content.decode("utf-8", "replace"))
+        except Refused:
             pass
 
     def __call__(self, text: str) -> str:
@@ -495,50 +513,71 @@ def ensure_codex() -> None:
         )
 
 
-def gemini_home(env: Mapping[str, str]) -> Path:
-    return Path(env.get("GEMINI_CLI_HOME") or Path.home()) / ".gemini"
+def agy_login(seeded: str) -> dict[str, bytes]:
+    """The two login files in `$AGY_OAUTH_JSON` (a base64 tar), by path under the home directory. A member that is
+    not a plain file at one of those paths (absolute, `..`, a link, anything else) refuses the whole login."""
+    bad = (
+        f"${GEMINI_VAR} is not a base64 tar of the two agy login files ({describe(GEMINI_VAR, seeded)}): "
+        "put it in again"
+    )
+    files: dict[str, bytes] = {}
+    try:
+        blob = base64.b64decode(seeded, validate=True)
+        with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
+            for member in tar.getmembers():
+                name = member.name.removeprefix("./")
+                if not member.isreg() or name not in AGY_FILES or name in files:
+                    raise Refused(
+                        f"${GEMINI_VAR} holds a tar member `{name[:80]}` that is not one of the two agy login files"
+                    )
+                files[name] = tar.extractfile(member).read()  # type: ignore[union-attr]
+    except (ValueError, tarfile.TarError):
+        raise Refused(bad) from None
+    if not files:
+        raise Refused(bad)
+    return files
+
+
+def agy_home(env: Mapping[str, str]) -> Path:
+    return Path(env.get("HOME") or Path.home())
 
 
 def gemini_route(env: Mapping[str, str]) -> tuple[str, str]:
     """Where a Gemini verifier pass runs, the one choice every caller reads: `("same machine", "")` in a cloud VM that
-    holds a Gemini login (`$GEMINI_OAUTH_JSON`, or the CLI's own file), `("host", <one line>)` in a cloud VM without
+    holds an `agy` login (`$AGY_OAUTH_JSON`, or the token file), `("host", <one line>)` in a cloud VM without
     one, and `("host", "")` outside the cloud, where a worker's own host runs the pass (the host route,
     `omnigent_agent.py --verifier-route gemini --host`)."""
     if env.get("CLAUDE_CODE_REMOTE") != "true":
         return "host", ""
-    if env.get(GEMINI_VAR) or (gemini_home(env) / "oauth_creds.json").is_file():
+    if env.get(GEMINI_VAR) or (agy_home(env) / AGY_FILES[0]).is_file():
         return "same machine", ""
     return "host", (
-        f"cloud_verifier: no Gemini login in this environment (${GEMINI_VAR} is not set): "
+        f"cloud_verifier: no agy login in this environment (${GEMINI_VAR} is not set): "
         "falling back to a host verifier (`--verifier-route gemini --host <name>`)"
     )
 
 
 def ensure_gemini() -> None:
-    """Install the Gemini CLI when the VM lacks it and write the seeded login where it reads it (never printed)."""
-    if not shutil.which("gemini"):
-        run("npm", "install", "-g", "-s", "@google/gemini-cli")
-    auth = gemini_home(os.environ) / "oauth_creds.json"
-    if auth.is_file():  # a login already in the VM is as secret as a seeded one
-        try:
-            REDACT.gemini(json.loads(auth.read_text()))
-        except ValueError:
-            pass
+    """Install `agy` when the VM lacks it and write the seeded login files where it reads them (never printed)."""
+    home = agy_home(os.environ)
+    os.environ["PATH"] = f"{home / '.local/bin'}{os.pathsep}{os.environ.get('PATH', '')}"
+    if not shutil.which("agy"):
+        run("bash", "-c", f"set -o pipefail; {AGY_INSTALL}")
     if seeded := os.environ.get(GEMINI_VAR):
-        try:
-            creds = base64.b64decode(seeded, validate=True)
-            tokens = json.loads(creds)
-            if not isinstance(tokens, dict):
-                raise TypeError("not an object")
-        except (ValueError, TypeError):
-            raise Refused(
-                f"${GEMINI_VAR} is not a base64 Gemini login ({describe(GEMINI_VAR, seeded)}): put it in again"
-            ) from None
-        REDACT.gemini(tokens)
+        files = agy_login(seeded)
         REDACT.add(seeded)
-        auth.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        auth.touch(mode=0o600)
-        auth.write_bytes(creds)
+        for name, content in files.items():
+            path = home / name
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.unlink(missing_ok=True)
+            with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as out:
+                out.write(content)
+            REDACT.agy(content.decode("utf-8", "replace"))
+    for name in AGY_FILES:  # a login already in the VM is as secret as a seeded one
+        if (home / name).is_file():
+            REDACT.agy((home / name).read_text(errors="replace"))
+    if not (home / AGY_FILES[0]).is_file():
+        raise Refused(f"no {AGY_FILES[0]} in this VM: put the login in ${GEMINI_VAR} again")
 
 
 def report_path(brief: str) -> Path | None:
@@ -657,6 +696,8 @@ def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
     verifier can neither read the variable nor print a token. With `keep`, what it prints on stdout (`claude -p`'s
     final message) is also written there, and its stderr is relayed apart, so a warning never joins the report."""
     env = {k: v for k, v in os.environ.items() if k not in (VAR, GEMINI_VAR)}
+    if cmd[0] == "agy":
+        env["AGY_CLI_FORCE_FILE_TOKEN_STORAGE"] = "1"  # read the login files, no keyring
     child = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
@@ -873,10 +914,8 @@ def review(
     event: PassEvent,
 ) -> int:
     began = time.time()
-    if harness in ("claude", "gemini") and effort:
-        raise Refused(
-            f"`--effort` is Codex's only: the {harness} CLI has no effort flag, so pass none"
-        )
+    if harness == "claude" and effort:
+        raise Refused("`--effort` is not Claude's: the claude CLI has no effort flag, so pass none")
     if harness == "gemini":
         where, why = gemini_route(os.environ)
         if where == "host":
@@ -935,14 +974,15 @@ def review(
     elif harness == "gemini":
         # the VM is the sandbox; the brief is the prompt on stdin, and the final message is what `-p` prints
         cmd = [
-            "gemini",
-            "--approval-mode",
-            "yolo",
-            "--skip-trust",
+            "agy",
             "-p",
             "Follow the brief on stdin.",
+            "--dangerously-skip-permissions",
+            "--print-timeout",
+            AGY_PRINT_TIMEOUT,
         ]
-        cmd += ["-m", model] if model else []
+        cmd += ["--model", model] if model else []
+        cmd += ["--effort", effort] if effort else []
     else:
         cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
         cmd += ["-m", model] if model else []
@@ -1462,7 +1502,7 @@ def command(argv: list[str] | None) -> int:
         choices=["codex", "claude", "gemini"],
         default="codex",
         help="the verifier's CLI: codex for a Claude-written PR, claude for a Codex-written one, gemini when Codex has"
-        " no quota (exit 5: no Gemini login here, use a host)",
+        " no quota (exit 5: no agy login here, use a host)",
     )
     v.add_argument("--model")
     v.add_argument("--effort", help="Codex's reasoning effort; refused with --harness claude")
