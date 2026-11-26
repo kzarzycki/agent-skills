@@ -91,6 +91,10 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   A kept worktree's log line names every path and reason that holds it.
 - **Environments:** `.venv` and `node_modules` beside their manifest, in a checkout under
   `~/dev` with no process in it and no change for 14 days (`--idle-days`).
+- **Looping supervisors:** `omnigent-supervise-*` systemd user units that are not active, or
+  restarted over 3 times and started within the last hour. `Restart=always` hides a unit that
+  exits at once, so its manager sees only silence. They go to the chief of staff with each
+  unit's state, restart count and last journal line, once per unit and state.
 - **Dead Omnigent terminals:** this user's `omnigent/terminals/program_status.py` wrappers
   with ppid 1 whose `--bridge-dir` directory no longer exists. They leak ptys (macOS has
   511 machine-wide; at the limit every new session fails at launch). The wrapper ignores

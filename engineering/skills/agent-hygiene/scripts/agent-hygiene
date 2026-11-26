@@ -21,6 +21,8 @@ Steps, each skipped when in use:
                 `omnigent/terminals/program_status.py` wrappers whose --bridge-dir no longer exists get SIGTERM, then SIGKILL
                 (the wrapper ignores SIGTERM) on their process group; launchd reaps the zombies. Logs ptys and zombies before
                 and after, and warns above 80% of the pty limit
+  supervisors   `omnigent-supervise-*` systemd user units that are not active, or restarted over 3 times in the last hour (a
+                `Restart=always` loop): named with their last journal line to the chief of staff, once per unit and state
   temp          directories this user owns directly under /var/tmp and $TMPDIR (default /tmp) that no process has open and
                 nothing in changed for over 3 days, with their size; a held-open or other user's one is kept and named
   caches        each tool's own command (uv, pnpm, npm, go, pre-commit, brew, and docker's
@@ -1204,6 +1206,35 @@ def stale(run, dry_run=False):
             'old: pull that checkout and run `dotagents install`.')
 
 
+RESTARTS, LOOP_WINDOW = 3, 3600  # a supervisor unit restarted more than this, and entered its state within this many seconds, is looping
+
+
+def supervisors(run):
+    """[line] for each `omnigent-supervise-*` systemd user unit that is not active, or that restarted more than RESTARTS
+    times and started within LOOP_WINDOW seconds (`Restart=always` hides a unit that exits at once: its manager sees only
+    silence), each with its journal's last line. [] where systemctl is absent or no unit exists."""
+    names = [row.split()[0] for row in (sh(['systemctl', '--user', 'list-units', 'omnigent-supervise-*', '--all', '--plain',
+                                            '--no-legend', '--no-pager']) or '').splitlines() if row.split()]
+    shown = sh(['systemctl', '--user', 'show', '-p', 'Id,ActiveState,SubState,NRestarts,ActiveEnterTimestampMonotonic',
+                '--no-pager', *names]) if names else None
+    found = []
+    for block in (shown or '').split('\n\n'):
+        unit = dict(row.split('=', 1) for row in block.splitlines() if '=' in row)
+        try:
+            restarts, entered = int(unit.get('NRestarts') or 0), int(unit.get('ActiveEnterTimestampMonotonic') or 0)
+        except ValueError:
+            continue
+        name, state = unit.get('Id', ''), f'{unit.get("ActiveState")}/{unit.get("SubState")}'
+        recent = time.monotonic() * 1e6 - entered < LOOP_WINDOW * 1e6
+        if not name or (unit.get('ActiveState') == 'active' and not (restarts > RESTARTS and recent)):
+            continue
+        last = (sh(['journalctl', '--user', '-u', name, '-n', '1', '--no-pager', '-o', 'cat']) or '').strip() or 'no log line'
+        found.append(f'supervisor unit {name} is {state}, restarted {restarts} times; last log line: {last}')
+    for line in found:
+        run.say(f'LOOP: {line}')
+    return found
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--dry-run', action='store_true')
@@ -1254,6 +1285,7 @@ def main():
             environments(run, found, args.idle_days, procs)
         temp_dirs(run, procs)
     drifted = drift(run, procs)
+    looping = supervisors(run)
     # Caches last: a pnpm node_modules is an APFS clone of the store, so removing one frees its
     # blocks only once `pnpm store prune` drops the store's copy.
     if procs is not None:
@@ -1288,6 +1320,12 @@ def main():
         asked = set()
     if old and old not in asked:  # told once per pair of copies
         parts.append(old)
+    # told once per unit and state, the restart count and log line aside (they change on every restart)
+    stable = lambda line: re.sub(r', restarted \d+ times; last log line:.*', '', line)
+    asked_loops = {stable(line) for line in asked}
+    if news := [line for line in looping if stable(line) not in asked_loops]:
+        parts.append('Supervisor units that are not running or loop through restarts (their manager sees only silence; '
+                     '`systemctl --user status <unit>` and `journalctl --user -u <unit>`):\n' + '\n'.join(f'- {line}' for line in news[:ASK_MAX]))
     pending = [line for line in dict.fromkeys(drifted) if line not in asked]  # each finding told once
     sent = set()
     by_repo = {}  # a finding inside a repo goes to its manager; the chief of staff gets the rest, and any whose manager can't be told
@@ -1359,7 +1397,7 @@ def main():
         return 1
     if warning:  # a message with only questions leaves the warning's clock alone
         stamp.touch()
-    asked_file.write_text(json.dumps(sorted(asked | sent | set(fresh[:ASK_MAX]) | set(new_drift) | ({old} if old else set()))))
+    asked_file.write_text(json.dumps(sorted(asked | sent | set(fresh[:ASK_MAX]) | set(new_drift) | set(news[:ASK_MAX]) | ({old} if old else set()))))
     run.say(f'told the chief of staff (session {cos}): {"low disk, " if warning else ""}{len(fresh[:ASK_MAX])} questions, {len(new_drift)} drift findings')
     return code
 
