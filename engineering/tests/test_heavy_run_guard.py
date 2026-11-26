@@ -274,9 +274,14 @@ def test_the_pack_registers_the_hook_on_bash_for_claude() -> None:
     hook, secrets, pushes = group[
         "hooks"
     ]  # the secret-env (#2359) and push-merge (#2602) guards ride beside it
-    assert hook["command"] == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/heavy_run_guard.py"'
-    assert secrets["command"] == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/secret_env_guard.py"'
-    assert pushes["command"] == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/push_merge_guard.py"'
+    # each command skips a missing script and runs the script otherwise (#2773; test_hook_fail_open.py runs them)
+    for entry, name in (
+        (hook, "heavy_run_guard.py"),
+        (secrets, "secret_env_guard.py"),
+        (pushes, "push_merge_guard.py"),
+    ):
+        assert f'f="${{CLAUDE_PLUGIN_ROOT}}/hooks/{name}"' in entry["command"]
+        assert entry["command"].endswith('exec python3 "$f"')
     # no plugin.json "hooks" field: APM would then deploy the hook to every target, Codex too
     plugin = json.loads(
         (HOOKS.parents[1] / "engineering" / ".claude-plugin" / "plugin.json").read_text()
