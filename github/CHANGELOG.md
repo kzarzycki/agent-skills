@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.5 - 2026-11-26
+
+- github-tracker: its forwarders resolve the installed copy of the pack's skills, never a developer checkout: a checkout (a git tree holding the marketplace file) is searched only where `AGENT_SKILLS_CHECKOUT` is set, as the pack's own tests set it (#2485).
+- github: the pack's own CI finds its scripts in the checkout it runs in: a checkout counts when it is the `GITHUB_WORKSPACE` of the job running there, so main's push run, the nightly and the tag check run `nightly.py moved` again (#2560).
+
 ## 0.1.4 - 2026-11-25
 
 - github-tracker: github.md, Assignee says the claim's record also names the lead's Omnigent session and sets the issue's optional `Session` field (#2324).

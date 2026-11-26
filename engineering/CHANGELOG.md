@@ -5,6 +5,22 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.11 - 2026-11-26
+
+This repo's loop settings join the rule set (#2232, part of #2143): gatekeeper.md states `select` (the selector's own code and the runner's config are build inputs, so such a change runs the whole suite) and `timeouts` (pytest's per-test limit and the qualify job's `timeout-minutes` read it; pyproject.toml holds no limit of its own).
+heavy-run hook: its docstring and refusal messages point to engineering-loop's "Where work runs" (renamed from "Where heavy steps run", #2469); the hook's behaviour and its `LOOP_HOST_RUN` escape are unchanged.
+- engineering: the deprecated forwarders (`orchestrating-agents`, `chief-of-staff`, `omnigent-telemetry`, `engineering-loop`) run the installed script, never a developer checkout of the pack: a checkout (a git tree holding the marketplace file) is searched only where `AGENT_SKILLS_CHECKOUT` is set, as the pack's own tests set it (#2485).
+- engineering: the loop says when the verifier's proof runs are skipped (a change that cannot alter the product) and what the skip never covers (instructions, anything a tool parses, the gate's policy, a gating CI job, a `high` or `critical` change); its review and verdict stay (#2492).
+- engineering: the pack's own CI finds its scripts in the checkout it runs in: a checkout counts when it is the `GITHUB_WORKSPACE` of the job running there, so main's push run, the nightly and the tag check run `nightly.py moved` again (#2560).
+- gatekeeper: `check merge` on an opt-out PR with no loop trail exits 1 and names the proofs it lacks, as `land` refuses the same PR (one rule, `outside`), instead of exiting 0 (#2576).
+- gatekeeper: `land` refuses up front, before any lock or step, a loop.md `pre_land` that the host's `~/.agents/host-commands` forbids, naming the rule and saying to run land from a cloud session or a host that can take it, instead of refusing midway (#2577).
+- engineering: a PreToolUse hook refuses a `git push` of a merge of the base into a PR branch that merges cleanly, since `land` merges the head onto main itself; `LOOP_MERGE_MAIN=<why>` bypasses it when `land` reported a conflict (#2602).
+- engineering: the heavy-run PreToolUse hook also refuses, in a cloud session too, a hand-written poll loop (a `while`/`until` loop with `sleep`, or a `sleep` of 30 s or more) and names the pack's `wait-for` helper (#2623).
+- tdd and the engineering loop's flaky-test rule say a timing test takes an injected clock and a real-time wait is bounded only by `timeouts.test`; nine tests drop wall-clock upper-bound assertions (#2641).
+- agent-hygiene names an `omnigent-supervise-*` systemd user unit that is not active or restarts in a loop, with its last log line, so a supervisor stuck in `Restart=always` no longer goes unseen (#2671).
+- The release workflow cuts a `-next` release after every merge-queue-tested merge to the default branch and promotes the newest covered one to stable when a green nightly has run the full suite; a tag check accepts a commit tagged only `-next`, and releases on request are replaced by this (#2678).
+- engineering-hooks: the pack's Claude Code hooks (`hooks/hooks-claude.json` and the guards it runs) move out of `engineering` into this package, whose `apm.yml` says `target: claude`, and `engineering` depends on it, so `engineering` installs on apm 0.36 and later into a project that targets both Claude and Codex (apm 0.36 sends every hook file to every target and refused with "Target 'codex' would newly activate: hooks/hooks-claude.json"). The hooks reach `.claude/` only and every skill still reaches both agents; apm 0.30.0 and 0.33.0 install it the same way, so the minimum apm stays 0.30.0. The deployed hook path moves from `.claude/hooks/engineering/hooks/` to `.claude/hooks/engineering-hooks/hooks/` on the next install (#2683).
+
 ## 0.35.10 - 2026-11-25
 
 - agent-hygiene: once a day a round archives the Omnigent sessions idle over a day through `omnigent_agent.py sweep`, the DONE path's `finish_delivered`; it keeps running sessions, open cards, background work, managers and the keep list (`~/.config/agent-hygiene/keep`), holds a stale `omnigent.keep` label only while a reason stands, and puts the sessions the owner talked to on one multiSelect owner card it prints for the round to post (#1580).
