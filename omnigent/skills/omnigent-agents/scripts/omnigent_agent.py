@@ -2678,22 +2678,29 @@ def unasked_end(
 
 
 def named_card_open(og: Omnigent, sid: str, info: dict, text: str) -> bool:
-    """Whether a ``question_<id>`` card ``text`` names is open on ``sid`` or up its ``parent_session_id`` chain: a lead
-    ends ``USER NEEDED`` on the card its parent posted, so the owner gets one card. An unreadable parent counts as none."""
+    """Whether a ``question_<id>`` card ``text`` names is open on ``sid`` or up the sessions above it: its
+    ``parent_session_id`` chain and, for a ``--top-level`` lead (no parent), the sessions that created it
+    (``creators``). A lead ends ``USER NEEDED`` on the card its manager posted, so the owner gets one card.
+    An unreadable session counts as holding none."""
     ids = set(re.findall(rf"\b{CARD_ID}[A-Za-z0-9_-]+", text))
     seen: set[str] = set()
-    while ids and sid and sid not in seen:
-        seen.add(sid)
+    todo = [(sid, info)]
+    while ids and todo:
+        at, looked = todo.pop(0)
+        if at in seen:
+            continue
+        seen.add(at)
         if any(
             str(e.get("elicitation_id") or "") in ids
-            for e in info.get("pending_elicitations") or []
+            for e in looked.get("pending_elicitations") or []
         ):
             return True
-        sid = str(info.get("parent_session_id") or "")
-        try:
-            info = og.info(sid) if sid else {}
-        except Fail:
-            return False
+        above = {str(looked.get("parent_session_id") or ""), *creators(looked)} - {"", *seen}
+        for up in sorted(above):
+            try:
+                todo.append((up, og.info(up)))
+            except Fail:
+                continue
     return False
 
 

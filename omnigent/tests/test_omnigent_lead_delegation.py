@@ -461,3 +461,21 @@ def test_unasked_end_counts_a_named_card_open_on_the_parent() -> None:
     assert omnigent_agent.unasked_end(Og(), "c", child, other, False) is True
     answered = {"parent_session_id": "q"}  # the card is gone once answered: events resume
     assert omnigent_agent.unasked_end(Og(), "c", answered, named, False) is True
+
+
+def test_unasked_end_counts_a_named_card_open_on_a_top_level_leads_creator() -> None:
+    """#2145: a ``--top-level`` lead has no parent; its creator's open card counts, up a chain too."""
+    card = {**CARD, "elicitation_id": "question_top1"}
+    tree = {
+        "m": {"pending_elicitations": [card]},
+        "mid": {"parent_session_id": "m"},
+    }
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return tree.get(sid, {})
+
+    lead = {"labels": {omnigent_agent.OMNIGENT_CREATOR_LABEL: "mid"}}
+    named = [ending("USER NEEDED: owner's answer on card question_top1", 1)]
+    assert omnigent_agent.unasked_end(Og(), "c", lead, named, False) is False
+    assert omnigent_agent.unasked_end(Og(), "c", {}, named, False) is True
