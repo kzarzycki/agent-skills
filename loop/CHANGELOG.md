@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.12 - 2026-11-26
+
+- `cloud_verifier.py verify --harness gemini` runs the Gemini verifier in the worker's cloud VM on the owner's login (`GEMINI_OAUTH_JSON`), and with no login prints one line and exits 5 so the lead starts a host verifier (#2694).
+
 ## 0.1.11 - 2026-11-26
 
 - engineering-loop: SKILL.md says every `land` sweeps the `loop-gate/` record branches, merged by Mergify or a queue too, so a consumer needs no cleanup workflow (#1869).
