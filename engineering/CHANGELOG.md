@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.12 - 2026-11-26
+
+- engineering: every PR push now checks that `changelog.d/` entries are named `<issue>.md`, with the rule the release cut uses, so a misnamed entry fails its PR instead of the next cut (#2713).
+
 ## 0.35.11 - 2026-11-26
 
 This repo's loop settings join the rule set (#2232, part of #2143): gatekeeper.md states `select` (the selector's own code and the runner's config are build inputs, so such a change runs the whole suite) and `timeouts` (pytest's per-test limit and the qualify job's `timeout-minutes` read it; pyproject.toml holds no limit of its own).
