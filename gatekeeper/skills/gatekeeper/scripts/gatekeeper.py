@@ -9295,6 +9295,12 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
                     + ": queued again, not evicted"
                 )
                 return 0
+            if ours and (stale := stale_dequeue(pull)):
+                # an old or manual dequeue at this head is no new failure (#2638): queue it again, evict no one
+                comment(number, REQUEUE + "\n")
+                label(number, DEQUEUED, add=False)
+                print(f"{where}: Mergify's dequeue at {head} is {stale}: queued again, not evicted")
+                return 0
             if ours:
                 mergify_evict(pull, labels)
                 return 1
@@ -9504,6 +9510,43 @@ def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
     evicted(
         pull, QUEUE_EVICTED, f"was dequeued by Mergify at {head}", why, tail, "Mergify's check run"
     )
+
+
+# a Mergify queue check run's text for a dequeue a person asked for, which counts for nothing (stale_dequeue)
+MANUAL_TEXT = re.compile(r"\bmanual(?:ly)?\b|@mergifyio\s+dequeue", re.IGNORECASE)
+
+
+def stale_dequeue(pull: dict[str, Any]) -> str:
+    """Why Mergify's dequeue at the head is no eviction (#2638), else "": its queue check run's text says a person
+    dequeued it by hand ("manual"), or the run completed before land's newest hand-over at the head (its `land` success
+    or a go's status, OWNER_GO), so the dequeue was already answered by it. A dequeue newer than that, or one whose
+    time or hand-over time GitHub doesn't give, evicts as before."""
+    head = pull["headRefOid"]
+    try:
+        checks = commit_checks(head)
+    except subprocess.CalledProcessError:
+        return ""
+    ran = [
+        run
+        for name, run in checks.items()
+        if re.search(r"mergify|queue", name, re.IGNORECASE)
+        and run["conclusion"] not in ("SUCCESS", "NEUTRAL", "")
+    ]
+    if any(MANUAL_TEXT.search(f"{run.get('title', '')}\n{run.get('summary', '')}") for run in ran):
+        return "a manual one"
+    handed = max(
+        (
+            each.get("created_at") or ""
+            for each in statuses(head)
+            if each.get("context") in (LAND, OWNER_GO) and each.get("state") == "success"
+        ),
+        default="",
+    )
+    times = [run.get("completed_at") or "" for run in ran]
+    # ISO 8601 in UTC, so it orders as text
+    if handed and times and all(times) and max(times) < handed:
+        return "older than land's last hand-over there"
+    return ""
 
 
 # a Mergify queue check run's text for a dequeue on its `checks_timeout`, not on a red check (mergify_timeout)

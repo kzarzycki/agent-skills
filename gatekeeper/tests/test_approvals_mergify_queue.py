@@ -326,3 +326,69 @@ def test_a_refused_queue_command_is_posted_by_the_next_land(
     code, lines = clocked["land"]("7")
     assert code == 0 and lines[-1] == f"PR #7 is queued for Mergify at {head}", lines
     assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 1
+
+
+def dequeued_at(
+    state: dict[str, Any],
+    head: str,
+    when: str,
+    title: str = "The pull request has been removed from the queue",
+) -> None:
+    """Mergify dequeued #7 at `head`: its label, and its queue check run completed at `when`."""
+    state["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    failed = run("Mergify Merge Queue", "failure", 551)
+    failed["output"] = {"title": title}
+    failed["completed_at"] = when
+    state["checks"][head] = [run("qualify", "success", 550), failed]
+
+
+def test_a_dequeue_older_than_the_last_hand_over_is_queued_again_not_evicted(
+    clocked: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    """Mergify dequeued the head, a go was recorded after it, and land runs again: the old check run on the head is no
+    new failure, so land asks Mergify to queue it, evicts nobody and doesn't loop (#2638)."""
+    head = clocked["opened"](7)
+    assert clocked["land"]("7")[0] == 0
+    dequeued_at(clocked, head, "2026-11-23T03:30:00Z")
+    hub[head].insert(
+        0,
+        {
+            "context": "owner",
+            "state": "success",
+            "description": "go",
+            "created_at": "2026-11-23T03:45:00Z",
+        },
+    )
+    code, lines = clocked["land"]("7")
+    assert code == 0 and "queued again, not evicted" in lines[0], lines
+    assert notes_on(clocked, 7, approvals.QUEUE_EVICTED) == []
+    assert clocked["pulls"][7]["isDraft"] is False
+    assert "loop:dequeued" not in labels_of(clocked, 7)
+    assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 1
+    code, lines = clocked["land"]("7")
+    assert code == 0 and "is queued for Mergify" in lines[-1], lines
+    assert notes_on(clocked, 7, approvals.QUEUE_EVICTED) == []
+
+
+def test_a_dequeue_newer_than_the_last_hand_over_still_evicts(
+    clocked: dict[str, Any], hub: dict[str, list[dict[str, Any]]]
+) -> None:
+    head = clocked["opened"](7)
+    assert clocked["land"]("7")[0] == 0
+    dequeued_at(clocked, head, "2026-11-23T04:30:00Z")
+    code, lines = clocked["land"]("7")
+    assert code == 1, lines
+    assert f"PR #7 was dequeued by Mergify at {head}: evicted" in lines
+    assert len(notes_on(clocked, 7, approvals.QUEUE_EVICTED)) == 1
+
+
+def test_a_manual_dequeue_never_evicts(clocked: dict[str, Any]) -> None:
+    head = clocked["opened"](7)
+    assert clocked["land"]("7")[0] == 0
+    dequeued_at(
+        clocked, head, "2026-11-23T04:30:00Z", "The pull request has been manually dequeued"
+    )
+    code, lines = clocked["land"]("7")
+    assert code == 0 and "a manual one" in lines[0], lines
+    assert notes_on(clocked, 7, approvals.QUEUE_EVICTED) == []
+    assert len(notes_on(clocked, 7, approvals.REQUEUE)) == 1
