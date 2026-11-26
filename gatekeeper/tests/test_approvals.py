@@ -10443,7 +10443,7 @@ def test_a_land_that_finds_its_pr_already_merged_sweeps_that_prs_records(
 ) -> None:
     """#1869 F1: land_base and queue_landed read a PR merged by Mergify, a queue or by hand, and land_base leaves it out
     of `named`, so `watched["pulls"]` never holds it; the real landing_run, not a stub, still hands its head to the
-    sweep, for a named PR and for bare `land`'s trail alike."""
+    sweep for a named PR; the mixed land and bare `land`'s trail are the two tests below."""
     swept: list[list[str]] = []
     monkeypatch.setattr(approvals, "drop_records", lambda heads: swept.append(list(heads)))
     merged = {"number": 42, "state": "MERGED", "headRefOid": "a" * 40}
@@ -10451,3 +10451,44 @@ def test_a_land_that_finds_its_pr_already_merged_sweeps_that_prs_records(
     monkeypatch.setattr(approvals, "queue_landed", lambda _pull: None)
     assert approvals.landing(42) == (0, False)
     assert swept == [["a" * 40]]
+
+
+def test_land_base_with_a_merged_and_an_open_pr_collects_the_merged_ones_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1869 F3: `land <merged> <open>` leaves the merged PR out of `named`, but its head is collected for the sweep."""
+    pulls = {
+        1: {"number": 1, "state": "MERGED", "headRefOid": "a" * 40, "baseRefName": "main"},
+        2: {"number": 2, "state": "OPEN", "headRefOid": "b" * 40, "baseRefName": "main"},
+    }
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pulls[n])
+    monkeypatch.setattr(approvals, "queue_landed", lambda _pull: None)
+    approvals.merged_heads.clear()
+    named, base, worst = approvals.land_base([1, 2])
+    assert [pull["number"] for pull in named or []] == [2]
+    assert (base, worst) == ("main", 0)
+    assert approvals.merged_heads == ["a" * 40]
+    approvals.merged_heads.clear()
+
+
+def test_bare_lands_queue_trail_collects_the_heads_of_the_prs_a_queue_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1869 F3: bare `land` reads the merged PRs into the base that still carry QUEUED through queue_trail; their
+    heads are collected for the sweep, a PR it reads as not merged is not."""
+
+    class Forge:
+        def merged_labelled(self, _base: str, _name: str) -> list[int]:
+            return [7, 8]
+
+    pulls = {
+        7: {"number": 7, "state": "MERGED", "headRefOid": "c" * 40},
+        8: {"number": 8, "state": "OPEN", "headRefOid": "d" * 40},
+    }
+    monkeypatch.setattr(approvals, "port", lambda _name: Forge())
+    monkeypatch.setattr(approvals, "pull_request", lambda n: pulls[n])
+    monkeypatch.setattr(approvals, "queue_landed", lambda _pull: None)
+    approvals.merged_heads.clear()
+    approvals.queue_trail("main")
+    assert approvals.merged_heads == ["c" * 40]
+    approvals.merged_heads.clear()
