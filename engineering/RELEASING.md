@@ -22,6 +22,16 @@ Each package has two, with no one asking for a release (#2678):
   tags start the tag check and the consumer-sync PR; `-next` tags start neither. Consumers pin stable
   (`^<package>-v(\d+\.\d+\.\d+)$` never matches a `-next` tag).
 
+A project picks its line with one `extends` entry in its Renovate config, and the preset holds the regex for the pack
+pin in `apm.yml` (`- git: owner/repo/<package>` followed by `ref: <package>-vX.Y.Z[-next]`), so a change to the tag
+format reaches every project through the preset (#2766):
+
+- `github>kzarzycki/agent-skills//renovate/stable` follows `<package>-vX.Y.Z` only: the commits a green nightly
+  tested in full. A pin on a `-next` tag is not matched, so the project moves to a stable tag by hand once.
+- `github>kzarzycki/agent-skills//renovate/next` follows `<package>-vX.Y.Z-next` as well: Renovate orders
+  `0.35.13-next` above `0.35.12`, below `0.35.13`, and proposes the newest, so a project on it gets each tested merge.
+  A `-next` tag has had the merge's test selection (the queue batch's), not the full nightly suite.
+
 A release by a lead on request is replaced by these two lines. `workflow_dispatch` stays for a minor bump
 (`-f magnitude=minor`) or a rerun of a cut.
 
