@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.6 - 2026-11-26
+
+- chief-of-staff: the pin updater reads the new release's `bump-from.yml` and, for a pin older than its `oldest`, refuses the jump and names the release to bump to and land first (#2709).
+
 ## 0.1.5 - 2026-11-26
 
 - chief-of-staff: one values file, `cos-values.yml` in a setup's home folder, and `scripts/cos_values.py`, the loader every pack script imports: it checks each key, names an unknown or missing one, and gives a setup with no file the pack defaults (#2484).
