@@ -191,6 +191,9 @@ def test_check_setup_names_a_missing_field_with_github_s_steps_and_exits_0(
     monkeypatch.setattr(approvals, "mergify_drift", lambda *_a, **_k: None)
     monkeypatch.setattr(approvals, "tree_policy", lambda _root: "")
     monkeypatch.setattr(approvals, "rest_has_issue_field", lambda name: False)
+    monkeypatch.setattr(
+        approvals, "record_session_field", lambda _root: []
+    )  # its own test writes a tmp policy
     assert approvals.setup() == 0
     out = capsys.readouterr().out.splitlines()
     assert out[1:] == [
@@ -286,3 +289,65 @@ def test_the_adapter_reads_the_field_and_the_issue_in_one_query_and_writes_its_t
     write = calls[-1]
     assert "issueFields: [{fieldId: $field, textValue: $text}]" in " ".join(write)
     assert {"issue=I_1", "field=IF_session", f"text={LINK}"} <= set(write)
+
+
+POLICY_TEXT = (
+    "# Gatekeeper\n\n## Policy\n\n```yaml\nspec:\n  auto: true\n\nloop:\n  gate: make check\n```\n"
+)
+
+
+@pytest.mark.usefixtures("omnigent")
+def test_a_recorded_id_sets_the_field_over_rest_where_no_issue_holds_a_value_yet(
+    monkeypatch: pytest.MonkeyPatch, session_fields: list[tuple[Any, ...]]
+) -> None:
+    """A cloud claim: GraphQL refused, REST names no id (no issue carries a value), the policy records one."""
+    monkeypatch.setattr(approvals.github, "_rest_only", True)
+    monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: None)
+    monkeypatch.setattr(approvals, "recorded_session_field", lambda: 77)
+    assert approvals.claim(pull(), [free(1), free(2)]) == []
+    assert session_fields == [("rest set", 1, 77, LINK), ("rest set", 2, 77, LINK)]
+
+
+@pytest.mark.usefixtures("omnigent")
+def test_without_a_recorded_id_a_cloud_claim_is_as_before(
+    monkeypatch: pytest.MonkeyPatch, session_fields: list[tuple[Any, ...]]
+) -> None:
+    monkeypatch.setattr(approvals.github, "_rest_only", True)
+    monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: None)
+    monkeypatch.setattr(approvals, "recorded_session_field", lambda: None)
+    [line] = approvals.claim(pull(), [free(1)])
+    assert "REST names the `Session` field's id only once an issue carries a value" in line
+    assert [call for call in session_fields if call[0] == "rest set"] == []
+
+
+def test_the_policy_s_session_field_id_is_read_from_the_loop_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = approvals.Policy(
+        POLICY_TEXT.replace("make check\n", "make check\n  session_field_id: 9\n")
+    )
+    monkeypatch.setattr(approvals, "project", lambda: (None, text))
+    assert approvals.recorded_session_field() == 9
+    monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(POLICY_TEXT)))
+    assert approvals.recorded_session_field() is None
+
+
+def test_check_setup_finds_the_field_and_writes_its_id_to_the_policy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Any
+) -> None:
+    policy = tmp_path / approvals.POLICY
+    policy.parent.mkdir(parents=True)
+    policy.write_text(POLICY_TEXT, encoding="utf-8")
+    monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
+    monkeypatch.setattr(approvals, "setup_problems", lambda _root: [])
+    monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(policy.read_text())))
+    monkeypatch.setattr(approvals, "mergify_drift", lambda *_a, **_k: None)
+    monkeypatch.setattr(approvals, "tree_policy", lambda _root: "")
+    monkeypatch.setattr(approvals, "rest_has_issue_field", lambda name: True)
+    monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: 42)
+    assert approvals.setup() == 0
+    assert "recorded the `Session` field's id 42" in capsys.readouterr().out
+    assert "loop:\n  session_field_id: 42" in policy.read_text()
+    assert approvals.settings(approvals.Policy(policy.read_text()))["session_field_id"] == 42
+    assert approvals.setup() == 0  # recorded: nothing more to write
+    assert policy.read_text().count("session_field_id: 42") == 1
