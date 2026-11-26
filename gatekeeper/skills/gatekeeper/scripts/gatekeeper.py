@@ -994,6 +994,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "pack_staleness": Choice(("warn", "refuse")),
         "stalled_after_hours": int,
         "rerun_pusher": str,
+        "session_field_id": int,
     },
     "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
@@ -2460,6 +2461,11 @@ def set_issue_field(issue: str, field: str, text: str) -> None:
     github.set_issue_field(issue, field, text)
 
 
+def issue_field_database_id(name: str) -> int | None:
+    found: int | None = github.issue_field_database_id(name)
+    return found
+
+
 def rest_has_issue_field(name: str) -> bool:
     found: bool = github.rest_has_issue_field(name)
     return found
@@ -2483,6 +2489,60 @@ SESSION_STEPS = (
 )
 
 
+def recorded_session_field() -> int | None:
+    """The `Session` field's REST id the policy records (`loop.session_field_id`, written by `check setup`), None
+    without one or where the policy is unreadable: REST shows the id only on an issue that carries a value, so a repo
+    where none does yet needs it recorded to be set from a cloud session, where GraphQL is refused."""
+    try:
+        found = settings(project()[1]).get("session_field_id")
+    except (Refused, OSError, subprocess.CalledProcessError):
+        return None
+    return found if isinstance(found, int) and not isinstance(found, bool) else None
+
+
+def record_session_field(root: Path) -> list[str]:
+    """`check setup`'s record of the `Session` field's REST id in the working tree's gatekeeper.md as
+    `loop.session_field_id`, for a commit: one line saying what it did or why not. Nothing where the policy records
+    an id already or where the repo has no gatekeeper.md; the id is read over GraphQL, else REST off an issue that
+    carries a value, else one line says so."""
+    path = root / POLICY
+    try:
+        if recorded_session_field() is not None or not path.exists():
+            return []
+        try:
+            found = issue_field_database_id(
+                SESSION_FIELD
+            )  # GraphQL: no issue needs to hold a value
+        except (subprocess.CalledProcessError, KeyError, TypeError, ValueError):
+            found = None
+        if found is None:
+            found = rest_issue_field_id(SESSION_FIELD)
+    except (subprocess.CalledProcessError, Refused, OSError):
+        return []
+    if found is None:
+        return [
+            (
+                f"setup: no issue carries a `{SESSION_FIELD}` value yet, so its id is not recorded: set it on one"
+                " issue, then run `check setup` again, so a claim from a cloud session can set the field"
+            )
+        ]
+    text = read(path)
+    match = SETTINGS.search(section(text, "Policy"))
+    if match is None:
+        return []
+    body, entry = (
+        match[1],
+        f"  session_field_id: {found}   # the `{SESSION_FIELD}` issue field's REST id\n",
+    )
+    loop = re.search(r"^loop:[ \t]*\n", body, re.MULTILINE)
+    new = body[: loop.end()] + entry + body[loop.end() :] if loop else f"{body}\nloop:\n{entry}"
+    start = text.index(body, text.index(match[0]))
+    path.write_text(text[:start] + new + text[start + len(body) :], encoding="utf-8")
+    return [
+        f"setup: recorded the `{SESSION_FIELD}` field's id {found} as loop.session_field_id in {POLICY}: commit it"
+    ]
+
+
 def session_field(number: int, link: str) -> str | None:
     """Set issue `number`'s `Session` field to `link`: None once set, else the line saying why not. Best effort, like a
     board move, since the claim's record carries the link too. GraphQL reads the field and the issue's id in one call
@@ -2500,6 +2560,8 @@ def session_field(number: int, link: str) -> str | None:
 
     def rest() -> Callable[[], None] | None:
         global rest_field
+        if rest_field is None:
+            rest_field = recorded_session_field()
         if rest_field is None:
             if not rest_has_issue_field(SESSION_FIELD):
                 return None
@@ -6543,7 +6605,8 @@ def setup() -> int:
                 print(line)
     except (Refused, OSError, subprocess.CalledProcessError):
         pass  # the policy's own refusal is already listed above
-    for line in session_notice():  # advice, never a problem: the field is optional
+    notice = session_notice()  # advice, never a problem: the field is optional
+    for line in notice or record_session_field(root):
         print(line)
     return 1 if problems else 0
 
