@@ -228,6 +228,53 @@ def test_setup_file_restating_a_pack_rule_is_reported(home, tmp_path):
     assert [r.split()[0] for r in rep["not reached"]] == ["owner-a/repo-b"]
 
 
+def _pack_with_rule(tmp_path: Path) -> Path:
+    pack = tmp_path / "pack"
+    (pack / "plug" / "skills" / "loop-skill").mkdir(parents=True)
+    (pack / "plug" / "skills" / "loop-skill" / "SKILL.md").write_text(
+        f"---\nname: loop-skill\n---\n\n# T\n\n{RULE} Short line.\n"
+    )
+    return pack
+
+
+def test_board_standing_decisions_restating_a_pack_rule_are_reported(home, tmp_path):
+    pack = _pack_with_rule(tmp_path)
+    board = home / "tmp" / "loop" / "chief-of-staff.md"
+    board.write_text(
+        f"# Board\n\n## Standing decisions\n- {RULE.lower()}\n\n## Needs the owner\n- x\n"
+    )
+    code, rep = scan(home, "--pack", str(pack))
+    assert code == 1
+    assert (
+        len(rep["restate"]) == 1
+        and "board: Standing decisions restate the loop-skill" in rep["restate"][0]
+    )
+
+
+def test_board_standing_decisions_that_restate_nothing_are_not_reported(home, tmp_path):
+    pack = _pack_with_rule(tmp_path)
+    board = home / "tmp" / "loop" / "chief-of-staff.md"
+    # the rule sits outside the standing decisions section, so it is not read
+    board.write_text(
+        f"# Board\n\n## Standing decisions\n- merge on green\n\n## Needs the owner\n- {RULE}\n"
+    )
+    code, rep = scan(home, "--pack", str(pack))
+    assert code == 0 and rep["restate"] == []
+
+
+def test_values_with_no_hosts_reach_nothing_and_exit_zero(home):
+    values(home, "hygiene:\n  repos: []\n")
+    r = run(home)
+    assert r.returncode == 0, r.stdout
+    assert "## not reached\n- none" in r.stdout
+
+
+def test_a_host_set_and_unreachable_is_still_reported(home):
+    values(home, "hosts:\n  table:\n    repo-a: [host-1]\n")
+    r = run(home, "--json")
+    assert r.returncode == 1 and json.loads(r.stdout)["not reached"] == ["host-1"]
+
+
 def test_the_values_file_is_the_only_source_of_settings(home):
     values(home, "hygiene:\n  board_max_kb: 100\n")
     r = run(home)
