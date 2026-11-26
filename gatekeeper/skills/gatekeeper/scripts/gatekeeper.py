@@ -985,6 +985,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ),
         "owner": str,
         "machine_exit": int,
+        "forge_remote": str,
         "short_seconds": int,
         "pre_land": str,
         "head_proof": Table(status=str, env=list),
@@ -2055,11 +2056,11 @@ def reruns(held: str) -> list[tuple[str, str]]:
     try:
         listed = [
             line.split("\t")
-            for line in git("ls-remote", "origin", RECORD_BRANCH.format(f"{held}-*")).splitlines()
+            for line in git("ls-remote", forge(), RECORD_BRANCH.format(f"{held}-*")).splitlines()
         ]
         for commit, ref in listed:
             name = ref.rsplit("/", 1)[1]
-            git("fetch", "-q", "--no-tags", "origin", f"+{ref}:refs/loop/records/{name}")
+            git("fetch", "-q", "--no-tags", forge(), f"+{ref}:refs/loop/records/{name}")
             header, _, message = git("cat-file", "commit", commit).partition("\n\n")
             fields = [line.split(" ", 1) for line in header.splitlines()]
             parents = [value for key, value in fields if key == "parent"]
@@ -4012,10 +4013,13 @@ def unsignable(pull: dict[str, Any], branch: str, signers: Path) -> str | None:
         )
     # the URL as configured, before any `insteadOf` rewrite
     origin = subprocess.run(
-        ["git", "config", "--get", "remote.origin.url"], capture_output=True, text=True, check=False
+        ["git", "config", "--get", f"remote.{forge()}.url"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     if github_repo(origin.stdout.strip()) != pull["baseRepository"]["nameWithOwner"].lower():
-        return f"this checkout's `origin` is not {pull['baseRepository']['nameWithOwner']}, where {where} lives"
+        return f"this checkout's `{forge()}` is not {pull['baseRepository']['nameWithOwner']}, where {where} lives"
     # with SIGNING, as the land signs: a cloud land's own key over the VM's
     config = subprocess.run(
         ["git", *SIGNING, "config", "--get", "user.signingkey"],
@@ -4050,13 +4054,13 @@ def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | N
         pull["headRefName"],
         pull["headRefOid"],
     )
-    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    git("fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}")
     git(
-        "fetch", "-q", "origin", f"refs/pull/{pr}/head"
+        "fetch", "-q", forge(), f"refs/pull/{pr}/head"
     )  # alone: FETCH_HEAD names the first ref fetched
     if git("rev-parse", "FETCH_HEAD").strip() != head:
         raise Refused(f"PR #{pr}'s head moved past {head}: run land again")
-    tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+    tip = git("rev-parse", f"refs/remotes/{forge()}/{base}").strip()
     if onto is not None:
         if tip != onto[0]:
             raise Refused(
@@ -4065,7 +4069,7 @@ def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | N
         tree = onto[1]
     elif subprocess.run(["git", "merge-base", "--is-ancestor", tip, head], check=False).returncode:
         raise Refused(
-            f"PR #{pr} does not contain {base}'s head {tip}: merge origin/{base} in, rerun the gates, get a"
+            f"PR #{pr} does not contain {base}'s head {tip}: merge {forge()}/{base} in, rerun the gates, get a"
             " verdict on the merge, then land again"
         )
     else:
@@ -4083,7 +4087,7 @@ def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | N
         "push",
         "-q",
         f"--force-with-lease=refs/heads/{branch}:{head}",
-        "origin",
+        forge(),
         f"{commit}:refs/heads/{branch}",
     )
     try:
@@ -4091,7 +4095,7 @@ def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | N
             "push",
             "-q",
             f"--force-with-lease=refs/heads/{base}:{tip}",
-            "origin",
+            forge(),
             f"{commit}:refs/heads/{base}",
         )
     except subprocess.CalledProcessError as exc:
@@ -4101,7 +4105,7 @@ def signed_squash(pull: dict[str, Any], signers: Path, onto: tuple[str, str] | N
             "push",
             "-q",
             f"--force-with-lease=refs/heads/{branch}:{commit}",
-            "origin",
+            forge(),
             f"{head}:refs/heads/{branch}",
         )
         raise Refused(
@@ -4144,9 +4148,11 @@ def ran(pull: dict[str, Any]) -> list[str]:
 def merge_base_of(base: str, head: str) -> str | None:
     """`git merge-base origin/<base> <head>`, origin's `base` fetched first, else None where git can't answer."""
     with contextlib.suppress(subprocess.CalledProcessError, OSError):
-        git("fetch", "-q", "--no-tags", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        git(
+            "fetch", "-q", "--no-tags", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}"
+        )
     with contextlib.suppress(subprocess.CalledProcessError, OSError):
-        return git("merge-base", f"origin/{base}", head).strip()
+        return git("merge-base", f"{forge()}/{base}", head).strip()
     return None
 
 
@@ -4450,7 +4456,7 @@ def fetched(sha: str) -> bool:
     have = ["git", "cat-file", "-e", f"{sha}^{{commit}}"]
     if subprocess.run(have, capture_output=True, check=False).returncode == 0:
         return True
-    subprocess.run(["git", "fetch", "--quiet", "origin"], capture_output=True, check=False)
+    subprocess.run(["git", "fetch", "--quiet", forge()], capture_output=True, check=False)
     return subprocess.run(have, capture_output=True, check=False).returncode == 0
 
 
@@ -5853,6 +5859,14 @@ def toplevel() -> Path:
         raise Refused("not in a git checkout: run from the repo's checkout") from exc
 
 
+def forge(root: Path | str | None = None) -> str:
+    """The remote this checkout's forge is on: the current branch's upstream's, else `forge_remote` in
+    docs/agents/gatekeeper.md, else `origin` (loop_events.forge_remote), so a worktree whose branch tracks a fork
+    judges and fetches from the fork's repo, not the upstream's."""
+    prefix = ["-C", str(root)] if root else []
+    return loop_events.forge_remote(root, lambda *args: git(*prefix, *args))
+
+
 def working_tree(root: Path) -> bool:
     """Whether the clone at `root` has its files checked out: False when HEAD names a commit and there is no index, as
     in a `--no-checkout` clone or worktree that a host keeps only to launch cloud sessions from."""
@@ -5885,11 +5899,11 @@ def policy_ref(root: Path) -> str | None:
         )
 
     # origin/HEAD as the clone recorded it, else as origin says now
-    name = run("symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").stdout.strip()
-    name = name.removeprefix("origin/") or "".join(
+    name = run("symbolic-ref", "-q", "--short", f"refs/remotes/{forge(root)}/HEAD").stdout.strip()
+    name = name.removeprefix(f"{forge(root)}/") or "".join(
         re.findall(
             r"^ref: refs/heads/(\S+)\tHEAD$",
-            run("ls-remote", "--symref", "origin", "HEAD").stdout,
+            run("ls-remote", "--symref", forge(root), "HEAD").stdout,
             re.MULTILINE,
         )[:1]
     )
@@ -5898,10 +5912,10 @@ def policy_ref(root: Path) -> str | None:
             f"{root} has no working tree and origin names no default branch, so there is no policy to read:"
             " run where the files are checked out"
         )
-    ref = f"refs/remotes/origin/{name}"
-    if run("fetch", "-q", "origin", f"+refs/heads/{name}:{ref}").returncode:
+    ref = f"refs/remotes/{forge(root)}/{name}"
+    if run("fetch", "-q", forge(root), f"+refs/heads/{name}:{ref}").returncode:
         raise Refused(
-            f"{root} has no working tree and origin/{name} could not be fetched, so the policy would be the last"
+            f"{root} has no working tree and {forge(root)}/{name} could not be fetched, so the policy would be the last"
             " fetched one: retry, or run where the files are checked out"
         )
     return ref
@@ -5987,7 +6001,7 @@ def policy_file(root: Path, path: Path, base: str | None = None) -> str | None:
     if found is None:
         if not working_tree(root):  # no files to fall back to: empty policy would judge by defaults
             raise Refused(
-                f"{root} has no working tree and no origin/{base or default_base(str(root))} ref, so there is no"
+                f"{root} has no working tree and no {forge(root)}/{base or default_base(str(root))} ref, so there is no"
                 " policy to read: fetch that base, or run where the files are checked out"
             )
         unbased(str(root))
@@ -6032,13 +6046,13 @@ def policy_base(root: str, base: str | None = None) -> tuple[str, str] | None:
             "rev-parse",
             "--verify",
             "--quiet",
-            f"refs/remotes/origin/{base}^{{commit}}",
+            f"refs/remotes/{forge(root)}/{base}^{{commit}}",
         ],
         capture_output=True,
         text=True,
         check=False,
     ).stdout.strip()
-    return (f"origin/{base}", tip) if tip else None
+    return (f"{forge(root)}/{base}", tip) if tip else None
 
 
 @functools.cache
@@ -6053,9 +6067,11 @@ def default_base(root: str) -> str | None:
         )
         return done.stdout.strip() if done.returncode == 0 else ""
 
-    if base := ask("symbolic-ref", "--short", "refs/remotes/origin/HEAD").removeprefix("origin/"):
+    if base := ask("symbolic-ref", "--short", f"refs/remotes/{forge(root)}/HEAD").removeprefix(
+        f"{forge(root)}/"
+    ):
         return base
-    for line in ask("ls-remote", "--symref", "origin", "HEAD").splitlines():
+    for line in ask("ls-remote", "--symref", forge(root), "HEAD").splitlines():
         if line.startswith("ref: refs/heads/"):
             return line.split("\t")[0].removeprefix("ref: refs/heads/")
     return None
@@ -6107,10 +6123,10 @@ def base_policy(base: str, checkout: str | None) -> str | None:
     """The policy on `origin/<base>` after a fetch of it, chosen from its files as project() chooses the default
     branch's, since a branch's own edit of the policy is not the one the owner approved; `checkout`, project()'s, when
     that ref holds neither file (or no fetch ever made it), today's rule. A failed fetch reads the ref as last fetched."""
-    ref = f"refs/remotes/origin/{base}"
     root = toplevel()
+    ref = f"refs/remotes/{forge(root)}/{base}"
     subprocess.run(
-        ["git", "-C", str(root), "fetch", "-q", "origin", f"+refs/heads/{base}:{ref}"],
+        ["git", "-C", str(root), "fetch", "-q", forge(root), f"+refs/heads/{base}:{ref}"],
         capture_output=True,
         check=False,
     )
@@ -6647,7 +6663,7 @@ def unopened() -> dict[str, Any]:
     changed since it left origin's default branch, as a PR's would be at `check build`; when git can't tell, more files
     than it lists (paths() None), so a `paths` risk rule holds rather than reading as unmatched."""
     try:
-        base = git("rev-parse", "--abbrev-ref", "origin/HEAD").strip()
+        base = git("rev-parse", "--abbrev-ref", f"{forge()}/HEAD").strip()
         # NUL-separated, since git quotes a non-ASCII name and a name may hold spaces
         # --no-renames: a moved file lists its old name too, since moving it out of a ruled path changes it
         found = git("diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD").split("\0")[:-1]
@@ -7216,7 +7232,7 @@ class Probe:
     def lock_moved(self) -> bool:
         assert self.lock
         ref, tip = self.lock
-        found = git("ls-remote", "origin", ref).split()[:1]
+        found = git("ls-remote", forge(), ref).split()[:1]
         if found == [tip]:
             return time.monotonic() - self.since >= STALE
         if found and restamped(ref, found[0], tip):
@@ -7230,7 +7246,7 @@ class Probe:
         branch, lock = f"refs/heads/{self.base}", LOCK.format(self.base)
         listed: dict[str, str] = {}
         watch = [branch, *([lock] if self.deferred else []), *self.heads]
-        for line in git("ls-remote", "origin", *watch).splitlines():
+        for line in git("ls-remote", forge(), *watch).splitlines():
             sha, _, name = line.partition("\t")
             listed[name.strip()] = sha.strip()
         base = listed.get(branch)
@@ -7261,7 +7277,7 @@ def restamped(ref: str, tip: str, old: str) -> bool:
     """Whether the lock's new `tip` is a HELD child of `old`: its holder's heartbeat, or a land that broke it as stale
     and holds it now, so a waiting land still waits."""
     name = ref.removeprefix("refs/heads/")
-    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    git("fetch", "-q", forge(), f"+{ref}:refs/remotes/{forge()}/{name}")
     title, _, parents = git("log", "-1", "--format=%s%x00%P", tip).strip().partition("\0")
     return title.startswith(HELD) and parents.split()[:1] == [old]
 
@@ -7269,7 +7285,7 @@ def restamped(ref: str, tip: str, old: str) -> bool:
 def lock_free(ref: str, tip: str) -> bool:
     """Whether the lock's `tip` says it is free (FREE), fetched first: git only, no API call."""
     name = ref.removeprefix("refs/heads/")
-    git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
+    git("fetch", "-q", forge(), f"+{ref}:refs/remotes/{forge()}/{name}")
     return git("log", "-1", "--format=%s", tip).strip().startswith(FREE)
 
 
@@ -7308,7 +7324,7 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
     judge it. Nothing newer to run from (this checkout already is the base's tip, or the base lacks the running script)
     keeps the refusal, which would otherwise run again forever."""
     base, root = drifted.base, toplevel()
-    ref = f"refs/remotes/origin/{base}"
+    ref = f"refs/remotes/{forge()}/{base}"
 
     def run(where: Path, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -7329,7 +7345,7 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
         and not run(root, "merge", "-q", "--ff-only", ref).returncode
         and out(root, "rev-parse", "HEAD") != before
     ):
-        where = f"this checkout fast-forwarded to origin/{base}"
+        where = f"this checkout fast-forwarded to {forge()}/{base}"
     else:
         fresh = Path(tempfile.mkdtemp(prefix=f"land-{base.replace('/', '-')}-")).resolve()
         added = run(root, "worktree", "add", "-q", "--detach", str(fresh), tip)
@@ -7344,7 +7360,7 @@ def caught_up(drifted: Drifted, deadline: float) -> NoReturn:
             if not Path(argv[1]).exists():  # the base lacks it: nothing to run again from
                 reap([[str(gitdir), str(fresh)]])
                 raise drifted
-        cwd, where = fresh, f"a fresh worktree of origin/{base} ({fresh})"
+        cwd, where = fresh, f"a fresh worktree of {forge()}/{base} ({fresh})"
     print(
         f"{drifted} -- {where} ({tip[:12]}): land runs again from its code",
         flush=True,
@@ -7439,7 +7455,7 @@ def landing_run(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int
     own_prs(named)
     # origin's policy now, not the clone's last fetch of it, so no draft is readied under a policy already replaced
     fetch = subprocess.run(
-        ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+        ["git", "fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}"],
         capture_output=True,
         text=True,
         check=False,
@@ -7554,7 +7570,7 @@ def landing_here(
         beating_for[:] = named
         threading.Thread(target=heartbeat, args=(base, held, stop), daemon=True).start()
         # the base as origin has it once the lock is ours, so no land moved it between this fetch and the batch
-        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        git("fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}")
         judge_with_base(base)
         # another land may have changed the base's policy while this one waited: from here on only the fetched one
         fresh = project()
@@ -7608,7 +7624,7 @@ def base_drift(base: str, rules: bool = True) -> list[str]:
     Without `rules`, the code alone: for a caller that reads every policy file from the base (project()) and writes
     nothing, as `check stalled`, a working tree's edit of them judges nothing."""
     root = toplevel()
-    ref = f"refs/remotes/origin/{base}"
+    ref = f"refs/remotes/{forge()}/{base}"
     if subprocess.run(
         ["git", "-C", str(root), "rev-parse", "--verify", "-q", ref],
         capture_output=True,
@@ -7654,8 +7670,8 @@ def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
                 "credential.helper=!gh auth git-credential",
                 "fetch",
                 "-q",
-                "origin",
-                f"+refs/heads/{base}:refs/remotes/origin/{base}",
+                forge(),
+                f"+refs/heads/{base}:refs/remotes/{forge()}/{base}",
             ],
             capture_output=True,
             text=True,
@@ -7663,7 +7679,7 @@ def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
         )
         if fetched_base.returncode:
             raise Refused(
-                f"could not fetch origin/{base} ({' '.join(fetched_base.stderr.split()) or 'no reason given'}):"
+                f"could not fetch {forge()}/{base} ({' '.join(fetched_base.stderr.split()) or 'no reason given'}):"
                 " a stale ref would judge by another tip's files"
             )
     if os.environ.get("GITHUB_ACTIONS") == "true":
@@ -7675,7 +7691,7 @@ def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
                 "rev-parse",
                 "--verify",
                 "-q",
-                f"refs/remotes/origin/{base}^{{commit}}",
+                f"refs/remotes/{forge()}/{base}^{{commit}}",
             ],
             capture_output=True,
             text=True,
@@ -7693,13 +7709,13 @@ def judge_with_base(base: str, fetch: bool = False, rules: bool = True) -> None:
             != 0
         ):
             raise Refused(
-                f"the checked-out commit is not origin/{base}'s tip ({tip[:12]}): a workflow that checks out the PR judges"
+                f"the checked-out commit is not {forge()}/{base}'s tip ({tip[:12]}): a workflow that checks out the PR judges"
                 " it by its own rules; check out the base"
             )
     if differ := base_drift(base, rules):
         raise Drifted(
-            f"{', '.join(differ)} differ{'s' * (len(differ) == 1)} from origin/{base}'s: a PR's own copy would judge it;"
-            f" run from the base's code (a checkout of origin/{base})",
+            f"{', '.join(differ)} differ{'s' * (len(differ) == 1)} from {forge()}/{base}'s: a PR's own copy would judge it;"
+            f" run from the base's code (a checkout of {forge()}/{base})",
             base,
         )
 
@@ -7729,12 +7745,12 @@ def wait_push(title: str, base: str, body: str) -> None:
         empty,
     ).strip()
     pushed = subprocess.run(
-        ["git", "push", "-q", "--no-verify", "origin", f"{commit}:{ref}"],
+        ["git", "push", "-q", "--no-verify", forge(), f"{commit}:{ref}"],
         capture_output=True,
         text=True,
         check=False,
     )
-    if not pushed.returncode or git("ls-remote", "origin", ref).split()[:1] == [commit]:
+    if not pushed.returncode or git("ls-remote", forge(), ref).split()[:1] == [commit]:
         waited["tip"] = commit
 
 
@@ -7761,26 +7777,26 @@ def waiter_ahead(base: str) -> str | None:
     try:
         refs = [
             x.split("\t")[1]
-            for x in git("ls-remote", "origin", WAIT_REF.format(base, "*")).splitlines()
+            for x in git("ls-remote", forge(), WAIT_REF.format(base, "*")).splitlines()
         ]
         if refs:
             git(
                 "fetch",
                 "-q",
-                "origin",
-                *(f"+{r}:{r.replace('refs/heads/', 'refs/remotes/origin/')}" for r in refs),
+                forge(),
+                *(f"+{r}:{r.replace('refs/heads/', f'refs/remotes/{forge()}/')}" for r in refs),
             )
         for ref in refs:
             stamp, title, body = git(
                 "log",
                 "-1",
                 "--format=%ct%x00%s%x00%b",
-                ref.replace("refs/heads/", "refs/remotes/origin/"),
+                ref.replace("refs/heads/", f"refs/remotes/{forge()}/"),
             ).split("\0")
             age = time.time() - int(stamp)
             if title.startswith("done") or age > CEILING:
                 subprocess.run(
-                    ["git", "push", "-q", "--no-verify", "origin", "--delete", ref],
+                    ["git", "push", "-q", "--no-verify", forge(), "--delete", ref],
                     capture_output=True,
                     text=True,
                     check=False,
@@ -7817,7 +7833,7 @@ def unwait(forget: bool = False) -> None:
                 "push",
                 "-q",
                 "--no-verify",
-                "origin",
+                forge(),
                 "--delete",
                 WAIT_REF.format(waited["base"], waited["id"]),
             ],
@@ -7863,7 +7879,7 @@ def leased(base: str, ours: str, tip: str | None, **kw: Any) -> subprocess.Compl
             "-q",
             "--no-verify",
             f"--force-with-lease={ref}:{tip or ''}",
-            "origin",
+            forge(),
             f"{ours}:{ref}",
         ],
         capture_output=True,
@@ -7929,7 +7945,7 @@ def heartbeat(base: str, held: list[str], stop: threading.Event) -> None:
 def lock_tip(base: str) -> str | None:
     """The lock branch's tip on origin, None where it is missing or unreadable."""
     try:
-        found = git("ls-remote", "origin", LOCK.format(base)).split()
+        found = git("ls-remote", forge(), LOCK.format(base)).split()
     except subprocess.CalledProcessError:
         return None
     return found[0] if found else None
@@ -7957,14 +7973,14 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
     )  # "": not read yet; a refusal of a push from the tip read again is origin's, not a race's
     for _ in range(3):
         listed = {
-            line.split("\t")[1] for line in git("ls-remote", "origin", LEGACY, ref).splitlines()
+            line.split("\t")[1] for line in git("ls-remote", forge(), LEGACY, ref).splitlines()
         }
         if LEGACY in listed:
             try:
-                git("fetch", "-q", "origin", f"+{LEGACY}:{LEGACY}")
+                git("fetch", "-q", forge(), f"+{LEGACY}:{LEGACY}")
             except subprocess.CalledProcessError as exc:
                 if git(
-                    "ls-remote", "origin", LEGACY
+                    "ls-remote", forge(), LEGACY
                 ).strip():  # still there: the fetch itself failed
                     raise Refused(
                         f"could not read the previous version's landing lock {LEGACY}: {' '.join(str(exc.stderr).split())}"
@@ -7979,8 +7995,8 @@ def locked(base: str, held: list[str], pr: int | None = None) -> bool:
             # stale, left by a land that died: passed over, never written, as the previous version would break it
         before, tip = tip, None
         if ref in listed:
-            git("fetch", "-q", "origin", f"+{ref}:refs/remotes/origin/{name}")
-            tip = git("rev-parse", f"refs/remotes/origin/{name}").strip()
+            git("fetch", "-q", forge(), f"+{ref}:refs/remotes/{forge()}/{name}")
+            tip = git("rev-parse", f"refs/remotes/{forge()}/{name}").strip()
         if refused and tip == before:
             raise Refused(f"origin refused the landing lock {name}: {refused}")
         if tip:
@@ -8045,12 +8061,12 @@ def released(base: str, holder: str) -> str | None:
     if pull is None or not (sha := pull.get("merge_commit_sha")):
         return None
     subprocess.run(
-        ["git", "fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}"],
+        ["git", "fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}"],
         capture_output=True,
         check=False,
     )
     contained = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", sha, f"refs/remotes/origin/{base}"],
+        ["git", "merge-base", "--is-ancestor", sha, f"refs/remotes/{forge()}/{base}"],
         capture_output=True,
         check=False,
     )
@@ -8234,7 +8250,7 @@ def landable(
         for line in ci(where, pull, required):
             print(line)
         base = pull["baseRefName"]
-        print(f"{where} conflicts with {base}: merge `origin/{base}` in")
+        print(f"{where} conflicts with {base}: merge `{forge()}/{base}` in")
         return Verdict((1, False), issues=issues)
     if pull["isDraft"]:
         if owner := owner_waits(pull, issues, loop):  # ready starts CI, so never before the go
@@ -8472,7 +8488,7 @@ def local_queue(
                 f"loop.md's `pre_land` runs in a checkout of {base}'s tip, and this clone has no working tree:"
                 " land where the files are checked out"
             )
-        tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+        tip = git("rev-parse", f"refs/remotes/{forge()}/{base}").strip()
         landed = merged_trees(candidates, base, tip, failed)
         # []: a lock the heartbeat lost, which repointed() refuses; None: no lock
         if landed and held is not None:
@@ -8520,7 +8536,7 @@ def head_recorded(pull: dict[str, Any]) -> bool:
     if narrowing() is not None:
         if (point := merge_base_of(pull["baseRefName"], head)) is None:
             print(
-                f"{where}: no merge base with origin/{pull['baseRefName']}, so no `Affected tests:` record is found"
+                f"{where}: no merge base with {forge()}/{pull['baseRefName']}, so no `Affected tests:` record is found"
             )
             return False
         if (narrowed := tests_record_words(point, head)) is not None:
@@ -8622,7 +8638,7 @@ def batch_tree(base: str) -> Any:
     )
     root.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(dir=root))
-    git("worktree", "add", "-q", "--detach", str(work), f"refs/remotes/origin/{base}")
+    git("worktree", "add", "-q", "--detach", str(work), f"refs/remotes/{forge()}/{base}")
     try:
         yield work
     finally:
@@ -8702,7 +8718,7 @@ def conflict_note(pull: dict[str, Any], base: str, ahead: str = "") -> None:
             pull["number"],
             fold(
                 CONFLICTS,
-                f"It conflicts with {base}{ahead}: merge origin/{base} in, rerun the gates, get a verdict on the"
+                f"It conflicts with {base}{ahead}: merge {forge()}/{base} in, rerun the gates, get a verdict on the"
                 " merge (the lead role, step 8), then land again.",
                 f"Head: {head}",
             ),
@@ -8943,7 +8959,7 @@ def github_queue(
             f"{base}'s rules require GitHub's merge queue, which merges with GitHub's signature, but loop.md's"
             " `land.signed_squash_to` asks for this checkout's: unset it, or drop the queue from the ruleset"
         )
-    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    git("fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}")
     judge_with_base(base)
     # GitHub's queue batches the PRs itself, so no batch_wait
     candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
@@ -9039,7 +9055,7 @@ def mergify_queue(
     queue conditions read, and land exits; `--wait` waits on a named one until Mergify merges it (exit 0) or dequeues it
     (DEQUEUED: the round then evicts it), reading only its state and labels each QUEUE_WATCH (#2101). A bare land
     writes the `Landed` trail of the PRs Mergify merged (queue_trail). Every call of a round is REST."""
-    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+    git("fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}")
     judge_with_base(base)
     candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
     failed = set()
@@ -9233,7 +9249,7 @@ def stalled_base(base: str) -> tuple[str | None, str | None, set[str], str] | st
     `land`, which merges it itself); or, when the base can't be fetched or its policy is refused, why, which each PR
     into it is skipped with."""
     try:
-        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        git("fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}")
         with policy_from(base):
             tracker, loop = project()
             rules = required_checks(base)
@@ -9797,7 +9813,7 @@ def queue_step(
         print(f"GitHub is still working out whether {where} conflicts with {base}")
         return WAITING, True
     if mergeable == "CONFLICTING":
-        print(f"{where} conflicts with {base}: merge `origin/{base}` in")
+        print(f"{where} conflicts with {base}: merge `{forge()}/{base}` in")
         conflict_note(pull, base)
         return 1, False
     if (
@@ -10279,8 +10295,8 @@ def merges(
         done.append((pull, tree))
     if not done:
         return
-    git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
-    tip = git("rev-parse", f"refs/remotes/origin/{base}").strip()
+    git("fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}")
+    tip = git("rev-parse", f"refs/remotes/{forge()}/{base}").strip()
     for (
         pull,
         _,
@@ -11218,10 +11234,10 @@ def selection_base(given: str | None) -> str | None:
     with policy_from(base):
         deepened(None)
     try:
-        return git("merge-base", f"origin/{base}", "HEAD").strip()
+        return git("merge-base", f"{forge()}/{base}", "HEAD").strip()
     except subprocess.CalledProcessError as exc:
         raise Refused(
-            f"no merge base of origin/{base} and HEAD: fetch origin/{base} deeper"
+            f"no merge base of {forge()}/{base} and HEAD: fetch {forge()}/{base} deeper"
         ) from exc
 
 
@@ -12813,7 +12829,7 @@ def tree_of(commit: str) -> str | None:
     if asked in TREE_FETCHED:
         return None
     TREE_FETCHED.add(asked)
-    fetch = ["git", *SIGNING, "fetch", "--quiet", "--no-tags", "origin", commit]
+    fetch = ["git", *SIGNING, "fetch", "--quiet", "--no-tags", forge(), commit]
     try:
         # its own process group with no pipes, so a timeout kills the transport (ssh, a credential helper) too
         run = subprocess.Popen(
@@ -12854,12 +12870,12 @@ def base_branch(pr: int | None) -> str | None:
         return str(pull_status(pr)["baseRefName"])
     with contextlib.suppress(subprocess.CalledProcessError):
         return (
-            git("symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+            git("symbolic-ref", "--short", f"refs/remotes/{forge()}/HEAD")
             .strip()
-            .removeprefix("origin/")
+            .removeprefix(f"{forge()}/")
         )
     with contextlib.suppress(subprocess.CalledProcessError):
-        for line in git("ls-remote", "--symref", "origin", "HEAD").splitlines():
+        for line in git("ls-remote", "--symref", forge(), "HEAD").splitlines():
             if line.startswith("ref: refs/heads/"):
                 return line.split("\t")[0].removeprefix("ref: refs/heads/")
     return None
@@ -12883,12 +12899,12 @@ def deepened(pr: int | None) -> None:
             "local-ci: shallow clone, but no base branch is known: not deepening", file=sys.stderr
         )
         return
-    ref = f"origin/{base}"
+    ref = f"{forge()}/{base}"
     spec = f"+refs/heads/{base}:refs/remotes/{ref}"
 
     def fetch(*flags: str) -> bool:
         done = subprocess.run(
-            ["git", "fetch", "--quiet", *flags, "origin", spec],
+            ["git", "fetch", "--quiet", *flags, forge(), spec],
             capture_output=True,
             text=True,
             check=False,
@@ -13594,7 +13610,7 @@ def input_candidates(command: str, key: str, why: list[str] | None = None) -> li
     pattern = RECORD_BRANCH.format(f"*-{gate_key(command)}")
     trees = []
     try:
-        listed = [line.split("\t") for line in git("ls-remote", "origin", pattern).splitlines()]
+        listed = [line.split("\t") for line in git("ls-remote", forge(), pattern).splitlines()]
         if not listed:
             return []
         names = {ref: ref.rsplit("/", 1)[1] for _, ref in listed}
@@ -13602,7 +13618,7 @@ def input_candidates(command: str, key: str, why: list[str] | None = None) -> li
             "fetch",
             "-q",
             "--no-tags",
-            "origin",
+            forge(),
             *(f"+{ref}:refs/loop/records/{name}" for ref, name in names.items()),
         )
         for commit, ref in listed:
@@ -13690,10 +13706,10 @@ def record_ref(
     name = record_name(held, command)
     ref = RECORD_BRANCH.format(name)
     try:
-        listed = git("ls-remote", "origin", ref).split()
+        listed = git("ls-remote", forge(), ref).split()
         if ref not in listed[1::2]:
             return None
-        git("fetch", "-q", "--no-tags", "origin", f"+{ref}:refs/loop/records/{name}")
+        git("fetch", "-q", "--no-tags", forge(), f"+{ref}:refs/loop/records/{name}")
         body = git("cat-file", "commit", listed[listed.index(ref) - 1])
     except (subprocess.CalledProcessError, OSError) as exc:
         if why is not None:
@@ -13760,7 +13776,7 @@ def push_record(record: dict[str, Any]) -> str:
     it ran on, its message the status description and env (record_message), and return the ref. The commit's author,
     committer and dates are fixed, so pushing a pass again pushes the same commit. Refused: CalledProcessError."""
     ref = RECORD_BRANCH.format(record_name(record["tree"], record["command"]))
-    git("push", "-q", "--no-verify", "origin", f"{record_commit(record)}:{ref}")
+    git("push", "-q", "--no-verify", forge(), f"{record_commit(record)}:{ref}")
     return ref
 
 
@@ -13796,7 +13812,7 @@ def landed_record(head: str) -> str:
     none."""
     held = tree_of(head)
     try:
-        listed = git("ls-remote", "origin", RECORD_BRANCH.format(f"{held}-*")) if held else ""
+        listed = git("ls-remote", forge(), RECORD_BRANCH.format(f"{held}-*")) if held else ""
     except (subprocess.CalledProcessError, OSError):
         listed = ""
     names = sorted(
@@ -13826,7 +13842,7 @@ def drop_records(heads: list[str]) -> None:
             "-q",
             "--prune",
             "--no-tags",
-            "origin",
+            forge(),
             f"+{RECORD_BRANCH.format('*')}:refs/loop/records/*",
         )
         listed = git(
@@ -13843,7 +13859,7 @@ def drop_records(heads: list[str]) -> None:
         if held not in landed and not stale:
             continue
         try:
-            git("push", "-q", "--no-verify", "origin", f":{RECORD_BRANCH.format(name)}")
+            git("push", "-q", "--no-verify", forge(), f":{RECORD_BRANCH.format(name)}")
         except subprocess.CalledProcessError as exc:
             print(
                 f"the record branch {RECORD_BRANCH.format(name)} was not deleted: {' '.join((exc.stderr or '').split())}"
@@ -14215,12 +14231,12 @@ def fetch_for_merge(base: str, prs: Sequence[int]) -> None:
     """Fetches origin/<base> and each PR's head, so a stale or missing ref is never read as a clean merge; a failure is
     a Refused."""
     try:
-        git("fetch", "-q", "origin", f"+refs/heads/{base}:refs/remotes/origin/{base}")
+        git("fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}")
         for pr in prs:
-            git("fetch", "-q", "origin", f"refs/pull/{pr}/head")
+            git("fetch", "-q", forge(), f"refs/pull/{pr}/head")
     except subprocess.CalledProcessError as exc:
         raise Refused(
-            f"{' and '.join(f'PR #{pr}' for pr in prs)}: cannot fetch origin/{base} and the head to check the merge: "
+            f"{' and '.join(f'PR #{pr}' for pr in prs)}: cannot fetch {forge()}/{base} and the head to check the merge: "
             f"{exc.stderr.strip() or exc}"
         ) from exc
 
@@ -14250,7 +14266,7 @@ def conflicted(pr: int, base: str, head: str) -> list[str]:
     read as clean. A conflict whose files git doesn't name still returns one entry, and a fetch or git failure is a
     Refused: never a clean."""
     fetch_for_merge(base, [pr])
-    return merge_conflicts(f"origin/{base}", head, f"PR #{pr}")
+    return merge_conflicts(f"{forge()}/{base}", head, f"PR #{pr}")
 
 
 def hunks(base: str, head: str, path: str) -> str:
@@ -14287,12 +14303,12 @@ def overlaps(pr: int | None, files: Sequence[str] = (), base: str | None = None)
     fetch_for_merge(base, [*([pr] if pr is not None else []), *(p["number"] for p, _ in sharing)])
 
     def span(head: str, path: str) -> str:
-        return hunks(git("merge-base", f"origin/{base}", head).strip(), head, path)
+        return hunks(git("merge-base", f"{forge()}/{base}", head).strip(), head, path)
 
     def behind(number: int, head: str) -> str:
         # merge-tree of two heads replays the base's commits one of them lacks, so a head that conflicts with the base
         # alone shows that as a clash with the other PR too; say so, or the lead reorders PRs when the base is the cause
-        clash = merge_conflicts(f"origin/{base}", head, f"PR #{number}")
+        clash = merge_conflicts(f"{forge()}/{base}", head, f"PR #{number}")
         return (
             f"; PR #{number} conflicts with {base} itself in {', '.join(clash)}: merge {base} into it and rerun"
             if clash

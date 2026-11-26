@@ -26,9 +26,11 @@ import calendar
 import contextlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -129,6 +131,48 @@ def local_sha(cwd: Path | str | None, ref: str) -> str | None:
         return None
 
 
+FORGE_SETTING = re.compile(r"^\s*forge_remote:\s*[\"']?([\w.-]+)", re.MULTILINE)
+
+
+def forge_remote(cwd: Path | str | None = None, git: Callable[..., str] | None = None) -> str:
+    """The remote the forge's repo is on, for the checkout at `cwd`: the current branch's upstream's remote
+    (`git rev-parse --abbrev-ref @{u}`), else `forge_remote` in docs/agents/gatekeeper.md's policy as origin's default branch holds it (never the working tree's), else `origin`.
+    A worktree whose branch tracks a fork then fetches, pushes and reads policy from the fork's repo, whatever
+    `origin` is. Both the gatekeeper and omnigent-agents' `claude-cloud-run` call it, so they agree. A name that is
+    no remote of the checkout is passed over. `git` runs one git call and returns its output (default: `run` in
+    `cwd`), so a caller with its own git runner keeps it."""
+    ask = git or (lambda *args: run(cwd, *args))
+    try:
+        remotes = ask("remote").split()
+    except (OSError, subprocess.SubprocessError):
+        return "origin"
+    try:
+        upstream = ask("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").strip()
+    except (OSError, subprocess.SubprocessError):
+        upstream = ""
+    if not upstream:  # the tracking ref may be gone (pruned, or not fetched yet) while the branch still names its remote
+        try:
+            branch = ask("symbolic-ref", "--short", "HEAD").strip()
+            upstream = ask("config", f"branch.{branch}.remote").strip() + "/"
+        except (OSError, subprocess.SubprocessError):
+            upstream = ""
+    for name in sorted(remotes, key=len, reverse=True):  # a remote's name may hold a slash
+        if upstream.startswith(f"{name}/"):
+            return name
+    # the setting is read from origin's default branch, which a PR cannot edit: a PR's own working-tree copy would let it
+    # choose the remote its base and policy are judged against
+    found = None
+    for ref in ("refs/remotes/origin/HEAD", "refs/remotes/origin/main"):
+        try:
+            found = FORGE_SETTING.search(ask("show", f"{ref}:docs/agents/gatekeeper.md"))
+        except (OSError, subprocess.SubprocessError):
+            continue
+        break
+    if found and found.group(1) in remotes:
+        return found.group(1)
+    return "origin"
+
+
 def sha_by_ref(listing: str) -> dict[str, str]:
     """The `<sha> <ref>` lines of `ls-remote` or `for-each-ref --format='%(objectname) %(refname)'` as {ref: sha}."""
     words = listing.split()
@@ -137,7 +181,7 @@ def sha_by_ref(listing: str) -> dict[str, str]:
 
 def remote_refs(cwd: Path | str | None, *patterns: str) -> dict[str, str]:
     """`git ls-remote origin <patterns>` as {ref: sha}; UNREACHABLE's errors when origin can't be read."""
-    return sha_by_ref(run(cwd, "ls-remote", "origin", *patterns, timeout=NETWORK))
+    return sha_by_ref(run(cwd, "ls-remote", forge_remote(cwd), *patterns, timeout=NETWORK))
 
 
 def in_cloud() -> bool:
@@ -181,7 +225,7 @@ def push(cwd: Path | str | None, *refspecs: str, lease: str | None = None) -> No
         "-q",
         "--no-verify",
         *([f"--force-with-lease={lease}"] if lease else []),
-        "origin",
+        forge_remote(cwd),
         *refspecs,
         timeout=NETWORK,
     )
@@ -269,7 +313,7 @@ def fetch_event(cwd: Path | str | None, ref: str) -> dict[str, Any]:
             "-q",
             "--no-tags",
             "--no-write-fetch-head",
-            "origin",
+            forge_remote(cwd),
             f"+{ref}:{mirror}",
             timeout=NETWORK,
         )

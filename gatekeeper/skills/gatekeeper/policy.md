@@ -61,6 +61,7 @@ loop:
     - GATE_TIER
   opt_out: true
   owner: octocat   # whose own approved:spec label, added after the spec's last edit, is their approval
+  forge_remote: fork   # the remote the forge's repo is on where a branch has no upstream (default: the current branch's upstream's remote, else origin)
   machine_exit: 78   # the gate's exit for "this machine isn't ready": local-ci refuses it as a machine fault
   short_seconds: 120   # a job expected to finish within this takes the host's short lane; 0 turns the lane off
   pre_land: python3 scripts/check_fork.py   # land's check of each PR against the base, before it batches them
@@ -158,6 +159,7 @@ carry_over_main:
 | | `gate` | the merge check `local-ci` runs: a command, with any variables it sets in front (Adopting the loop) | `mise run check:all` |
 | | `gate_steps` | the merge check as steps, in place of `gate`: a list of `name`, `command` (parsed as `gate` is), `where` (`any`; `host`: never run in a cloud session; or `linux`: only where `sys.platform` is Linux, a Linux host or a cloud session, never macOS) and optionally `paths`, globs of the files the step reads, matched on the full path as `paths` are, so its pass is reused on any tree whose files under them are the same, and optionally `on_demand: true`, a step `local-ci` and `local-ci --record` skip, saying so, and `land` never needs, which runs only when named (`local-ci --record --step <name>`) and is keyed, recorded and reused as any step: a check too costly for every PR, refused on every step, since the gate would then have no step (#2295); each step's pass recorded and reused by itself (Adopting the loop) | the one `gate` command; a step without `paths` reads the whole tree |
 | | `local_ci_env` | the environment variables the check reads, cleared for its run unless `gate` sets them (Adopting the loop) | none |
+| | `forge_remote` | the remote the forge's repo is on, read from origin's default branch, never a PR's own copy, and only where the current branch has no upstream (the branch's upstream's remote wins, `git rev-parse --abbrev-ref @{u}`): `local-ci`, `land`, the events and `omnigent_agent.py claude-cloud-run` fetch, push and read policy from it | `origin` |
 | | `machine_exit` | the gate's exit that means the machine isn't ready (a locked screen, low disk), such as 78: `local-ci` refuses it as a machine fault (`approvals.py`'s docstring); `land` runs no gate, so it reads none | every non-zero exit is red |
 | | `short_seconds` | a whole number of seconds: a job expected to finish within it takes the host's short lane instead of the heavy slot, and `0` turns the lane off (Rules, One heavy gate per host slot) | `120` |
 | | `opt_out` | `true` where a person may work outside the loop (Approvals and proof) | `false` |
