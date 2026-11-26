@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.15 - 2026-11-26
+
+- Tests: the hook commands fail open on a missing script, and one `apm install` across a hook move leaves Bash working (#2773).
+
 ## 0.35.14 - 2026-11-26
 
 - engineering: `renovate/stable.json` and `renovate/next.json` are shareable Renovate presets (`github>kzarzycki/agent-skills//renovate/stable` or `//renovate/next`) holding the regex for the pack pin in `apm.yml`, so a project picks its release line with one `extends` line and a tag-format change reaches it through the preset; `next` also follows the `-next` tags, which have had the merge's test selection, not the full nightly suite (#2766).
