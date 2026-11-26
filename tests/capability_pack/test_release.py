@@ -130,6 +130,26 @@ def test_verify_accepts_the_fold_and_its_tags_pass_release_check(tmp_path: Path)
         validate_release_candidate(repo / tag.split("-v")[0], tag)
 
 
+def test_a_commit_tagged_only_next_passes_the_tag_check_and_counts_as_the_last_release(
+    tmp_path: Path,
+) -> None:
+    """#2678: `-next` tags are releases: the tag check accepts them, and the next version moves past them."""
+    from tools.capability_pack.qualify import validate_release_candidate
+    from tools.capability_pack.release import released_versions
+
+    repo = _repository(tmp_path)
+    _cut_and_commit(repo, "minor")
+    _git(repo, "tag", "alpha-v0.2.0-next")
+    with pytest.raises(ConfigurationError, match="beta-v0.3.0 is not tagged"):
+        validate_release_candidate(repo / "alpha", "alpha-v0.2.0-next")
+    _git(repo, "tag", "beta-v0.3.0-next")
+    validate_release_candidate(repo / "alpha", "alpha-v0.2.0-next")
+    validate_release_candidate(repo / "beta", "beta-v0.3.0-next")
+    assert released_versions(repo)["alpha"] == "0.2.0"
+    with pytest.raises(ConfigurationError, match="must match"):
+        validate_release_candidate(repo / "alpha", "alpha-v0.2.0-rc")
+
+
 @pytest.mark.parametrize(
     "edit",
     [

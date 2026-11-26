@@ -473,9 +473,12 @@ def moved_report(mode: str, found: dict | None, note: str = "") -> None:
 # ponytail: #2560's third item, a failed push run on main visible to whoever lands next (e.g. `check merge` reading main's
 # latest push run), is not built: it is a gatekeeper change beyond this fix, which keeps to the resolver and its test.
 def moved(args: argparse.Namespace, api: Api = forge) -> int:
-    repo, sha = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_SHA"]
+    repo = os.environ["GITHUB_REPOSITORY"]
+    # a `workflow_run` job (release.yml, #2678) asks about the CI run's commit and workflow, not its own
+    sha = getattr(args, "sha", None) or os.environ["GITHUB_SHA"]
     workflow = (
-        os.environ.get("GITHUB_WORKFLOW_REF", "").split("@")[0].rsplit("/", 1)[-1]
+        getattr(args, "workflow", None)
+        or os.environ.get("GITHUB_WORKFLOW_REF", "").split("@")[0].rsplit("/", 1)[-1]
         or "engineering-ci.yml"
     )
     queue, note = land_queue() if args.mode == "push" else (None, "")
@@ -522,6 +525,10 @@ def main(argv: list[str] | None = None) -> int:
         default=NIGHTLY,
         metavar="FILE",
         help=f"`tag` only: the workflow file of the project's nightly (default {NIGHTLY})",
+    )
+    skipping.add_argument("--sha", help="the commit to ask about (default GITHUB_SHA)")
+    skipping.add_argument(
+        "--workflow", help="the CI workflow file to read runs of (default: the running workflow's)"
     )
     args = parser.parse_args(argv)
     try:

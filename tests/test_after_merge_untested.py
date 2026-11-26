@@ -402,6 +402,27 @@ def test_a_consumer_names_its_nightly_with_the_nightly_flag(tmp_path, monkeypatc
     assert "/workflows/engineering-ci.yml/" in asked[-1]
 
 
+def test_moved_push_asks_about_the_sha_and_workflow_it_is_given(tmp_path, monkeypatch):
+    """#2678: release.yml's `workflow_run` job asks about the CI run's commit and workflow, not its own."""
+    asked: list[str] = []
+
+    def api(path: str):
+        asked.append(path)
+        return {"workflow_runs": [], "tree": {"sha": "t"}}
+
+    for name, value in {
+        "GITHUB_OUTPUT": str(tmp_path / "out"),
+        "GITHUB_REPOSITORY": "o/r",
+        "GITHUB_SHA": MAIN,
+        "GITHUB_WORKFLOW_REF": "o/r/.github/workflows/release.yml@refs/heads/main",
+    }.items():
+        monkeypatch.setenv(name, value)
+    args = nightly.argparse.Namespace(mode="push", sha=OTHER, workflow="engineering-ci.yml")
+    assert nightly.moved(args, api) == 0
+    assert f"/git/commits/{OTHER}" in asked[0]
+    assert all("/workflows/engineering-ci.yml/" in p for p in asked if "/runs?" in p)
+
+
 def test_tag_workflow_skips_only_the_nightlys_suites():
     """The release check, the vendor check and the package gate run on every tag, since the nightly runs none of
     them; `test` and `test-slow` skip on `skip=true`; the forge read gets `actions: read` in `qualify` alone."""
