@@ -21,13 +21,17 @@ TAGS = [
     "engineering-v0.35.14-next",
     "engineering-v0.35.14",
     "engineering-v0.36.0-next",
-    "loop-v0.9.9",
     "omnigent-v0.1.21-next",
     "engineering-v0.35.12-rc1",
+    "gatekeeper-v0.1.15",
+    "gatekeeper-v0.1.16",
+    "loop-v0.1.9-next",
+    "loop-v0.1.10",
+    "engineering-hooks-v0.1.0-next",
 ]
 APM = """dependencies:
   apm:
-  - git: kzarzycki/agent-skills/engineering
+  - git: kzarzycki/agent-skills/{package}
     ref: {ref}
   mcp: []
 """
@@ -42,9 +46,9 @@ def py(regex: str) -> str:
     return re.sub(r"\(\?<(\w+)>", r"(?P<\1>", regex)
 
 
-def extract(line: str, ref: str) -> dict | None:
+def extract(line: str, ref: str, package: str = "engineering") -> dict | None:
     for pattern in manager(line)["matchStrings"]:
-        hit = re.search(py(pattern), APM.format(ref=ref), re.MULTILINE)
+        hit = re.search(py(pattern), APM.format(ref=ref, package=package), re.MULTILINE)
         if hit:
             return hit.groupdict()
     return None
@@ -58,7 +62,7 @@ def version(v: str) -> tuple:
 def newest(line: str, package: str) -> str:
     pattern = py(manager(line)["extractVersionTemplate"].replace("{{{package}}}", package))
     found = [m.group("version") for t in TAGS if (m := re.match(pattern, t))]
-    return max(found, key=version)
+    return max(found, key=version) if found else None
 
 
 @pytest.mark.parametrize("line", ["stable", "next"])
@@ -71,6 +75,45 @@ def test_preset_extracts_the_pin(line):
         "engineering",
         "0.35.5",
     )
+
+
+PINS = [
+    ("engineering", "0.35.10"),
+    ("gatekeeper", "0.1.16"),
+    ("loop", "0.1.10"),
+    ("engineering-hooks", "0.1.0"),
+]
+
+
+@pytest.mark.parametrize("line", ["stable", "next"])
+@pytest.mark.parametrize(("package", "current"), PINS)
+def test_any_package_pin_is_extracted(line, package, current):
+    m = extract(line, f"{package}-v{current}", package)
+    assert m
+    assert (m["owner"], m["repo"], m["package"], m["currentValue"]) == (
+        "kzarzycki",
+        "agent-skills",
+        package,
+        current,
+    )
+
+
+def test_next_pin_of_a_package_with_only_next_tags():
+    assert extract("stable", "engineering-hooks-v0.1.0-next", "engineering-hooks") is None
+    m = extract("next", "engineering-hooks-v0.1.0-next", "engineering-hooks")
+    assert m["package"] == "engineering-hooks"
+    assert m["currentValue"] == "0.1.0-next"
+
+
+def test_package_newest_tags_per_line():
+    assert newest("stable", "gatekeeper") == newest("next", "gatekeeper") == "0.1.16"
+    assert newest("stable", "loop") == "0.1.10"
+    assert newest("next", "loop") == "0.1.10"  # the stable release sorts above its own -next
+    assert newest("stable", "engineering-hooks") is None  # only a -next tag exists
+    assert newest("next", "engineering-hooks") == "0.1.0-next"
+    assert (
+        newest("next", "engineering") == "0.36.0-next"
+    )  # engineering-hooks tags are not engineering's
 
 
 def test_stable_ignores_a_next_pin():
@@ -102,7 +145,7 @@ def test_next_picks_a_next_tag_over_an_older_stable_one():
 
 
 def test_a_package_ignores_other_packages_tags():
-    assert newest("next", "loop") == "0.9.9"
+    assert newest("next", "loop") == "0.1.10"
     assert newest("next", "omnigent") == "0.1.21-next"
 
 
