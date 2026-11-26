@@ -354,12 +354,18 @@ def test_a_background_descendant_of_codex_does_not_hold_verify_up(
 ) -> None:
     argv, _ = vm
     codex = tmp_path / "bin" / "codex"
+    sleeper = tmp_path / "sleeper.pid"
     text = codex.read_text().replace(
-        "cat >/dev/null\n", "cat >/dev/null\nsleep 30 &\necho trailing line\n"
+        "cat >/dev/null\n", f"cat >/dev/null\nsleep 30 &\necho $! > {sleeper}\necho trailing line\n"
     )
     codex.write_text(text)
     assert cv.main(argv) == 0
     assert "trailing line" in capfd.readouterr().out
+    pid = int(sleeper.read_text())
+    try:
+        os.kill(pid, 0)  # verify returned while the descendant still ran: it did not wait for it
+    finally:
+        os.kill(pid, 9)
 
 
 def test_a_line_a_descendant_prints_after_verify_returns_is_still_redacted(

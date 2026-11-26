@@ -259,7 +259,7 @@ def test_a_fetch_that_hangs_gives_none_within_the_bound(
     """The transport (here an ssh that never answers) is killed with git at the bound, so nothing is left running."""
     git(Path(behind["clone"]), "remote", "set-url", "origin", "ssh://nowhere.invalid/repo.git")
     pid = Path(behind["clone"]).parent / "ssh.pid"
-    monkeypatch.setenv("GIT_SSH_COMMAND", f"echo $$ > {pid}; exec sleep 60 #")
+    monkeypatch.setenv("GIT_SSH_COMMAND", f"echo $$ > {pid}; exec sleep 90 #")
     monkeypatch.setattr(approvals, "TREE_FETCH_SECONDS", 1)
     assert approvals.tree_of(behind["missing"]) is None
     assert not alive(int(pid.read_text()))
