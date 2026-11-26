@@ -13456,7 +13456,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 " there by default. "
                 + (
                     "A verifier runs in this VM: `cloud_verifier.py verify --pr N --brief FILE`"
-                    " (engineering-loop, Cloud worker); or pass --top-level --host <name> for"
+                    " (engineering-loop, Cloud worker; `--harness gemini` for a Gemini pass, exit 5 means no login there: use a host); or pass --top-level --host <name> for"
                     " a host loop.md's Placement line lists"
                     if verifier
                     else "Pass --top-level --host <name> to run it on a host, or start a"

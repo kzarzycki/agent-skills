@@ -93,3 +93,33 @@ def test_gemini_with_an_effort_is_refused(checkout, capsys) -> None:  # noqa: F8
     ]
     assert command(argv) == 2
     assert "--effort" in capsys.readouterr().err
+
+
+def test_a_login_in_the_report_is_redacted_before_it_is_posted(monkeypatch, tmp_path) -> None:
+    home = tmp_path / "home"
+    (home / ".gemini").mkdir(parents=True)
+    (home / ".gemini/oauth_creds.json").write_text('{"access_token": "ya29.secret-access-token"}')
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("GEMINI_OAUTH_JSON", raising=False)
+    monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
+    monkeypatch.setattr(cv, "REDACT", cv.Redactor())
+    monkeypatch.setattr(cv.shutil, "which", lambda name: "/bin/gemini")
+    cv.ensure_gemini()
+    sent: list[str] = []
+
+    def run(*cmd, **kw):
+        sent.append(kw["input"])
+        return type("R", (), {"stdout": "u\n1"})()
+
+    monkeypatch.setattr(cv, "run", run)
+    cv.post(7, "report ya29.secret-access-token end")
+    assert sent == ["report [secret] end"]
+
+
+def test_a_non_object_login_variable_is_refused(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("GEMINI_CLI_HOME", raising=False)
+    monkeypatch.setenv("GEMINI_OAUTH_JSON", "WzFd")  # base64 of [1]
+    monkeypatch.setattr(cv.shutil, "which", lambda name: "/bin/gemini")
+    with pytest.raises(cv.Refused, match="not a base64 Gemini login"):
+        cv.ensure_gemini()

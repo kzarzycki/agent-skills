@@ -885,6 +885,9 @@ or the owner's private network.
     APIs, not only model quota. Revoke it at the Google account's third-party access page (Gemini CLI) or by POSTing the
     token to `oauth2.googleapis.com/revoke`, then replace the variable. **Open:** a dedicated Google account holding only
     the subscription would limit the reach; the owner decides.
+  - *Model:* `--model` goes to the Gemini CLI as given, and without it the CLI's own default runs; an `agy` model id
+    (`gemini-4-hydrogen-medium`) may not be one the CLI accepts on a subscription login. **Open:** which ids the CLI
+    takes on that login; a first pass with a login would show them.
   - The host login is Antigravity's (`agy`); this route runs the Gemini CLI, which a VM can install, and **open:**
     whether one login file serves both, which a host holding both would show.
 - **Verifier on a Codex Cloud thread.** With `Placement: same machine` (or the old `Cloud verifier: worker session, else codex thread`), a

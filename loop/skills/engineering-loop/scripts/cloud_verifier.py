@@ -160,6 +160,8 @@ class Redactor:
         """Every token of a Codex login."""
         tokens = auth.get("tokens") if isinstance(auth, dict) else None
         self.add(*(tokens.values() if isinstance(tokens, dict) else ()))
+        # a Gemini login keeps its tokens at the top level (`access_token`, `refresh_token`, `id_token`)
+        self.add(*(auth.values() if isinstance(auth, dict) else ()))
 
     def seed(self, value: str) -> None:
         """The seeded variable and the tokens it decodes to, whatever state it is in."""
@@ -511,15 +513,22 @@ def ensure_gemini() -> None:
     if not shutil.which("gemini"):
         run("npm", "install", "-g", "-s", "@google/gemini-cli")
     auth = gemini_home(os.environ) / "oauth_creds.json"
+    if auth.is_file():  # a login already in the VM is as secret as a seeded one
+        try:
+            REDACT.login(json.loads(auth.read_text()))
+        except ValueError:
+            pass
     if seeded := os.environ.get(GEMINI_VAR):
         try:
             creds = base64.b64decode(seeded, validate=True)
             tokens = json.loads(creds)
+            if not isinstance(tokens, dict):
+                raise ValueError("not an object")
         except ValueError:
             raise Refused(
                 f"${GEMINI_VAR} is not a base64 Gemini login ({describe(GEMINI_VAR, seeded)}): put it in again"
             ) from None
-        REDACT.add(*(v for v in tokens.values() if isinstance(v, str)))
+        REDACT.login(tokens)
         auth.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         auth.touch(mode=0o600)
         auth.write_bytes(creds)
@@ -1017,7 +1026,7 @@ def post(pr: int, body: str) -> tuple[str, str | None]:
         "body=@-",  # from stdin: a long report does not fit an argument
         "--jq",
         ".html_url, .id",
-        input=body,
+        input=REDACT(body),  # a verifier that printed a login must not publish it
     )
     url, _, ident = posted.stdout.strip().partition("\n")
     return url, ident.strip() or None
