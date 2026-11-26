@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.35.14 - 2026-11-26
+
+- engineering: `renovate/stable.json` and `renovate/next.json` are shareable Renovate presets (`github>kzarzycki/agent-skills//renovate/stable` or `//renovate/next`) holding the regex for the pack pin in `apm.yml`, so a project picks its release line with one `extends` line and a tag-format change reaches it through the preset; `next` also follows the `-next` tags, which have had the merge's test selection, not the full nightly suite (#2766).
+
 ## 0.35.13 - 2026-11-26
 
 - engineering: each release ships `bump-from.yml` naming the oldest pin it can be bumped from in one PR and the release to stop at first, and the README says to bump in steps across a larger gap, since the loop's gate cannot judge a bump PR whose gate files are that much newer than the base's (#2709).
