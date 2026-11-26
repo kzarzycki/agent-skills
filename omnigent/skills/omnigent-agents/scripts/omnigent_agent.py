@@ -875,7 +875,8 @@ def installed(skill: str) -> Path | None:
     Code's cache (`<marketplace>/<plugin>/<version>/`, beside the script or in `~/.claude/plugins/cache`) that no
     update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
     searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
-    tests set it, or the checkout is the GITHUB_WORKSPACE of the CI job running there. None when none holds it."""
+    tests set it, the checkout is the GITHUB_WORKSPACE of the CI job running there, or this script is the pack's own
+    `omnigent-agents` script running from it (#2670: its siblings are the code it already runs). None when none holds it."""
     # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
     import os
 
@@ -889,6 +890,7 @@ def installed(skill: str) -> Path | None:
         not checkout
         or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
         or bool(workspace and Path(workspace).resolve() == root)
+        or own.name == "omnigent-agents"
     )
     cached = [
         *(root.parent.glob(f"[!.]*/[!.]*/skills/{skill}") if laid else []),
