@@ -6,17 +6,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/heavy_run_guard.py\"",
+            "command": "f=\"${CLAUDE_PLUGIN_ROOT}/hooks/heavy_run_guard.py\"; [ -f \"$f\" ] || { echo \"engineering-hooks: $f is missing, hook skipped\" >&2; exit 0; }; exec python3 \"$f\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/secret_env_guard.py\"",
+            "command": "f=\"${CLAUDE_PLUGIN_ROOT}/hooks/secret_env_guard.py\"; [ -f \"$f\" ] || { echo \"engineering-hooks: $f is missing, hook skipped\" >&2; exit 0; }; exec python3 \"$f\"",
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/push_merge_guard.py\"",
+            "command": "f=\"${CLAUDE_PLUGIN_ROOT}/hooks/push_merge_guard.py\"; [ -f \"$f\" ] || { echo \"engineering-hooks: $f is missing, hook skipped\" >&2; exit 0; }; exec python3 \"$f\"",
             "timeout": 10
           }
         ]

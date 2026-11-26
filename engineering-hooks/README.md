@@ -15,3 +15,16 @@ It is an APM package only, with no Claude Code plugin manifest and no marketplac
 native plugin, which would skip `.claude/settings.json`, where these hooks belong.
 
 The hook scripts run on the consumer's own `python3` (macOS ships 3.9).
+
+## A missing script does not block Bash
+
+Each command in `hooks/hooks-claude.json` checks that its script exists and, when it does not, prints one line to
+stderr and exits 0; when it does, it runs the script and passes its exit code through, so a real block (exit 2) still
+blocks. A PreToolUse hook that exits 2 blocks the call, and `python3 <missing file>` exits 2, so a bare command whose
+file a package move deleted refused every Bash call.
+
+`apm install` does not remove the entries a package wrote before it stopped shipping hooks (apm 0.39.1 leaves them
+in `.claude/settings.json` and `.claude/apm-hooks.json`). A consumer that upgraded across the move from `engineering`
+0.35.10 or earlier, to the release that moved the hooks here, still holds entries for
+`.claude/hooks/engineering/hooks/*.py`: delete them from both files. Releases after the move put no such entry in a
+consumer, because their commands skip a missing script.
