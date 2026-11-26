@@ -73,3 +73,22 @@ def test_the_setting_then_origin_are_the_fallbacks(
         repo, "push", "-q", "fork", "main"
     )  # the base holds the setting, which the schema accepts
     assert approvals.settings(approvals.project()[1])["forge_remote"] == "fork"
+
+
+def test_a_detached_head_whose_own_policy_names_another_remote_still_uses_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PR's working-tree gatekeeper.md never picks the remote its base and policy are judged against (#2710)."""
+    _origin, _fork, repo = two_remotes(tmp_path)
+    monkeypatch.chdir(repo)
+    policy(
+        repo,
+        gatekeeper_md("loop:\n  gate: mise run check\n  forge_remote: fork\n"),
+        "the PR names the fork",
+    )
+    git_in(repo, "checkout", "-q", "--detach", "HEAD")
+    assert approvals.forge() == "origin"
+    assert approvals.policy_base(str(repo)) == (
+        "origin/main",
+        git_in(repo, "rev-parse", "origin/main").strip(),
+    )
