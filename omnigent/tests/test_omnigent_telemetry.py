@@ -333,4 +333,8 @@ def test_the_sql_reads_the_servers_label_table_item_codes_and_user_messages(monk
         "FROM conversation_labels l" in sessions and "l.key" in sessions and "l.value" in sessions
     )
     assert "i.type IN (2, 7)" in sessions and "i.data::json->>'name'" in sessions
+    # a native_tool row ({"item": {"type": ...}}, no top-level name) must never reach json_object_agg as NULL
+    assert "coalesce(i.data::json->>'name', i.data::json->'item'->>'type') IS NOT NULL" in " ".join(
+        sessions.split()
+    )
     assert "i.type = 1 AND i.data::json->>'role' = 'user'" in " ".join(sessions.split())

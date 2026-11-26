@@ -50,6 +50,9 @@ COMPACTION = 6  # conversation_items.type
 # checked here against a server): message 1, function_call 2, reasoning 4, native_tool 7.
 MESSAGE, FUNCTION_CALL, NATIVE_TOOL = 1, 2, 7
 CALL_CODES = f"{FUNCTION_CALL}, {NATIVE_TOOL}"
+# A function_call's `name` is top level; a native_tool is {"item": {"type": ...}} with none. A row with
+# neither is left out, since json_object_agg refuses a NULL key.
+TOOL_NAME = "coalesce(i.data::json->>'name', i.data::json->'item'->>'type')"
 FAILED_SESSION = 4  # omnigent_conversation_metadata.live_status
 RUN_SUCCEEDED, RUN_FAILED, RUN_SKIPPED = 3, 4, 5  # scheduled_task_runs.status
 LIVE = {1: "idle", 2: "running", 3: "waiting", 4: "failed"}
@@ -127,9 +130,9 @@ def fetch_db(container: str, since: int) -> dict:
               (SELECT coalesce(json_object_agg(l.key, l.value), '{{}}') FROM conversation_labels l
                  WHERE l.conversation_id = c.id AND l.workspace_id = c.workspace_id) AS labels,
               (SELECT coalesce(json_object_agg(n, k), '{{}}') FROM (
-                 SELECT i.data::json->>'name' AS n, count(*) AS k FROM conversation_items i
+                 SELECT {TOOL_NAME} AS n, count(*) AS k FROM conversation_items i
                  WHERE i.conversation_id = c.id AND i.workspace_id = c.workspace_id
-                   AND i.type IN ({CALL_CODES}) GROUP BY 1) q) AS tool_calls,
+                   AND i.type IN ({CALL_CODES}) AND {TOOL_NAME} IS NOT NULL GROUP BY 1) q) AS tool_calls,
               (SELECT count(*) FROM conversation_items i WHERE i.conversation_id = c.id
                  AND i.workspace_id = c.workspace_id AND i.type = {MESSAGE}
                  AND i.data::json->>'role' = 'user') AS turns,
