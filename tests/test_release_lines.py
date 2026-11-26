@@ -188,3 +188,9 @@ def test_workflow_wires_the_guards():
         "needs.gate.outputs.sha" in text
         and "ref: main\n          fetch-depth: 0 # the tags" not in text.split("promote:")[0]
     )
+
+
+def test_a_workflow_run_cut_defaults_the_magnitude_to_patch():
+    """The verifier's F1: `inputs.magnitude` is empty off `workflow_dispatch`, which `cut-release` refuses."""
+    text = Path(".github/workflows/release.yml").read_text()
+    assert "MAGNITUDE: ${{ inputs.magnitude || 'patch' }}" in text
