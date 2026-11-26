@@ -72,14 +72,26 @@ def released_versions(repository: Path) -> dict[str, str]:
     return {name: ".".join(map(str, version)) for name, version in newest.items()}
 
 
-def _entries(package: Path) -> list[Path]:
+def check_entry_names(package: Path) -> list[Path]:
+    """The package's `changelog.d/` entries, refusing any not named `<issue>.md`: the one rule the cut and the PR
+    check (`changelog-check`) share, so a misnamed entry fails its PR instead of the next cut (#2713)."""
     files = [path for path in (package / "changelog.d").glob("*.md") if path.name != "README.md"]
     named = sorted(path.name for path in files if not path.stem.isdigit())
     if named:
         raise ConfigurationError(
             f"{package.name}/changelog.d entries must be named <issue>.md: {', '.join(named)}"
         )
-    return sorted(files, key=lambda path: int(path.stem))
+    return files
+
+
+def _entries(package: Path) -> list[Path]:
+    return sorted(check_entry_names(package), key=lambda path: int(path.stem))
+
+
+def check_changelog_names(root: Path) -> None:
+    """Every released package's entries are named `<issue>.md`, or ConfigurationError for the first that is not."""
+    for package in packages(root.resolve()):
+        check_entry_names(package)
 
 
 def _current_version(package: Path) -> str:
