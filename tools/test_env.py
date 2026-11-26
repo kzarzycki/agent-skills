@@ -43,6 +43,7 @@ SESSION_PREFIXES = ("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_")
 # depends on one sets it itself.
 HOST_NEUTRAL = (
     "AGENT_HOST_COMMANDS",
+    "OMNIGENT_DATA_DIR",  # the host data dir a script reads for its own state; main already reads it (#2679)
     # the root conftest.py sets it to 1 for the whole run, as the pack's own tests need; clearing it would undo that
     "AGENT_SKILLS_CHECKOUT",
     "CDP_URL",
