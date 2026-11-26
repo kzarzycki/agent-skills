@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.17 - 2026-11-26
+
+- omnigent: a `--pr` cloud worker started with a supervise registry now gets a followed line, so its supervisor tells its end from its last message and never nudges it toward a host report path (#2718).
+
 ## 0.1.16 - 2026-11-26
 
 - `supervise` watches the Omnigent login of its server (#2119): once an hour it runs `omnigent login-status <server> --live` (exit 1 ends soon, 2 cannot renew) and reads `host_auth_rejected.json` in the host data dir, and raises one USER NEEDED event naming `omnigent login <server>` per change of state, noting the return to ok once; a missing or older `omnigent` is logged once and never alerts. Needs omnigent#698; lands after it.
