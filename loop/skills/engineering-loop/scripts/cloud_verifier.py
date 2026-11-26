@@ -8,7 +8,7 @@ On the host that starts cloud sessions:
 
 In the VM, from the checkout:
 
-    python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--harness codex|claude] [--model M] [--effort E] [--requested UNIX_SECONDS]
+    python3 <skill>/scripts/cloud_verifier.py verify --pr N --brief FILE [--harness codex|claude|gemini] [--model M] [--effort E] [--requested UNIX_SECONDS]
 
 On a host with no worker VM (route 1b), a Codex Cloud thread driven with the host's own login:
 
@@ -113,6 +113,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 # importing the gatekeeper skill's folding.py would cache its bytecode in the installed skill folder, an untracked change there
@@ -125,6 +126,9 @@ sys.path.insert(0, str(installed("gatekeeper")))
 from folding import fold
 
 VAR = "CODEX_AUTH_JSON"
+# Gemini's login: the Gemini CLI's own `oauth_creds.json` (under $GEMINI_CLI_HOME, else ~/.gemini), base64, put in the
+# cloud environment by the owner. Not seeded by this script: the owner's Google login is theirs to place.
+GEMINI_VAR = "GEMINI_OAUTH_JSON"
 HOSTS = ["chatgpt.com", "*.chatgpt.com", "auth.openai.com", "api.openai.com"]
 # ponytail: the refresh call mirrors the Codex CLI's own (codex-rs/login/src/auth/manager.rs: the endpoint, the
 # CLI's public client id, a JSON body), because the CLI only refreshes a token within 5 minutes of expiry and a
@@ -483,6 +487,44 @@ def ensure_codex() -> None:
         )
 
 
+def gemini_home(env: Mapping[str, str]) -> Path:
+    return Path(env.get("GEMINI_CLI_HOME") or Path.home()) / ".gemini"
+
+
+def gemini_route(env: Mapping[str, str]) -> tuple[str, str]:
+    """Where a Gemini verifier pass runs, the one choice every caller reads: `("same machine", "")` in a cloud VM that
+    holds a Gemini login (`$GEMINI_OAUTH_JSON`, or the CLI's own file), `("host", <one line>)` in a cloud VM without
+    one, and `("host", "")` outside the cloud, where a worker's own host runs the pass (the host route,
+    `omnigent_agent.py --verifier-route gemini --host`)."""
+    if env.get("CLAUDE_CODE_REMOTE") != "true":
+        return "host", ""
+    if env.get(GEMINI_VAR) or (gemini_home(env) / "oauth_creds.json").is_file():
+        return "same machine", ""
+    return "host", (
+        f"cloud_verifier: no Gemini login in this environment (${GEMINI_VAR} is not set): "
+        "falling back to a host verifier (`--verifier-route gemini --host <name>`)"
+    )
+
+
+def ensure_gemini() -> None:
+    """Install the Gemini CLI when the VM lacks it and write the seeded login where it reads it (never printed)."""
+    if not shutil.which("gemini"):
+        run("npm", "install", "-g", "-s", "@google/gemini-cli")
+    auth = gemini_home(os.environ) / "oauth_creds.json"
+    if seeded := os.environ.get(GEMINI_VAR):
+        try:
+            creds = base64.b64decode(seeded, validate=True)
+            tokens = json.loads(creds)
+        except ValueError:
+            raise Refused(
+                f"${GEMINI_VAR} is not a base64 Gemini login ({describe(GEMINI_VAR, seeded)}): put it in again"
+            ) from None
+        REDACT.add(*(v for v in tokens.values() if isinstance(v, str)))
+        auth.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        auth.touch(mode=0o600)
+        auth.write_bytes(creds)
+
+
 def report_path(brief: str) -> Path | None:
     found = re.search(r"^- Report: (\S+)$", brief, re.MULTILINE)
     return Path(found[1]) if found else None
@@ -598,7 +640,7 @@ def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
     Claude its own login), its output relayed line by line through this process's redacted stdout and stderr, so a
     verifier can neither read the variable nor print a token. With `keep`, what it prints on stdout (`claude -p`'s
     final message) is also written there, and its stderr is relayed apart, so a warning never joins the report."""
-    env = {k: v for k, v in os.environ.items() if k != VAR}
+    env = {k: v for k, v in os.environ.items() if k not in (VAR, GEMINI_VAR)}
     child = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE,
@@ -813,14 +855,24 @@ def review(
     event: PassEvent,
 ) -> int:
     began = time.time()
-    if harness == "claude" and effort:
-        raise Refused("`--effort` is Codex's only: the Claude CLI has no effort flag, so pass none")
+    if harness in ("claude", "gemini") and effort:
+        raise Refused(
+            f"`--effort` is Codex's only: the {harness} CLI has no effort flag, so pass none"
+        )
+    if harness == "gemini":
+        where, why = gemini_route(os.environ)
+        if where == "host":
+            if why:
+                print(why, file=sys.stderr)
+            return 5
     brief = brief_file.read_text()
     if not brief.startswith("AGENT_SIGNATURE="):
         brief = f"AGENT_SIGNATURE={signature(model, effort, harness)}\n{brief}"
     os.chdir(run("git", "rev-parse", "--show-toplevel").stdout.strip())
     if harness == "codex":
         ensure_codex()
+    if harness == "gemini":
+        ensure_gemini()
     report = report_path(brief)
     question = report.with_name(report.name + ".question") if report else None
     final = Path(tempfile.mkdtemp(prefix="cloud-verifier-")) / "final.md"
@@ -862,6 +914,17 @@ def review(
         # the VM is the sandbox, as for Codex below; the final message is what `-p` prints on stdout
         cmd = ["claude", "-p", "--permission-mode", "bypassPermissions", "--output-format", "text"]
         cmd += ["--model", model] if model else []
+    elif harness == "gemini":
+        # the VM is the sandbox; the brief is the prompt on stdin, and the final message is what `-p` prints
+        cmd = [
+            "gemini",
+            "--approval-mode",
+            "yolo",
+            "--skip-trust",
+            "-p",
+            "Follow the brief on stdin.",
+        ]
+        cmd += ["-m", model] if model else []
     else:
         cmd = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "-o", str(final)]
         cmd += ["-m", model] if model else []
@@ -872,7 +935,9 @@ def review(
     try:
         started = time.time()
         code = (
-            relay_exec(cmd, brief, final) if harness == "claude" else codex_exec([*cmd, "-"], brief)
+            relay_exec(cmd, brief, final)
+            if harness in ("claude", "gemini")
+            else codex_exec([*cmd, "-"], brief)
         )
         ended = time.time()
         print(f"{harness} exited {code} after {ended - started:.0f} s", flush=True)
@@ -1325,6 +1390,7 @@ def main(argv: list[str] | None = None) -> int:
     """Run one command with stdout and stderr redacted: a secret's value never reaches the output, even in a
     traceback, which is printed here (exit 1, as Python gives an uncaught one) rather than raised past the writer."""
     REDACT.seed(os.environ.get(VAR, ""))
+    REDACT.seed(os.environ.get(GEMINI_VAR, ""))
     out, err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = wrapped = Redacting(out), Redacting(err)
     try:
@@ -1375,9 +1441,10 @@ def command(argv: list[str] | None) -> int:
     v.add_argument("--brief", type=Path, required=True)
     v.add_argument(
         "--harness",
-        choices=["codex", "claude"],
+        choices=["codex", "claude", "gemini"],
         default="codex",
-        help="the verifier's CLI: codex for a Claude-written PR, claude for a Codex-written one",
+        help="the verifier's CLI: codex for a Claude-written PR, claude for a Codex-written one, gemini when Codex has"
+        " no quota (exit 5: no Gemini login here, use a host)",
     )
     v.add_argument("--model")
     v.add_argument("--effort", help="Codex's reasoning effort; refused with --harness claude")

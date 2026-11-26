@@ -862,6 +862,31 @@ or the owner's private network.
   session, picks the head and posts the report; the environment holds a ChatGPT login that every process in
   the VM can read, good for up to 10 days, so it suits PRs the owner's own agents wrote and not ones from
   forks; and the carrier spends its quota while it waits.
+- **Gemini verifier in the worker's VM.** When Codex has no quota, `scripts/cloud_verifier.py verify --harness gemini`
+  runs the Gemini CLI (`@google/gemini-cli`, installed in the VM when missing) on the same brief, checkout, report and
+  PR comment as the Codex pass, on the owner's Google subscription login and no API key (it passes `--model`, never
+  `--effort`). The one route choice is `gemini_route` in that script: a cloud VM with a login runs the pass there; a
+  cloud VM without one prints one line (`no Gemini login in this environment`) and exits 5, and a worker on a host
+  runs no pass here (exit 5, no line): in both, start the host route (`--verifier-route gemini --host <name>`, lead.md
+  step 7). Never fall back to a Claude verifier silently.
+  - *Login file:* the CLI's `oauth_creds.json` under `$GEMINI_CLI_HOME`, else `~/.gemini/` (a Google OAuth login with
+    `access_token`, `refresh_token`, `expiry_date`), from the CLI's own bundle. Without it and without an API key the
+    CLI prints `Manual authorization is required but the current session is non-interactive` and exits 41.
+  - *Env variable:* `GEMINI_OAUTH_JSON`, that file base64-encoded, set in the cloud environment by the owner only; the
+    script writes it to the file (mode 0600), keeps it out of the verifier's own environment and redacts it from all
+    output, as for `CODEX_AUTH_JSON`. A login file already in the VM counts too.
+  - *Refresh:* the access token lasts about an hour and the CLI renews it from the `refresh_token` itself, writing the
+    new token to the VM's copy only. The variable holds the refresh token, so it stays good until revoked, not for days
+    like the Codex copy; nothing re-seeds it. **Open:** whether Google ever expires or rotates a refresh token of this
+    client (an unused one, a password change, a Google Cloud consent screen in testing); one `gemini` login on the host
+    plus a run of this route would settle it.
+  - *Scope and revocation:* the login cannot be limited to the Gemini service: the CLI asks for `cloud-platform`,
+    `userinfo.email` and `userinfo.profile` (hard-coded in its bundle), so a leak reaches the account's Google Cloud
+    APIs, not only model quota. Revoke it at the Google account's third-party access page (Gemini CLI) or by POSTing the
+    token to `oauth2.googleapis.com/revoke`, then replace the variable. **Open:** a dedicated Google account holding only
+    the subscription would limit the reach; the owner decides.
+  - The host login is Antigravity's (`agy`); this route runs the Gemini CLI, which a VM can install, and **open:**
+    whether one login file serves both, which a host holding both would show.
 - **Verifier on a Codex Cloud thread.** With `Placement: same machine` (or the old `Cloud verifier: worker session, else codex thread`), a
   pass with no worker VM to carry it (the PR has no Claude cloud worker, or Claude tokens are short) runs on a Codex Cloud
   thread, driven from the host: `scripts/cloud_verifier.py thread --pr <n> --brief <file> --model M --effort E`. The
