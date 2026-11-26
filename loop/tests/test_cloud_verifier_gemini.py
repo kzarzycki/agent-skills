@@ -123,3 +123,37 @@ def test_a_non_object_login_variable_is_refused(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(cv.shutil, "which", lambda name: "/bin/gemini")
     with pytest.raises(cv.Refused, match="not a base64 Gemini login"):
         cv.ensure_gemini()
+
+
+def test_a_report_with_links_and_dates_survives_post_with_both_logins_loaded(
+    monkeypatch, tmp_path
+) -> None:
+    gemini = {
+        "access_token": "ya29.secret-access-token",
+        "refresh_token": "1//secret-refresh-token",
+        "scope": "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email",
+        "token_type": "Bearer",
+        "expiry_date": 1788000000000,
+    }
+    codex = {
+        "tokens": {"access_token": "codex-secret-access", "refresh_token": "codex-secret-refresh"},
+        "last_refresh": "2026-11-26T15:00:00.000000Z",
+    }
+    redact = cv.Redactor()
+    redact.gemini(gemini)
+    redact.login(codex)
+    monkeypatch.setattr(cv, "REDACT", redact)
+    sent: list[str] = []
+
+    def run(*cmd, **kw):
+        sent.append(kw["input"])
+        return type("R", (), {"stdout": "u\n1"})()
+
+    monkeypatch.setattr(cv, "run", run)
+    report = (
+        "see https://github.com/x and https://www.googleapis.com/auth/cloud-platform, "
+        "refreshed 2026-11-26T15:00:00.000000Z, Bearer, 1788000000000\n"
+    )
+    cv.post(7, report)
+    cv.post(7, report + "leak ya29.secret-access-token codex-secret-refresh")
+    assert sent == [report, report + "leak [secret] [secret]"]

@@ -160,14 +160,20 @@ class Redactor:
         """Every token of a Codex login."""
         tokens = auth.get("tokens") if isinstance(auth, dict) else None
         self.add(*(tokens.values() if isinstance(tokens, dict) else ()))
-        # a Gemini login keeps its tokens at the top level (`access_token`, `refresh_token`, `id_token`)
-        self.add(*(auth.values() if isinstance(auth, dict) else ()))
+
+    def gemini(self, auth: object) -> None:
+        """The three tokens of a Gemini login, which keeps them at the top level beside values that are no secret
+        (`scope`, `token_type`, `expiry_date`): masking those would break every link in a report."""
+        if isinstance(auth, dict):
+            self.add(*(auth.get(k) for k in ("access_token", "refresh_token", "id_token")))
 
     def seed(self, value: str) -> None:
         """The seeded variable and the tokens it decodes to, whatever state it is in."""
         self.add(value)
         try:
-            self.login(json.loads(base64.b64decode(value)))
+            decoded = json.loads(base64.b64decode(value))
+            self.login(decoded)
+            self.gemini(decoded)
         except ValueError:
             pass
 
@@ -515,7 +521,7 @@ def ensure_gemini() -> None:
     auth = gemini_home(os.environ) / "oauth_creds.json"
     if auth.is_file():  # a login already in the VM is as secret as a seeded one
         try:
-            REDACT.login(json.loads(auth.read_text()))
+            REDACT.gemini(json.loads(auth.read_text()))
         except ValueError:
             pass
     if seeded := os.environ.get(GEMINI_VAR):
@@ -528,7 +534,8 @@ def ensure_gemini() -> None:
             raise Refused(
                 f"${GEMINI_VAR} is not a base64 Gemini login ({describe(GEMINI_VAR, seeded)}): put it in again"
             ) from None
-        REDACT.login(tokens)
+        REDACT.gemini(tokens)
+        REDACT.add(seeded)
         auth.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         auth.touch(mode=0o600)
         auth.write_bytes(creds)
