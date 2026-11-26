@@ -19,7 +19,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.capability_pack.qualify import ConfigurationError, _next_version, _semver
+from tools.capability_pack.qualify import (
+    ConfigurationError,
+    _next_version,
+    _semver,
+    released_package_of,
+)
 
 MAGNITUDES = ("patch", "minor")
 OWNER_REPO = "kzarzycki/agent-skills"
@@ -37,13 +42,12 @@ class Release:
 
 
 def packages(root: Path) -> list[Path]:
-    """The released packages: top-level directories with `changelog.d/`, `apm.yml` and a plugin manifest."""
+    """The released packages: top-level directories with `changelog.d/` and `apm.yml`. A Claude Code plugin manifest is optional: an APM-only
+    package (`engineering-hooks`) has none, and its `apm.yml` alone carries the version."""
     return sorted(
         path
         for path in root.iterdir()
-        if (path / "changelog.d").is_dir()
-        and (path / "apm.yml").is_file()
-        and (path / ".claude-plugin" / "plugin.json").is_file()
+        if (path / "changelog.d").is_dir() and (path / "apm.yml").is_file()
     )
 
 
@@ -80,8 +84,9 @@ def _entries(package: Path) -> list[Path]:
 
 def _current_version(package: Path) -> str:
     match = _APM_VERSION.search((package / "apm.yml").read_text())
-    plugin = json.loads((package / ".claude-plugin" / "plugin.json").read_text())
-    if not match or match.group(2) != plugin.get("version"):
+    manifest = package / ".claude-plugin" / "plugin.json"
+    plugin = json.loads(manifest.read_text()) if manifest.is_file() else None
+    if not match or (plugin is not None and match.group(2) != plugin.get("version")):
         raise ConfigurationError(f"{package.name}: apm.yml and plugin.json versions disagree")
     _semver(match.group(2))
     return match.group(2)
@@ -133,7 +138,8 @@ def write_version(package: Path, version: str) -> None:
     apm = package / "apm.yml"
     apm.write_text(_APM_VERSION.sub(rf"\g<1>{version}", apm.read_text(), count=1))
     plugin = package / ".claude-plugin" / "plugin.json"
-    plugin.write_text(_PLUGIN_VERSION.sub(rf"\g<1>{version}\g<3>", plugin.read_text(), count=1))
+    if plugin.is_file():
+        plugin.write_text(_PLUGIN_VERSION.sub(rf"\g<1>{version}\g<3>", plugin.read_text(), count=1))
     for path in (package / "README.md", package / "tests" / "consumer" / "apm.yml"):
         if path.is_file():
             text = path.read_text()
@@ -291,7 +297,9 @@ def verify_release(
 
 
 def release_tags(repository: Path, commit: str = "HEAD") -> list[str]:
-    """`<package>-v<version>` for each package whose plugin manifest `commit` changes, at the version it sets."""
+    """`<package>-v<version>` for each package whose plugin manifest, `apm.yml` or `CHANGELOG.md` `commit` changes, at
+    the version it sets. A package with no plugin manifest (`engineering-hooks`) and one on its first release, whose
+    version no release moves, show only in the `CHANGELOG.md` a cut always rewrites."""
     repository = repository.resolve()
     changed = subprocess.run(
         ["git", "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit],
@@ -303,7 +311,7 @@ def release_tags(repository: Path, commit: str = "HEAD") -> list[str]:
     ).stdout.split()
     tags = []
     for path in changed:
-        manifest = re.fullmatch(r"([^/]+)/\.claude-plugin/plugin\.json", path)
-        if manifest and (repository / manifest.group(1) / "apm.yml").is_file():
-            tags.append(f"{manifest.group(1)}-v{_current_version(repository / manifest.group(1))}")
-    return sorted(tags)
+        name = released_package_of(repository, path)
+        if name:
+            tags.append(f"{name}-v{_current_version(repository / name)}")
+    return sorted(set(tags))

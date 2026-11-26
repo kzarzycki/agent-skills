@@ -182,3 +182,55 @@ def test_cli_cut_and_verify(tmp_path: Path, capsys) -> None:
     _git(repo, "commit", "-am", "hand edit")
     assert cli.main(["release-verify", "--root", str(repo), "--base", base]) == 2
     assert "other.txt" in capsys.readouterr().err
+
+
+def test_an_apm_only_package_on_its_first_release_is_cut_and_tagged(tmp_path: Path) -> None:
+    """`engineering-hooks` has no plugin manifest and was never tagged, so no release moves its version (#2683):
+    the release still folds it, tags it and passes the release check, since `engineering` depends on its tag."""
+    from tools.capability_pack.qualify import validate_release_candidate
+
+    repo = _repository(tmp_path)
+    hooks = repo / "hooks"
+    _package(repo, "hooks", "0.1.0", {"5": "- hooks: first (#5)"})
+    (hooks / ".claude-plugin" / "plugin.json").unlink()
+    (hooks / ".claude-plugin").rmdir()
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add an apm-only package")
+    base = _git(repo, "rev-parse", "HEAD")
+    _cut_and_commit(repo)
+
+    releases = verify_release(repo, base)
+    assert ("hooks", "0.1.0") in [(r.package, r.version) for r in releases]
+    assert "- hooks: first (#5)" in (hooks / "CHANGELOG.md").read_text()
+    tags = release_tags(repo)
+    assert "hooks-v0.1.0" in tags
+    for tag in tags:
+        _git(repo, "tag", tag)
+    validate_release_candidate(hooks, "hooks-v0.1.0")
+
+
+def test_an_apm_only_package_is_found_versioned_bumped_and_tagged_beside_its_dependent(
+    tmp_path: Path,
+) -> None:
+    """A package with no plugin manifest keeps its version in `apm.yml` alone: a later release bumps it there, and
+    every release tags the dependent and the package on one commit, so `^0.1.0` resolves (#2683)."""
+    from tools.capability_pack.release import packages
+
+    repo = _repository(tmp_path)
+    _package(repo, "hooks", "0.1.0", {"5": "- hooks: first (#5)"})
+    (repo / "hooks" / ".claude-plugin" / "plugin.json").unlink()
+    (repo / "hooks" / ".claude-plugin").rmdir()
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add")
+    assert "hooks" in [p.name for p in packages(repo)]
+    _cut_and_commit(repo)
+    assert {"alpha-v0.1.1", "hooks-v0.1.0"} <= set(
+        release_tags(repo)
+    )  # first cut: the version no cut moves
+    _git(repo, "tag", "hooks-v0.1.0")
+    (repo / "hooks" / "changelog.d" / "9.md").write_text("- hooks: later (#9)\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "entry")
+    _cut_and_commit(repo)
+    assert "version: 0.1.1  # bumped by the release" in (repo / "hooks" / "apm.yml").read_text()
+    assert "hooks-v0.1.1" in release_tags(repo)
