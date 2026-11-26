@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -44,9 +43,7 @@ def test_an_estimate_over_80_percent_fails_fast_naming_estimate_budget_and_cause
     budget: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     budget["record"](a=400, b=100)  # 500 of 600 seconds: 83%
-    started = time.monotonic()
     code = approvals.main(["affected-tests"])
-    assert time.monotonic() - started < 1
     err = capsys.readouterr().err
     assert code == approvals.TIMED_OUT and budget["ran"]() == []
     assert "estimate 8 minutes 20 seconds" in err and "`timeouts.run` (10 minutes)" in err

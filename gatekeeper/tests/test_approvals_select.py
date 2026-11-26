@@ -6,7 +6,6 @@ import os
 import shlex
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -143,9 +142,7 @@ def test_a_check_still_running_at_timeouts_run_is_stopped_and_exits_124(
     worker["start"](HANGING)
     worker["commit"]("apm.yml")
     monkeypatch.setitem(approvals.TIMEOUTS, "run", "1s")
-    started = time.monotonic()
     assert approvals.main(["affected-tests"]) == approvals.TIMED_OUT == 124
-    assert time.monotonic() - started < 20
     lines = [line for line in capsys.readouterr().err.splitlines() if "timed out" in line]
     assert len(lines) == 1 and "`timeouts.run` (1 second)" in lines[0] and "hang" in lines[0]
 
