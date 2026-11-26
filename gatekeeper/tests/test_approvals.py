@@ -10399,3 +10399,40 @@ def test_prune_records_leaves_origin_no_record_of_a_pr_merged_or_closed_without_
     assert loop_gate_branches(origin) == kept
     assert approvals.main(["prune-records"]) == 0  # the daily run: nothing old and unneeded is left
     assert loop_gate_branches(origin) == kept
+
+
+def test_every_land_ends_with_the_record_sweep_and_a_failed_sweep_never_fails_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1869: a land that handed its PR to a queue, or was refused, sweeps too: the merged named PR's head goes to
+    drop_records, an unmerged one's does not (its record is what the queue's check reads), a round a wait repeats
+    sweeps not at all, and a sweep that raises is one warning line with the land's own exit."""
+    swept: list[list[str]] = []
+    monkeypatch.setattr(approvals, "drop_records", lambda heads: swept.append(list(heads)))
+    state = {"1": "MERGED", "2": "OPEN"}
+    monkeypatch.setattr(approvals, "pull_status", lambda n: {"state": state[str(n)]})
+
+    def run(code: int, again: bool) -> Any:
+        def landing_run(*_a: Any, **_k: Any) -> tuple[int, bool]:
+            approvals.watched["pulls"] = [
+                {"number": 1, "headRefOid": "a" * 40},
+                {"number": 2, "headRefOid": "b" * 40},
+            ]
+            return code, again
+
+        return landing_run
+
+    monkeypatch.setattr(approvals, "landing_run", run(1, False))
+    assert approvals.landing(None) == (1, False)
+    assert swept == [["a" * 40]]
+    monkeypatch.setattr(approvals, "landing_run", run(3, True))
+    assert approvals.landing(None) == (3, True)
+    assert len(swept) == 1
+
+    def refused(_heads: list[str]) -> None:
+        raise OSError("proxy refuses deletes")
+
+    monkeypatch.setattr(approvals, "drop_records", refused)
+    monkeypatch.setattr(approvals, "landing_run", run(0, False))
+    assert approvals.landing(None) == (0, False)
+    assert "the record sweep after land failed: proxy refuses deletes" in capsys.readouterr().out
