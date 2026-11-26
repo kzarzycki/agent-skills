@@ -170,17 +170,43 @@ def test_the_pack_own_ci_finds_its_scripts_in_the_workspace_it_runs_in(tmp_path:
     assert "needs the `gatekeeper` skill" in refused.stderr
 
 
+def pack_checkout(tmp_path: Path) -> Path:
+    """A pack checkout laid as the real one is, holding the forwarder and a stub `omnigent-agents` script."""
+    root = tmp_path / "pack"
+    (root / ".git").mkdir(parents=True)
+    (root / ".claude-plugin").mkdir()
+    (root / ".claude-plugin" / "marketplace.json").write_text("{}")
+    forwarder = root / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+    forwarder.parent.mkdir(parents=True)
+    forwarder.write_text(
+        (
+            REPOSITORY / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+        ).read_text()
+    )
+    sibling = root / "omnigent/skills/omnigent-agents"
+    (sibling / "scripts").mkdir(parents=True)
+    (sibling / "SKILL.md").write_text("x")
+    (sibling / "scripts" / "omnigent_agent.py").write_text("print('checkout copy')\n")
+    return root
+
+
 def test_the_deprecated_forwarder_runs_the_installed_omnigent_agents_script(
     tmp_path: Path,
 ) -> None:
-    """`deps-nightly` goes through the forwarder in a checkout: it must run the installed script."""
+    """Outside a checkout, the forwarder runs the installed script."""
     home = tmp_path / "home"
     installed = home / ".claude/plugins/cache/mkt/omnigent/1.0.0/skills/omnigent-agents"
     (installed / "scripts").mkdir(parents=True)
     (installed / "SKILL.md").write_text("x")
     (installed / "scripts" / "omnigent_agent.py").write_text("print('installed copy')\n")
     env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
-    forwarder = REPOSITORY / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+    forwarder = tmp_path / "plugin/skills/orchestrating-agents/scripts/omnigent_agent.py"
+    forwarder.parent.mkdir(parents=True)
+    forwarder.write_text(
+        (
+            REPOSITORY / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+        ).read_text()
+    )
     done = subprocess.run(
         [sys.executable, str(forwarder)], env=env, capture_output=True, text=True, check=False
     )
@@ -191,6 +217,44 @@ def test_the_deprecated_forwarder_runs_the_installed_omnigent_agents_script(
     )
     assert refused.returncode != 0
     assert "needs the `omnigent-agents` skill" in refused.stderr
+
+
+def test_the_forwarder_in_a_pack_checkout_runs_its_sibling_script_with_no_env_var(
+    tmp_path: Path,
+) -> None:
+    """#2670: a supervisor unit whose ExecStart names the forwarder, run from a checkout, must not exit 1."""
+    root = pack_checkout(tmp_path)
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "empty"), "PYTHONDONTWRITEBYTECODE": "1"}
+    forwarder = root / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+    done = subprocess.run(
+        [sys.executable, str(forwarder)], env=env, capture_output=True, text=True, check=False
+    )
+    assert (done.returncode, done.stdout) == (0, "checkout copy\n"), done.stderr
+
+
+def test_the_driver_in_a_pack_checkout_finds_the_checkouts_gatekeeper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2670: `supervise` run from a checkout resolves the sibling gatekeeper, as it runs that code already."""
+    monkeypatch.delenv("AGENT_SKILLS_CHECKOUT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "pack"
+    (root / ".git").mkdir(parents=True)
+    (root / ".claude-plugin").mkdir()
+    (root / ".claude-plugin" / "marketplace.json").write_text("{}")
+    gatekeeper = root / "gatekeeper/skills/gatekeeper"
+    gatekeeper.mkdir(parents=True)
+    (gatekeeper / "SKILL.md").write_text("x")
+    source = REPOSITORY / "omnigent/skills/omnigent-agents/scripts/omnigent_agent.py"
+    name, text = function(source)
+    target = root / "omnigent/skills/omnigent-agents/scripts/omnigent_agent.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("import sys\nfrom pathlib import Path\n\n\n" + text)
+    spec = importlib.util.spec_from_file_location("driver", target)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert getattr(module, name)("gatekeeper") == gatekeeper / "scripts"
 
 
 def test_no_pack_script_names_a_developer_checkout() -> None:
