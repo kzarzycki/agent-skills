@@ -237,13 +237,17 @@ def validate_release_candidate(package_root: Path, tag: str) -> None:
     tag_version = match.group(1)
     try:
         apm = _mapping(yaml.safe_load((package / "apm.yml").read_text()), "apm.yml")
-        plugin = _mapping(
-            json.loads((package / ".claude-plugin" / "plugin.json").read_text()),
-            "plugin.json",
+        manifest = package / ".claude-plugin" / "plugin.json"
+        plugin = (
+            _mapping(json.loads(manifest.read_text()), "plugin.json")
+            if manifest.is_file()
+            else None
         )
     except (OSError, json.JSONDecodeError, yaml.YAMLError) as error:
         raise ConfigurationError(f"invalid package release metadata: {error}") from error
-    versions = {"apm.yml": apm.get("version"), "plugin.json": plugin.get("version")}
+    versions = {"apm.yml": apm.get("version")}
+    if plugin is not None:  # an APM-only package (engineering-hooks) has no plugin manifest
+        versions["plugin.json"] = plugin.get("version")
     mismatched = [name for name, version in versions.items() if version != tag_version]
     if mismatched:
         raise ConfigurationError(f"release tag {tag} does not match {', '.join(mismatched)}")
@@ -259,20 +263,46 @@ def validate_release_candidate(package_root: Path, tag: str) -> None:
     tagged = set(_git_output(["tag", "--points-at", "HEAD"], cwd=repository).split())
     untagged = []
     for path in sorted(changed):
-        manifest = re.fullmatch(r"([^/]+)/\.claude-plugin/plugin\.json", path)
-        if not manifest or manifest.group(1) == package.name:
+        name = released_package_of(repository, path)
+        if name is None or name == package.name:
             continue
-        try:
-            version = json.loads((repository / path).read_text()).get("version")
-        except OSError, json.JSONDecodeError:
-            version = None
-        released = f"{manifest.group(1)}-v{version}"
+        version = package_version(repository / name)
+        released = f"{name}-v{version}"
         if released not in tagged and f"{released}-next" not in tagged:
-            untagged.append(f"{path} ({manifest.group(1)}-v{version} is not tagged on this commit)")
+            untagged.append(f"{path} ({released} is not tagged on this commit)")
     if untagged:
         raise ConfigurationError(
             "release commit changes package manifest(s) it doesn't release: " + ", ".join(untagged)
         )
+
+
+_RELEASE_FILE = re.compile(r"([^/]+)/(?:\.claude-plugin/plugin\.json|apm\.yml|CHANGELOG\.md)")
+
+
+def released_package_of(repository: Path, path: str) -> str | None:
+    """The package a changed repository path is a release of, or None. A package's Claude Code plugin manifest is a
+    release of it as it always was; its `apm.yml` or `CHANGELOG.md` is one only for a released package (a top-level
+    directory with both `apm.yml` and `changelog.d/`), which covers an APM-only package (`engineering-hooks`) that has
+    no plugin manifest. The one place that says which paths a release changes."""
+    found = _RELEASE_FILE.fullmatch(path)
+    if not found:
+        return None
+    name = found.group(1)
+    if path.endswith("plugin.json"):
+        return name
+    package = repository / name
+    return name if (package / "apm.yml").is_file() and (package / "changelog.d").is_dir() else None
+
+
+def package_version(package: Path) -> str | None:
+    """The version a package releases at: its plugin manifest's, or `apm.yml`'s where it has none."""
+    manifest = package / ".claude-plugin" / "plugin.json"
+    try:
+        if manifest.is_file():
+            return json.loads(manifest.read_text()).get("version")
+        return yaml.safe_load((package / "apm.yml").read_text()).get("version")
+    except OSError, json.JSONDecodeError, yaml.YAMLError, AttributeError:
+        return None
 
 
 def _mapping(value: object, label: str) -> dict:

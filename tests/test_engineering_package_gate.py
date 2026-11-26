@@ -31,8 +31,13 @@ def test_the_check_task_runs_the_gates_ci_runs_in_its_order() -> None:
     ran = re.findall(r"^\s*run: (mise run \S+)$", workflow, re.MULTILINE)
 
     # CI runs the cheap checks on a PR or push, the tests on a Mergify batch's draft PR (#1821) and the full check
-    # on the nightly schedule
-    assert ran == ["mise run check-fast", "mise run test-batch", "mise run check"]
+    # on the nightly schedule, and the `lint` job's lint-only run comes first (#2687)
+    assert ran == [
+        "mise run lint-changed",
+        "mise run check-fast",
+        "mise run test-batch",
+        "mise run check",
+    ]
     assert tasks["check"]["run"][0] == "mise run vendor-engineering-check"
 
 

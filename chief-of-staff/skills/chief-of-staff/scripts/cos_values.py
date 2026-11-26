@@ -130,34 +130,11 @@ def _keys() -> dict[str, Key]:
             "Hosts that take only starts the owner asked for",
             (F,),
         ),
-        Key("hosts.no_local_loop", "strs", [], "Hosts that run no local loop work", (F,)),
-        Key("hosts.cloud_bridge", "strs", [], "Hosts that can bridge cloud sessions", (F,)),
-        Key(
-            "hosts.orchestration",
-            "str",
-            None,
-            "The orchestration host; None: the host the CoS runs on",
-            (F,),
-        ),
-        Key(
-            "hosts.memory_floor",
-            "num",
-            None,
-            "Minimum free memory in GB to start a lead; None: the capacity check's own",
-            (F,),
-        ),
         Key(
             "managers",
             "managers",
             [],
             "Project managers: each has scope (repos), registry, board",
-            (F,),
-        ),
-        Key(
-            "planning.backlog",
-            "str",
-            None,
-            "Where the planning node reads its backlog; None: no planning node",
             (F,),
         ),
         Key("delegation.on", "bool", False, "Whether the owner delegates specs and merges", (S, F)),
@@ -170,16 +147,6 @@ def _keys() -> dict[str, Key]:
             (S, F),
             extend=True,
         ),
-        # ponytail: open question proposed `held` (safer).
-        Key("releases", "str", "held", "continuous or held", (S,), choices=("continuous", "held")),
-        Key(
-            "harness.default",
-            "str|map",
-            None,
-            "Harness, or a map project -> harness; None: the owner's, else the CoS's own",
-            (S,),
-        ),
-        Key("harness.codex_opt_in", "strs", [], "Repos that may opt into Codex", (S,)),
         Key(
             "models.tiers",
             "tiers",
@@ -187,8 +154,6 @@ def _keys() -> dict[str, Key]:
             "Model per job (lead, worker, mechanical, verifier, scheduled), each with an optional `until` date",
             (S, F),
         ),
-        Key("models.cap", "str", None, "Highest model tier any job may use", (F,)),
-        Key("scheduled.cap_usd", "num", None, "Cost cap in USD per scheduled task", (S,)),
         Key(
             "budget",
             "map",
@@ -197,23 +162,6 @@ def _keys() -> dict[str, Key]:
             (S, F),
         ),
         Key("parked", "list", [], "Parked list; each entry with an end date", (S, F)),
-        Key("memory", "str|strs", "none", "Memory bank names, or none", (F,)),
-        Key(
-            "permissions.coordinator_mode",
-            "str",
-            None,
-            "Permission mode coordinators start in; None: the start's own",
-            (F,),
-        ),
-        Key(
-            "prompts.cos_approves",
-            "strs",
-            [],
-            "Prompts the CoS approves for a lead without asking",
-            (S,),
-        ),
-        Key("owner.language", "str", None, "Language for owner-facing text", (F,)),
-        Key("owner.reply_format", "str", None, "Reply format for owner-facing text", (F,)),
         Key(
             "decisions.file",
             "str",
@@ -222,32 +170,8 @@ def _keys() -> dict[str, Key]:
             (F, S),
             base="board",
         ),
-        Key(
-            "decisions.cos_line", "str", None, "The line naming the CoS session; None: none", (F, S)
-        ),
         Key("hygiene.repos", "strs", [], "Repos the nightly scan covers", (F, S)),
-        Key(
-            "hygiene.our_authors",
-            "strs",
-            None,
-            "Authors whose PRs count as ours; None: the account the scan runs as",
-            (F,),
-        ),
-        Key(
-            "hygiene.retention_days",
-            "int",
-            14,
-            "Days after which a reaped lead's report is archived or deleted",
-            (S,),
-        ),
         Key("pin.tag_prefix", "str", None, "Release-tag prefix; None: no pin updater", (S,)),
-        Key("pin.notify", "str", None, "Who gets `ACTION NEEDED:` lines", (S,)),
-        Key("pin.schedule", "str", None, "How often the pin updater runs", (S,)),
-        Key("deps.repos", "strs", [], "Repos the dependency nightly runs in", (S,)),
-        Key("deps.schedule", "str", None, "How often the dependency nightly runs", (S,)),
-        Key("bridge.never_crosses", "strs", [], "What must never cross", (S,)),
-        Key("data.allowed_hosts", "strs", [], "Machines client data may sit on", (S,)),
-        Key("drafts_dir", "str", None, "Where drafts go", (S,), base="home"),
     ]
     return {x.name: x for x in k}
 

@@ -66,6 +66,7 @@ Planning > Issue fields > New field, name `Session`, type Text), and exits as it
   when a refusal names a key.
 - [breakglass.md](breakglass.md): the owner's break-glass land of a head with a red required check, its proof and
   the owner-side bypass setup. Read it when a required check blocks a PR the owner wants landed anyway.
+- [queue-only-ci.yml](queue-only-ci.yml): the CI of mergify.yml's "Gate in the queue only" variant, a gate that runs only on the queue's draft PRs and an always-on `lint` job (changed files, no tests, no build) that stays a required check. Read it when setting up or auditing that variant (#2687).
 - `scripts/approvals.py`: the gatekeeper's former name, kept for one release line. It runs
   `gatekeeper.py` with today's verbs (`approve`, `verdict`, `local-ci`), so a project's
   `approvals.py` command keeps working.
