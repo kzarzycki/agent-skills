@@ -235,13 +235,17 @@ def validate_release_candidate(package_root: Path, tag: str) -> None:
     tag_version = match.group(1)
     try:
         apm = _mapping(yaml.safe_load((package / "apm.yml").read_text()), "apm.yml")
-        plugin = _mapping(
-            json.loads((package / ".claude-plugin" / "plugin.json").read_text()),
-            "plugin.json",
+        manifest = package / ".claude-plugin" / "plugin.json"
+        plugin = (
+            _mapping(json.loads(manifest.read_text()), "plugin.json")
+            if manifest.is_file()
+            else None
         )
     except (OSError, json.JSONDecodeError, yaml.YAMLError) as error:
         raise ConfigurationError(f"invalid package release metadata: {error}") from error
-    versions = {"apm.yml": apm.get("version"), "plugin.json": plugin.get("version")}
+    versions = {"apm.yml": apm.get("version")}
+    if plugin is not None:  # an APM-only package (engineering-hooks) has no plugin manifest
+        versions["plugin.json"] = plugin.get("version")
     mismatched = [name for name, version in versions.items() if version != tag_version]
     if mismatched:
         raise ConfigurationError(f"release tag {tag} does not match {', '.join(mismatched)}")
@@ -257,12 +261,17 @@ def validate_release_candidate(package_root: Path, tag: str) -> None:
     tagged = set(_git_output(["tag", "--points-at", "HEAD"], cwd=repository).split())
     untagged = []
     for path in sorted(changed):
-        manifest = re.fullmatch(r"([^/]+)/\.claude-plugin/plugin\.json", path)
+        manifest = re.fullmatch(
+            r"([^/]+)/(?:\.claude-plugin/plugin\.json|apm\.yml|CHANGELOG\.md)", path
+        )
         if not manifest or manifest.group(1) == package.name:
             continue
+        sibling = repository / manifest.group(1)
+        if not ((sibling / "changelog.d").is_dir() and (sibling / "apm.yml").is_file()):
+            continue  # not a released package
         try:
-            version = json.loads((repository / path).read_text()).get("version")
-        except OSError, json.JSONDecodeError:
+            version = yaml.safe_load((sibling / "apm.yml").read_text()).get("version")
+        except OSError, yaml.YAMLError, AttributeError:
             version = None
         if f"{manifest.group(1)}-v{version}" not in tagged:
             untagged.append(f"{path} ({manifest.group(1)}-v{version} is not tagged on this commit)")
