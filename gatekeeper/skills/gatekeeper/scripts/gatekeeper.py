@@ -31,6 +31,7 @@
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
+    uv run scripts/approvals.py prune-records [--head <sha>...]  # delete origin's `loop-gate/` record branches no open PR head needs: the trees of the given (closed or merged) heads at once, any other tree over a day old with no open PR; what `land` does for its own merges, for the merges and closures it never saw (#1869); needs a token that can delete refs
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
     uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -754,7 +755,8 @@ CHECKED = "Local check passed"
 # a gate pass published as a commit status: its context, and its description (described): tree, commit, command
 PUBLISHED = "gate"
 # where publish() pushes a pass in origin, the one route another clone reads it by: a branch, since a cloud session's
-# proxy refuses a push outside refs/heads/; land deletes it once no head needs it (drop_records)
+# proxy refuses a push outside refs/heads/; land deletes it once no head needs it (drop_records), and
+# .github/workflows/prune-records.yml does for a merge or closure `land` never saw (#1869)
 RECORD_BRANCH = "refs/heads/loop-gate/{}"
 # how old a record branch whose tree is no open PR's head must be before land deletes it: a record may be pushed
 # before its PR is opened
@@ -14448,6 +14450,8 @@ def main(argv: list[str]) -> int:
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
     rerunning.add_argument("--base", metavar="REV")
+    pruning = commands.add_parser("prune-records")
+    pruning.add_argument("--head", action="append", default=[], metavar="SHA")
     sharding = commands.add_parser("shards")
     sharding.add_argument("--suite", required=True)
     sharding.add_argument("--selection")
@@ -14519,6 +14523,9 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         args.command == "queue-config"
     ):  # the checkout's own policy, so a PR's change to `land` renders with it
         print(queue_config(), end="")
+        return 0
+    if args.command == "prune-records":
+        drop_records(args.head)
         return 0
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)

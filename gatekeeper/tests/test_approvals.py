@@ -10370,3 +10370,32 @@ def test_approve_over_rest_records_the_text_and_minimizes_nothing_it_cannot_tell
         f"Approved: spec\nBy: owner\nSpec: {TEXTED}\n{approvals.CHANGED['spec']}",
     )
     assert not any(call[0] == "minimize" for call in github)
+
+
+def test_prune_records_leaves_origin_no_record_of_a_pr_merged_or_closed_without_land(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1869: a PR merged by a merge queue, Mergify or by hand, or closed unmerged, never reaches `land`'s
+    drop_records, so its `loop-gate/` records piled up on origin. `prune-records --head <sha>`, run by
+    .github/workflows/prune-records.yml when a PR closes, deletes that head's tree's records at once (its record is
+    fresh, so only the closed head's name saves it), keeps a fresh record of an unopened tree and an open PR's
+    record, and with no head deletes the old record of no open PR."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    a, b, origin = tmp_path / "a", tmp_path / "b", tmp_path / "origin.git"
+    commits = {}
+    for name in ("unopened", "open"):
+        (a / "app.py").write_text(f"value = {name!r}\n")
+        git_in(a, "commit", "-qam", name)
+        commits[name] = git_in(a, "rev-parse", "HEAD").strip()
+        git_in(a, "push", "-q", "origin", f"HEAD:refs/heads/{name}")
+    git_in(b, "fetch", "-q", "origin")
+    kept = {
+        recorded_in_origin(b, commits["unopened"], approvals.now()),
+        recorded_in_origin(b, commits["open"], "2026-01-01T00:00:00Z"),
+    }
+    monkeypatch.setattr(approvals.github, "gh", open_prs(commits["open"]))
+    assert branch_of(head) in loop_gate_branches(origin)
+    assert approvals.main(["prune-records", "--head", head]) == 0
+    assert loop_gate_branches(origin) == kept
+    assert approvals.main(["prune-records"]) == 0  # the daily run: nothing old and unneeded is left
+    assert loop_gate_branches(origin) == kept
