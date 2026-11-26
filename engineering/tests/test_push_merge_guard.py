@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "hooks" / "push_merge_guard.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "engineering-hooks" / "hooks" / "push_merge_guard.py"
 spec = importlib.util.spec_from_file_location("push_merge_guard", SCRIPT)
 assert spec and spec.loader
 guard = importlib.util.module_from_spec(spec)

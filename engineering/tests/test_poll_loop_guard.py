@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "hooks" / "heavy_run_guard.py"
+SCRIPT = Path(__file__).resolve().parents[2] / "engineering-hooks" / "hooks" / "heavy_run_guard.py"
 spec = importlib.util.spec_from_file_location("heavy_run_guard_poll", SCRIPT)
 assert spec and spec.loader
 guard = importlib.util.module_from_spec(spec)
