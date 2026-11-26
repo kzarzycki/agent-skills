@@ -7152,6 +7152,47 @@ def test_a_held_spec_line_says_whether_the_owner_approved_it_and_an_approved_one
     assert lines[1] in capsys.readouterr().err
 
 
+def test_the_gates_list_of_missing_items_leaves_out_a_held_spec_the_owner_approved(
+    writers: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`check merge`, `check build` (no PR yet) and the pre-land check (proof_gaps) print a held spec's line among the
+    missing items only while it awaits the owner; one the owner approved goes to stderr."""
+    given = by("worker", approved(2, "kind:enhancement"))
+    waiting = by("worker", specced(1, "kind:enhancement"))
+    said = "its spec is the owner's to approve under `spec.auto: true`"
+    done, wait = "; the owner has approved it", "; it still awaits their approval"
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, AUTO))
+    monkeypatch.setattr(approvals, "one_repo", lambda: None)
+    monkeypatch.setattr(approvals, "current_pr", lambda: None)
+    monkeypatch.setattr(approvals, "git", lambda *a: "origin/main\n")
+    monkeypatch.setattr(approvals, "issue_node", lambda n: {1: waiting, 2: given}[n])
+    monkeypatch.setattr(approvals, "unopened", lambda: pull(files=("billing/a.py",)))
+
+    def streams() -> tuple[str, str]:
+        out, err = capsys.readouterr()
+        return out, err
+
+    # check build with no PR yet
+    for number, shown in ((2, done), (1, wait)):
+        approvals.main(["check", "build", "--issue", str(number)])
+        out, err = streams()
+        assert (shown in out, shown in err) == (shown == wait, shown == done)
+    # check merge and the pre-land check, on a PR that lacks a verdict so both have something to say
+    pr = pull(files=("billing/a.py",))
+    for number, shown in ((2, done), (1, wait)):
+        pr["closingIssuesReferences"]["nodes"] = [{1: waiting, 2: given}[number]]
+        monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+        assert approvals.main(["check", "merge", "7"]) == 1
+        out, err = streams()
+        assert (shown in out, shown in err) == (shown == wait, shown == done)
+        lines, _ = approvals.proof_gaps(pr, TRACKER, AUTO)
+        assert any(said in line and line.endswith(wait) for line in lines) == (shown == wait)
+        assert not any(line.endswith(done) for line in lines)
+        assert (shown in streams()[1]) == (shown == done)
+
+
 def test_under_spec_auto_a_file_the_spec_did_not_foresee_holds_the_spec(
     writers: list[str],
 ) -> None:
