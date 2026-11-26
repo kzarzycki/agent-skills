@@ -66,8 +66,10 @@ def test_the_setting_then_origin_are_the_fallbacks(
         gatekeeper_md("loop:\n  gate: mise run check\n  forge_remote: fork\n"),
         "names the fork",
     )
+    assert approvals.forge() == "origin"  # the working tree's own copy decides nothing (#2710)
+    git_in(repo, "push", "-q", "origin", "main")  # origin's default branch holds it now
     assert approvals.forge() == "fork"
     git_in(
         repo, "push", "-q", "fork", "main"
-    )  # the base now holds the setting, which the schema accepts
+    )  # the base holds the setting, which the schema accepts
     assert approvals.settings(approvals.project()[1])["forge_remote"] == "fork"

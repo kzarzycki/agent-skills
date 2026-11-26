@@ -27,15 +27,24 @@ def test_the_forge_remote_is_the_branchs_upstream(checkout: Path, tmp_path: Path
     assert (remote, merge) == ("fork", "main")  # the repo and base the cloud session clones
 
 
-def test_the_setting_is_the_fallback_then_origin(checkout: Path, tmp_path: Path) -> None:
+def test_the_setting_is_the_fallback_then_origin(checkout: Path) -> None:
     git("remote", "add", "fork", "file:///nowhere", cwd=checkout)
     git("branch", "--unset-upstream", cwd=checkout)
     assert omnigent_agent.forge_remote(checkout) == "origin"
     policy = checkout / "docs" / "agents" / "gatekeeper.md"
     policy.parent.mkdir(parents=True)
     policy.write_text("```yaml\nloop:\n  forge_remote: fork\n```\n")
+    assert (
+        omnigent_agent.forge_remote(checkout) == "origin"
+    )  # the working tree's own copy decides nothing
+    git("add", "-A", cwd=checkout)
+    git("commit", "-qm", "names the fork", cwd=checkout)
+    git("push", "-q", "origin", "main", cwd=checkout)  # origin's default branch holds it now
+    git("remote", "set-head", "origin", "main", cwd=checkout)
     assert omnigent_agent.forge_remote(checkout) == "fork"
     policy.write_text("```yaml\nloop:\n  forge_remote: nosuch\n```\n")
+    git("commit", "-qam", "names none", cwd=checkout)
+    git("push", "-q", "origin", "main", cwd=checkout)
     assert omnigent_agent.forge_remote(checkout) == "origin"
 
 

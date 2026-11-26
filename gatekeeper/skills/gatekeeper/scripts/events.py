@@ -136,7 +136,7 @@ FORGE_SETTING = re.compile(r"^\s*forge_remote:\s*[\"']?([\w.-]+)", re.MULTILINE)
 
 def forge_remote(cwd: Path | str | None = None, git: Callable[..., str] | None = None) -> str:
     """The remote the forge's repo is on, for the checkout at `cwd`: the current branch's upstream's remote
-    (`git rev-parse --abbrev-ref @{u}`), else `forge_remote` in docs/agents/gatekeeper.md's policy, else `origin`.
+    (`git rev-parse --abbrev-ref @{u}`), else `forge_remote` in docs/agents/gatekeeper.md's policy as origin's default branch holds it (never the working tree's), else `origin`.
     A worktree whose branch tracks a fork then fetches, pushes and reads policy from the fork's repo, whatever
     `origin` is. Both the gatekeeper and omnigent-agents' `claude-cloud-run` call it, so they agree. A name that is
     no remote of the checkout is passed over. `git` runs one git call and returns its output (default: `run` in
@@ -159,11 +159,15 @@ def forge_remote(cwd: Path | str | None = None, git: Callable[..., str] | None =
     for name in sorted(remotes, key=len, reverse=True):  # a remote's name may hold a slash
         if upstream.startswith(f"{name}/"):
             return name
-    try:
-        top = ask("rev-parse", "--show-toplevel").strip()
-        found = FORGE_SETTING.search((Path(top) / "docs" / "agents" / "gatekeeper.md").read_text())
-    except (OSError, subprocess.SubprocessError, ValueError):
-        found = None
+    # the setting is read from origin's default branch, which a PR cannot edit: a PR's own working-tree copy would let it
+    # choose the remote its base and policy are judged against
+    found = None
+    for ref in ("refs/remotes/origin/HEAD", "refs/remotes/origin/main"):
+        try:
+            found = FORGE_SETTING.search(ask("show", f"{ref}:docs/agents/gatekeeper.md"))
+        except (OSError, subprocess.SubprocessError):
+            continue
+        break
     if found and found.group(1) in remotes:
         return found.group(1)
     return "origin"
