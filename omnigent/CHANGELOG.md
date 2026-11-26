@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.21 - 2026-11-26
+
+- omnigent-agents: `supervise --install` run from a developer checkout of the pack refuses and names the installed copy to run it from, instead of writing a service that runs that checkout for ever (#2761)
+
 ## 0.1.20 - 2026-11-26
 
 - omnigent-agents: an idle session whose `Waits:` names its supervisor is recorded with no event while the owner has an open question card on that supervisor or up its parent chain, since the wait is on the owner's answer; with no open card the wait is still acted on (#2755).
