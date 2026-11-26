@@ -506,10 +506,13 @@ never in this file.
 ## Pin updater
 
 `scripts/pin_update.py --repo <consumer repo>` moves the repo's pack pin in `apm.yml` to the newest
-`pin.tag_prefix` release tag, runs `apm install`, prints the compare link and relays an
-`ACTION NEEDED:` line to `cos_session`. It commits nothing. It skips, changing nothing, when
-`apm.yml`, the lock or a deployed file has uncommitted edits, rolls back a failed install, and
-refuses the pack's own checkout. `--dry-run` only reports. How often it runs is the scheduler's
+`pin.tag_prefix` release tag, runs `apm install`, then `apm update` (every package in the lock, transitive
+ones too, so a sibling's own release moves even when the direct pin is current) and `apm audit --ci
+--no-policy`. A clean run commits the pin, the lock and the deployed files, the message holding a compare
+link for each pin that moved, and relays an `ACTION NEEDED:` line to `cos_session`; a run where nothing
+moves commits nothing. It skips, changing nothing, when `apm.yml`, the lock or a deployed file has
+uncommitted edits, rolls back a failed install, update or audit and an install that removes a deployed
+file, and refuses the pack's own checkout. `--dry-run` only reports. How often it runs is the scheduler's
 business. Read it when setting up or debugging a repo's pin updates.
 
 ## Start gate

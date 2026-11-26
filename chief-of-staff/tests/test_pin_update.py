@@ -90,7 +90,14 @@ def run(w, apm="ok", *extra, repo=None):
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, "COS_VALUES": ""},
+        env={
+            **os.environ,
+            "COS_VALUES": "",
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        },
     )
 
 
@@ -127,7 +134,8 @@ def test_failed_install_is_rolled_back(world):
 def test_up_to_date_changes_nothing(world):
     (world["repo"] / "apm.yml").write_text(APM_YML.replace("1.2.0", "1.10.0"))
     sh(world["repo"], "git", "commit", "-qam", "pin")
-    r = run(world)
+    stub(world, "apm-noop", "exit 0\n")
+    r = run(world, "apm-noop")
     assert r.returncode == 0 and "newest" in r.stdout and not world["sent"].exists()
 
 
@@ -183,3 +191,95 @@ def test_a_pin_at_the_floor_moves(world):
     release_with_floor(world, "1.2.0", "1.9.0")
     r = run(world)
     assert "ref: engineering-v2.0.0" in (world["repo"] / "apm.yml").read_text(), r.stdout
+
+
+def stub(w, name, body):
+    f = w["ok"].parent / name
+    f.write_text("#!/bin/sh\n" + body)
+    f.chmod(0o755)
+    w[name] = f
+
+
+def test_runs_apm_update_and_moves_a_transitive_pin(world):
+    """#2706: `apm install` keeps a sibling's locked ref, so the updater runs `apm update` too."""
+    lock = "dependencies:\n- name: loop\n  repo_url: acme/pack\n  virtual_path: loop\n  resolved_ref: loop-v1.0.0\n"
+    (world["repo"] / "apm.lock.yaml").write_text(
+        lock + "  deployed_files:\n  - .agents/skills/a.md\n"
+    )
+    sh(world["repo"], "git", "commit", "-qam", "lock")
+    new = lock.replace("1.0.0", "1.1.0") + "  deployed_files:\n  - .agents/skills/a.md\n"
+    stub(world, "apm-up", f'[ "$1" = update ] && cat > apm.lock.yaml <<"E"\n{new}E\nexit 0\n')
+    r = run(world, "apm-up")
+    assert r.returncode == 0, r.stderr
+    assert "resolved_ref: loop-v1.1.0" in (world["repo"] / "apm.lock.yaml").read_text()
+    assert "compare/loop-v1.0.0...loop-v1.1.0" in r.stdout
+
+
+def test_a_failing_audit_rolls_back(world):
+    """#2706: `apm audit` catches a committed local edit to an installed skill."""
+    stub(
+        world,
+        "apm-audit",
+        'echo new > .agents/skills/a.md\n[ "$1" = audit ] && { echo drift >&2; exit 1; }\nexit 0\n',
+    )
+    r = run(world, "apm-audit")
+    assert r.returncode == 1 and "rolled back" in r.stdout and "audit" in r.stdout
+    assert (world["repo"] / ".agents/skills/a.md").read_text() == "orig"
+    assert (world["repo"] / "apm.yml").read_text() == APM_YML
+
+
+def test_an_install_that_removes_a_skill_is_rolled_back(world):
+    """#2706: a deployed file the install deletes is a lost skill, not an update."""
+    stub(world, "apm-rm", "rm .agents/skills/a.md\n")
+    r = run(world, "apm-rm")
+    assert r.returncode == 1 and "removed" in r.stdout
+    assert (world["repo"] / ".agents/skills/a.md").read_text() == "orig"
+
+
+def test_commits_with_a_compare_link_per_moved_pin(world):
+    """#2706: the run ends in a commit whose message links each moved pin."""
+    r = run(world)
+    assert r.returncode == 0, r.stderr
+    msg = subprocess.run(
+        ["git", "-C", str(world["repo"]), "log", "-1", "--format=%B"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "compare/engineering-v1.2.0...engineering-v1.10.0" in msg
+    status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(world["repo"]),
+            "status",
+            "--porcelain",
+            "apm.yml",
+            ".agents/skills/a.md",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert status == ""
+
+
+def test_a_sibling_release_alone_is_updated_and_committed(world):
+    """#2706: the direct pin is current, only a transitive package has a newer release."""
+    (world["repo"] / "apm.yml").write_text(APM_YML.replace("1.2.0", "1.10.0"))
+    lock = "dependencies:\n- name: loop\n  repo_url: acme/pack\n  virtual_path: loop\n  resolved_ref: loop-v1.0.0\n"
+    (world["repo"] / "apm.lock.yaml").write_text(
+        lock + "  deployed_files:\n  - .agents/skills/a.md\n"
+    )
+    sh(world["repo"], "git", "commit", "-qam", "pin")
+    new = lock.replace("1.0.0", "1.1.0") + "  deployed_files:\n  - .agents/skills/a.md\n"
+    stub(world, "apm-sib", f'[ "$1" = update ] && cat > apm.lock.yaml <<"E"\n{new}E\nexit 0\n')
+    r = run(world, "apm-sib")
+    assert r.returncode == 0, r.stderr
+    msg = subprocess.run(
+        ["git", "-C", str(world["repo"]), "log", "-1", "--format=%B"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "compare/loop-v1.0.0...loop-v1.1.0" in msg
