@@ -54,11 +54,13 @@ exit 3 prints that path. Answer from the spec and the owner's stated intent, or 
 owner only when neither settles it, then run
 `python3 scripts/omnigent_agent.py send <session> <answer-file> <report>` in the
 background (a bare `&` is not woken by its exit: set `LOOP_NOTIFY` and add `--notify`, or use the
-harness's own background-run support). It continues the same session while its cache is warm and waits as `run`
-does; add `--verdict` when the child is a verifier, because `send` and `wait` are not
-given the role. A child still in a turn gets the answer at its next tool boundary; until
-then `send` reports it queued and waits, and a rerun of the same `send` waits for the
-first copy instead of delivering a second. A report left from the earlier turn does not
+harness's own background-run support). It continues the same session while its cache is warm. `send`
+returns as soon as the message is accepted, with a delivery line and exit 0, and does not wait for
+the report: `wait <session> <report>` does, or add `--wait` to `send` to wait as `run` does (`--notify`
+and `--verdict` imply it; add `--verdict` when the child is a verifier, because `send` and `wait` are not
+given the role). A child still in a turn gets the answer at its next tool boundary; until
+then `send` reports it queued, and a rerun of the same `send` finds the first copy instead of
+delivering a second. With `--wait`, a report left from the earlier turn does not
 end the wait: only one written after the send counts. A session whose runner Omnigent
 reaped (idle over an hour) is revived in place first (`retry_session`, operating-omnigent
 skill), keeping its conversation. Exit 4 means the revive failed or the answer did not
@@ -94,16 +96,11 @@ takes a Claude mode (codex-native hands launch args to the `codex` CLI, whose te
 `--dangerously-bypass-approvals-and-sandbox` (approval policy `never`, full-access sandbox), since a prompt
 nobody answers blocks an unattended session; `--permission-mode default` keeps Codex's own stance.
 A claude-cloud child takes `auto` or `bypassPermissions`, sent as the session create's
-`permission_mode` (the server answers the VM's tool requests itself under bypass), and starts in
-`bypassPermissions` unless the flag names a mode, since it runs unattended in a disposable VM where an
-`auto` prompt waits on nobody: a mode from the variable alone is not applied to it, and `start` says
-so on stderr. `start` refuses a flag naming any other mode for it. Until
-Omnigent applies a default mode per agent definition on every start path (kzarzycki/omnigent#529), this
-bypass default is the pack's own; after it, `start` passes no mode unless asked. Omnigent hands
-bypass on only from a session that runs in it itself (kzarzycki/omnigent#526) and answers any other
-creator's bypass request with HTTP 400, so `start` from such a session fails, naming the two ways on:
-start the worker from a session or host shell in bypass, or pass `--permission-mode auto` to accept
-one that waits on prompts. It never falls back to `auto` itself. Either way `start` prints the mode
+`permission_mode` (the server answers the VM's tool requests itself under bypass), from the flag only:
+with none, `start` sends no mode and the host's agent default applies. A mode from the variable alone
+is not applied to it, and `start` says so on stderr. `start` refuses a flag naming any other mode for it.
+Omnigent hands bypass on only from a session that runs in it itself and answers any other creator's
+bypass request with HTTP 400, which `start` reports as the create's failure. Either way `start` prints the mode
 the session got, read back from its record (`session <id>: permission mode <mode>`, `unknown` when
 the record can't be read). Start every child through `start` or `run`, never a raw
 `sys_session_create` with a mode of its own, since only these pick the mode and report it.
@@ -169,23 +166,23 @@ command, and its only other mode skips them all, so `start` refuses it a `--role
 `--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
 `--dangerously-skip-permissions`. Antigravity's effort is the user's configuration: agy names it
 in the model of its own settings (`Gemini 3.8 Flash (Low)`), which Omnigent copies into each
-session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of another `--model` than the required `--author-model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created. The flag without `--role <skills>/engineering-loop/verifier.md` is refused the same way, since the route would otherwise be dropped silently; `$OMNIGENT_VERIFIER_ROUTE` alone is not refused, as a host may export it for every start.
+session, so the launcher passes none. On another host agy takes the brief as a file there too, written through the host's file API: the render check it makes of a pasted first line fails on a long inline paste, which scrolls the line away. Every route's verdict is recorded the same way: `run` with `--pr N` on a verifier, and `wait --verdict --record-pr N`, post the collected report through the gatekeeper's `record verdict` (a review on the head it names), and when that fails they append a `record verdict BLOCKED: <reason>` line to the report and exit 1 with the same line on stderr. From a cloud VM `--verifier-route gemini` is refused at once (exit 1): the VM has no Omnigent server route to drive agy, so a cloud lead asks its coordinator to start the Gemini verifier, never falling back to a Claude one silently. `--verifier-route gemini` (or `$OMNIGENT_VERIFIER_ROUTE`) on a verifier start picks this agent in bypass mode, and `--verifier-route claude` a same-family Claude of any `--model`: engineering-loop's lead.md, Verifier route, says when. An unknown name fails before a session is created. A start with `--pr` that reads as a verifier's (`--same-family`, or a title or report name with `verifier` in it) and no verifier `--role` is refused the same way, so a fallback never skips the report format. The flag without `--role <skills>/engineering-loop/verifier.md` is refused the same way, since the route would otherwise be dropped silently; `$OMNIGENT_VERIFIER_ROUTE` alone is not refused, as a host may export it for every start.
 
 **Cloud workers.** A worker whose tools run in a cloud VM can't write a file on this host,
 so `run` and `start` take `--pr <n>` (or `--pr owner/repo#<n>` from a directory that isn't a checkout; a bare `<n>` reads a checkout `--workspace`, else the current directory, and an unresolvable repository is refused before any session exists; `wait`, `send` and `reap --pr` take the same form): the preamble then has it post its report as one comment
 on PR n through REST (`gh api repos/{owner}/{repo}/issues/<n>/comments`, since GitHub's
-GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host, path or session,
+GraphQL API, and so `gh pr comment`, answers 403 in the VM), naming no host or path outside a full Omnigent session link (`https://<server>/c/<id>`, which it may post),
 and end its turn with only the comment's URL. A cloud session can't create a release or upload any binary through GitHub (creating a release answers HTTP 403, and its GitHub proxy answers HTTP 415 to any body that isn't `application/json`), but it can push branches, so a build output it must hand over goes on a branch or is built where it's used. `run` and `start` refuse `--pr` to an agent whose harness isn't
 `acp:claude-cloud`, naming `claude-cloud`, before any session exists: a native worker given it
 would run its build on this host, where a heavy one starves every other session. A cloud session (harness `acp:claude-cloud`)
 runs in the environment its workspace's untracked `.claude/settings.local.json` names in
 `remote.defaultEnvironmentId`, so before creating one on this host `start` and `run` pin it
 (keeping the file's other settings) as Cloud environments, below, says, and refuse when no
-environment resolves. They refuse a local agent in a main checkout whose own file names the pin, naming
+environment resolves. `start --cloud-env <name>` runs one cloud start in the environment called `<name>` on this host's claude login instead of the project's: since the bridge reads the workspace's pin again whenever it makes the session's cloud session anew (after a failed setup or an unstarted stall), the start writes no pin, and its `--workspace` must be a launch dir of its own already pinned to that environment (`launch-dir <remote> <branch> <env-id> <path>`); any other workspace, an unknown name (listing the names there and pointing at `claude-code-mode --cloud-env <base>` for a `-code-mode` variant), a host agent or `--host` on another host is refused before any session exists. They refuse a local agent in a main checkout whose own file names the pin, naming
 `claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
 and a local agent working there switches its branch under every later start. A worktree is not that
 checkout, so a local agent there is accepted. For a workspace on another host `start` finds the checkout root through the host's listing and reads the same two files (`.claude/settings.local.json`, `.git`) through a live session there, and refuses a pinned main checkout the same way; a file the listing shows but the read can't give (a 404 from an older host, no live session, not JSON, a failed listing) prints one stderr line and the start goes on. In a worktree, though, `claude --cloud` takes the main checkout's pin when that checkout has one, so a worktree pinned to another environment would silently run that one's setup script and variables: `start`, `run` and `launch-dir` refuse such a worktree before any session exists, naming both pins and the two ways out (repin the main checkout, or launch from a clone, `launch-dir --clone`). A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> [<env-id>] <path>` makes one with the pin (an id given, else the one Cloud environments resolves) and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else, or with `--clone`, it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin, and one without when an environment resolves; else it refuses, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
-`claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>` is a lead's own heavy run in one call (engineering-loop's SKILL.md, Where heavy steps run): it runs one shell command in a Claude cloud session on the checkout's HEAD (default: this directory) and exits with the command's own code, printing the report path. One word after `--` is a shell command as written; several are joined as argv. Before any session exists it refuses (exit 125) a checkout with tracked changes, a detached HEAD, or a HEAD its branch's remote doesn't hold, naming `git push`, since the session clones from the remote. It keeps one launch dir per checkout and branch, `<main checkout>/.worktrees/claude-cloud-run-<branch>`: `launch-dir` makes it the first time (the environment resolved as `launch-dir` resolves it), and later runs fetch the branch and point its HEAD there, as `start --pr` does. It writes the brief itself (check out the exact commit, run the command detached, report an `EXIT: <n>` line, the summary line and every failure) and runs `run <the Cloud worker line's agent, else claude-cloud> ... --workspace <launch dir> --no-keep --model haiku --permission-mode bypassPermissions` (`$OMNIGENT_MODEL_CLAUDE_CLOUD_RUN` names another model), taking the exit code from the report's `EXIT:` line. On a host that does not offer `acp:claude-cloud` (its `configured_harnesses` on `GET /v1/hosts`, else on the caller's own session record) it starts the session where the project's cloud sessions run instead: the host and workspace of the newest `claude-cloud` session in its Omnigent project (`GET /v1/sessions?project=<name>`) on another online host whose workspace there holds `.git` and `.claude/settings.local.json`, read from the server, so no host or path is configured. That is `run ... --host <that host> --workspace <its workspace>`: `run --host` without `--top-level` is for a cloud agent only, which starts with no parent (a child takes its parent's runner) under the child preamble, and its report is written here, under the checkout's `tmp/loop/`. With no such session it starts here, as before. When the cloud route fails (the launch refused, setup failing, out of quota, no report, no `EXIT:` line) it exits 125, its own code and never the command's, and prints the reason and the host fallback, `LOOP_HOST_RUN=<reason> <command>`. The engineering pack's hook (`hooks/heavy_run_guard.py`) refuses a heavy run on a host with this call for that exact command, where `RUNNER_SERVER_URL` names an Omnigent server (without one it allows the run with a one-line notice); a child started on a host (any harness but the cloud one, never a top-level lead) gets one preamble line telling it to prefix its heavy runs with `LOOP_HOST_RUN=placed`, since its placement already chose the host.
+`claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>` is a lead's own heavy run in one call (engineering-loop's SKILL.md, Where work runs): it runs one shell command in a Claude cloud session on the checkout's HEAD (default: this directory) and exits with the command's own code, printing the report path. One word after `--` is a shell command as written; several are joined as argv. Before any session exists it refuses (exit 125) a checkout with tracked changes, a detached HEAD, or a HEAD its branch's remote doesn't hold, naming `git push`, since the session clones from the remote. It takes the forge's remote from the branch's upstream (`git rev-parse --abbrev-ref @{u}`), else `forge_remote` in `docs/agents/gatekeeper.md`'s `loop` section, else `origin`, the rule the gatekeeper reads too, and refuses a `--reference` or `--shared` clone (`objects/info/alternates`) before any session exists. It keeps one launch dir per checkout and branch, `claude-cloud-run-<branch>` beside the worktree it serves: `launch-dir` makes it the first time (the environment resolved as `launch-dir` resolves it), and later runs fetch the branch and point its HEAD there, as `start --pr` does. It writes the brief itself (check out the exact commit, run the command detached, report an `EXIT: <n>` line, the summary line and every failure) and runs `run <the Cloud worker line's agent, else claude-cloud> ... --workspace <launch dir> --no-keep --model haiku --permission-mode bypassPermissions` (`$OMNIGENT_MODEL_CLAUDE_CLOUD_RUN` names another model), taking the exit code from the report's `EXIT:` line. On a host that does not offer `acp:claude-cloud` (its `configured_harnesses` on `GET /v1/hosts`, else on the caller's own session record) it starts the session where the project's cloud sessions run instead: the host and workspace of the newest `claude-cloud` session in its Omnigent project (`GET /v1/sessions?project=<name>`) on another online host whose workspace there holds `.git` and `.claude/settings.local.json`, read from the server, so no host or path is configured. That is `run ... --host <that host> --workspace <its workspace>`: `run --host` without `--top-level` is for a cloud agent only, which starts with no parent (a child takes its parent's runner) under the child preamble, and its report is written here, under the checkout's `tmp/loop/`. With no such session it starts here, as before. When the cloud route fails (the launch refused, setup failing, out of quota, no report, no `EXIT:` line) it exits 125, its own code and never the command's, and prints the reason and the host fallback, `LOOP_HOST_RUN=<reason> <command>`. The engineering pack's hook (`hooks/heavy_run_guard.py`) refuses a heavy run on a host with this call for that exact command, where `RUNNER_SERVER_URL` names an Omnigent server (without one it allows the run with a one-line notice); a child started on a host (any harness but the cloud one, never a top-level lead) gets one preamble line telling it to prefix its heavy runs with `LOOP_HOST_RUN=placed`, since its placement already chose the host.
 `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
@@ -207,13 +204,13 @@ repository's counts for nothing. The nudge asks for the comment, and a second tu
 without one fails. `run` and `wait` with `--pr` keep the worker once its report is in (`--no-keep` finishes it;
 `--keep` is still accepted), and `reap` finishes it once its PR is merged or closed (Finished sessions): a fresh cloud session is a fresh VM, clone and build, while a kept one, even idle
 past its VM's reclaim, revives on the next message with its clone and conversation, so a fix
-round goes to it with `send --pr <n>`, else to a fresh `run --pr` (Follow-ups). A cloud
+round goes to it with `send --pr <n> --wait`, else to a fresh `run --pr` (Follow-ups). A cloud
 child that fails in setup, before its first turn (`cloud session setup failed` and no assistant
 message), `run` starts once more in a fresh session with the same brief, and one that stalls
 (`made no progress`, the bridge's `CLAUDE_CLOUD_STALL_TIMEOUT_S`) `wait` sends one continue
-message; each is named on stderr, and a second of either fails, naming both. `send --pr <n>`
+message; each is named on stderr, and a second of either fails, naming both. `send --pr <n> --wait`
 reaches a worker still open (kept, or one whose turn ended without a report), wherever its
-workspace is, since the report is the file `wait` writes here, and takes only a comment
+workspace is, since the report is the file `wait` writes here (for a path on another host, `tmp/loop/<its name>`, as `wait --pr` writes it), and takes only a comment
 created after the report already there, so a turn that ends on the old comment's link, or on
 none, gets the nudge and then fails. `--pr` arms no supervisor registry, since the supervisor reads the report file and
 would revive and nudge the worker toward a path it can't write: re-attach a `run` that died
@@ -225,7 +222,7 @@ question tool and a published page, since each waits on a prompt nobody in the c
 A host without the cloud
 harness starts the worker on one that has it, with `start --top-level --host <host> --pr <n>`
 (Top-level leads, `--host`): `--pr` gives the PR preamble to a top-level session too.
-A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
+`--role` also takes a bare `lead`, `worker` or `verifier`, which names engineering-loop's role file beside this skill, so a launch dir needs no copy of it. A cloud child given `--role` gets the role file's text in its brief, inside a `<role-file>` block, not its path: the VM has none of this host's paths, and a target repo without the pack installed holds no copy, so a path would read nothing. The skill's other files that the role names may not be in the checkout either; the brief says so.
 Every `acp:claude-cloud` session's preamble, lead or worker, with or without `--pr`, says how to open a
 PR when its brief or role asks for one: `curl` to `https://api.github.com/repos/<owner>/<repo>/pulls` with a
 `Content-Type: application/json` header. The VM's HTTPS proxy authenticates that host as the GitHub App, so no
@@ -309,10 +306,11 @@ lock per lead (the runner's primary session, which a lead's workers and their ch
 take one heavy slot between them (worker.md, Gates and push); a session gets no environment from
 its starter, so the path rides in the brief.
 
+**A queue failure on the PR.** `scripts/queue_failure.py` reads a Mergify status comment and the failing jobs' logs: the supervisor's dequeue message to a lead and the `Queue failure` record on the PR come from it, so they list the same checks and tests (#2497). A project that wants the record copies the pack's `.github/workflows/queue-failure.yml` with its setup step and sets, in that file, `SCRIPT` to where `queue_failure.py` sits on its default branch; the job needs `actions: read` (the job logs) and `pull-requests: write` (the record). It runs only for a comment of `mergify[bot]` on a PR, writes one record per comment for a dequeue over failing checks (`CHECKS_*`; a merge, a requeue and a dequeue for another reason write nothing), and runs the default branch's copy with no PR code. The record's first line is `Queue failure`; it holds the code, each failing check with its job link, the failing tests, and the comment it reports. A project with no Mergify queue never triggers it, and the job changes nothing there. Mergify's queue only: GitHub's own merge queue is not read.
+
 **Waiting on a run or a PR.** `python3 scripts/omnigent_agent.py wait-for --log <log> [--pid
 <n|file>]`, `--pid <n|file>` or `--pr N [--until checks|merged|closed|gate|verdict]` blocks up to `--budget`
-seconds (default 570, under a 10-minute tool call; pass the run's expected length when the harness tracks the call
-in the background, so it wakes you once, never a loop of short calls), printing nothing until it ends: on the log's
+seconds (default 570, under a 10-minute tool call; pass the run's expected length only where a finished background call wakes the session (a host's Claude Code or Codex), so it wakes you once, never a loop of short calls; a claude-cloud session is not woken by a finished background task, so it waits in the foreground, each call under 10 minutes, and never ends a turn on one), printing nothing until it ends: on the log's
 `exit <n>` line with that code, the line before it and, on red, the last 30 lines (with `--pid`,
 only an `exit` line after the `run <pid>` line naming that run, which the detached recipe writes
 first, since a reused log path still holds the previous run's line; a log alone is trusted as
@@ -341,7 +339,9 @@ wake beside Omnigent's notice. Don't poll or `watch` a child for the wake you we
 <s> -- <cmd>` runs `<cmd>` (no shell unless it is one) every `--every` seconds, at most 60 so
 each sleep stays short of any tool timeout, and exits 0 once it exits 0, or 6 once `--limit`
 passes; keep a call's `--limit` under the harness's tool timeout, so the call returns rather
-than being cut off, and call it again while the budget lasts.
+than being cut off, and call it again while the budget lasts. It refuses a command that reads one PR through gh
+(`gh pr view|checks|status`, `gh api .../pulls/<n>`) with exit 2: `wait-for --pr <n>` reads the
+PR through ETags, which cost no quota while it doesn't move.
 
 **Host capacity.** `python3 scripts/omnigent_agent.py capacity` prints this host's idle CPU
 share over about a second and its available memory, and exits 0 when it has room for another
@@ -468,8 +468,8 @@ claude.ai events API (the VM has no route to the server), so a cloud lead passes
 the repo's project: the owner opens it from the sidebar and talks to it, its own children
 report to it, and archiving it ends only its own runner. Its brief opens with the lead
 preamble: only the owner's own words, quoted with where they were said, approve, the rest
-of the brief is a colleague's guidance, the lead asks the owner in its own session rather
-than in a question file, and it writes its final report to the path. Where the base policy
+of the brief is a colleague's guidance, the lead asks the owner its own questions on its own
+question card rather than in a question file, and it writes its final report to the path. Where the base policy
 of its workspace's checkout (`origin/<default branch>`'s policy file, read by engineering-loop's
 `base_policy` and `delegation`) sets `loop.delegate: all`, the preamble adds the delegation: the
 lead settles specs and gives the merge go itself (`approve merge <pr> --head <sha> --by delegate`,
@@ -478,12 +478,15 @@ question card only for a change on `risk.critical_paths`. Without that setting, 
 engineering-loop skill, the wording is unchanged. A workspace on another host has no git to ask: its `.git/config` is read through the host's file API for the
 `origin` repo, and `gatekeeper.md` and `loop.md` come from that repo's default branch on GitHub (`gh`; a 404 means the file
 is absent), chosen by gatekeeper's `chosen`, so it follows the base's policy as a local lead does. A read that fails keeps
-today's wording and prints one stderr line; a workspace outside a checkout keeps it silently. A followed lead whose turn ends `USER NEEDED` with no question card open is reported
-as an `unasked` event, which tells its waiter to post a card or act under the delegation; with a card
-open it is reported as any turn end. How it asks and where
+today's wording and prints one stderr line; a workspace outside a checkout keeps it silently. A followed lead whose turn ends `USER NEEDED` with a question card open posts nothing, since
+the card already reaches the owner; with no card open it is reported as an `unasked` event, routed `act`, which
+tells the session that started it to put a question that spans projects to the owner on its own card, or else to
+send the lead back to its card. How it asks and where
 it parks a question is its role's (`--role`; under the engineering loop, `lead.md`). `run --top-level` exits 1, since a lead writes no
 question for `run` to return: follow it with `watch <session>`, and once its report is in,
-archive it with `reap <session>`.
+archive it with `reap <session>`. `start --top-level --role lead` with neither `--registry` nor
+`$OMNIGENT_SUPERVISE_REGISTRY` exits 2 before any session exists, since no supervisor would follow it
+and a stalled turn would go unseen.
 
 A cloud session started without `--pr` (`claude-cloud`, a lead or not) keeps its report file
 in its VM, which no file API here reaches, so its preamble has it reply with the full report as
@@ -507,15 +510,16 @@ It needs `--top-level`, since Omnigent runs a child on its parent's runner. On a
 than this one, `--workspace` is required, and it and the report are absolute paths on that host, never resolved or checked here; the brief goes inline
 in the first message, because its file would be on this host, so a Claude lead may read it as
 pasted text and ask for a go-ahead; and the report is written there, so `wait` takes its path
-as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the report is instead the path here
-that `wait --pr <n>` writes the PR comment to.
+as given and reads it, and its `.question`, through the session's file API on that host; the supervisor's `check` and `send` do the same, and `send` deletes an answered question and writes its `.followup` file there. With `--pr <n>` (a cloud worker) the same rule holds: the report is
+that host's absolute path, never made here, and `wait --pr <n>` writes the PR comment to
+`tmp/loop/<its name>` here, where a report from another host is copied home (#2028).
 
 **Verifiers on another host.** A verifier (a `--role` whose file is `verifier.md`) starts on another host
 the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --workspace <clone>
 <report>`, where `<clone>` is an absolute path there holding a clone of the repo and the report
 is under its `tmp/loop/`. Its `--pr` names the PR it reviews, not a report channel: it writes its
 report file as any child does. With a `Placement: hosts: <name>, <name>` line (or the old `Verifier hosts:`) in the project's
-`docs/agents/loop.md` (engineering-loop, Where heavy steps run), `start` refuses a host the line does not list, naming the list; without
+`docs/agents/loop.md` (engineering-loop, Where work runs), `start` refuses a host the line does not list, naming the list; without
 it any host goes. Other sessions holding that clone don't stop it, since it works in a detached
 worktree of its own under the clone's `tmp/loop/` and never switches the clone's branch; every
 other start keeps the in-use refusal. Each `--file <local>` (a proof log, the previous report) is written beside the
@@ -534,8 +538,8 @@ rerun sends no second one. A message held only by the lead's current step (a lon
 foreground command) is exit 0 too: the line says `queued until the session's current step
 ends` and it lands then, with no further call, and a rerun sends no second copy. Exit 5: queued
 behind an approval prompt it prints, until a person answers it; it lands then. Exit 4: not deliverable, and why (archived, a revive that failed, or
-neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). A reaped runner is
-revived in place first, as `send` does. A question card (`sys_ask_user_question`)
+neither pending nor in the history within `--confirm-seconds`, default 60). Exit 7: `SENT_UNCONFIRMED`, the message was posted and a later read (the poll that confirms it) failed, so it is out and unconfirmed; run the command again, it finds the copy and posts no second one (a failure before the post stays exit 1). Exit 8: `HOST_OFFLINE`, the lead's host is offline and cannot be woken, so nothing was sent and Omnigent keeps nothing for it; relay again once the host is back (`host_online` in its info). A reaped runner is
+revived in place first, as `send` does. `--unarchive` unarchives an archived lead first, so it resumes with its history (Claude's same transcript, Codex's same thread, a cloud session's same claude.ai session); without it an archived lead is exit 4. `send` does the same for an archived session the supervisor registry (`--registry`, else `$OMNIGENT_SUPERVISE_REGISTRY`) still lists, then delivers (with `--wait`, waits for the report); for one it does not list, `send` is exit 4 unless you pass `send --unarchive`. A question card (`sys_ask_user_question`)
 leaves the lead free: a plain `relay` is delivered beside it (exit 0), its line names the card
 still open (`send` prints the same line before it waits), and the message never answers it. A message with a line that is a question for the owner (opening `USER NEEDED:`, `needs owner:` or `question for the owner:`; quoted and bullet lines, a bare mention, `--answer` and `--from` never count) is refused with exit 1: the owner's question is a card, never a relayed line, so post it with `sys_ask_user_question` and relay only the fact and the action wanted.
 **Settle it, withdraw the card.** Whoever settles a question a lead put on a card (a manager answering it, a decision made elsewhere) withdraws the card, so the owner never answers a moot one later: `python3 scripts/omnigent_agent.py withdraw <session> [<question id>]` cancels the session's open cards (or that one). The supervisor does not forward a turn end that waits on an open card (`USER NEEDED`, `needs owner`, `waiting on a card`), nor an end the lead's history already holds an item after that names the child, nor the end of an archived session, nor a failure of a worker a newer worker of its PR replaced; `reap --force` finishes such a replaced worker while its PR is open.
@@ -692,12 +696,14 @@ posting, goes to stderr once until it clears, and a `--timeout` window with no e
 `no event in <n>s: <sessions>`; neither stops it, and one session's error skips no other.
 
 `run`, `start` and `send` arm the registry named by `--registry`, else
-`$OMNIGENT_SUPERVISE_REGISTRY`: once their message is in the history, they write
-`<session>=<report>`, replacing any line for that session. `start` (and so `run`) puts its
+`$OMNIGENT_SUPERVISE_REGISTRY`, writing `<session>=<report>`, replacing any line for that session.
+`start` (and so `run`) writes it as soon as the session exists, before the brief is sent, since confirming
+the brief can outlast the console's 60 s adoption grace (#2319); the line goes if the session is
+abandoned and archived. `send` writes it once its message is in the history. `start` (and so `run`) puts its
 brief file `<report>.brief` on the line; `send` appends its message file to the line's brief
 files (else to `<report>.brief` when it exists), so a revived session reads its brief and then
-each follow-up in order. Not before, because until the
-message lands the turn before's report or question reads as newer than the last instruction,
+each follow-up in order. `send` waits for its message, because until it
+lands the turn before's report or question reads as newer than the last instruction,
 a false event. `run`, `send` and `wait` remove the line once they return the report or a
 question, since their caller has it; a race can still deliver both, and the second line is no
 news. `reap` with the registry drops the line of each session it finishes, before finishing it,
@@ -754,7 +760,8 @@ event, which routes `act` to the notified session, the manager, who clears the b
 proposes. Moving is a push (a commit, a force-push, the PR marked ready; a plain push, which GitHub gives no time, is dated no
 earlier than the head's first status or check run, or the sweep that first saw the head), a verifier report (`SATISFIED:`), a go (a
 green `owner` or `land` status) or a merge-queue step (`loop:queued` or `loop:dequeued` added or removed, a queue
-status or check run). The line names each blocker it finds: a red required check (the base's ruleset; any red check
+status or check run). A PR the merge queue holds (`loop:queued` on, and a queue check on its head still running or a
+queue status there pending) is waiting, not stalled, however long the queue takes (#2100). A PR carrying `loop:hold` is parked on purpose: it raises no stall, and the queue's drop of it is told to no lead and no manager, until the label comes off, when both resume as for any PR (#2316). The line names each blocker it finds: a red required check (the base's ruleset; any red check
 when unread), a conflict, a verdict on the head without a go (or a fix round asked with no push since), a card waiting
 (a loop event on the PR's branch at `needs-owner`, a verifier question newer than the push), else `none found on
 GitHub`: `o/r: PR #12 <title>: no push, verdict, go or queue step for 75m; blocker: a conflict with main: <url>`. It
@@ -770,7 +777,11 @@ lists (an approved, verified PR no `land` took) is said once per head and kind o
 satisfied verdict at <sha> and is not landed: land it (`land N --only`) or flag it`, or for a verified PR idle on a go or
 record it lacks, its line (`... missing: go`) and `: ask its approver for what it is missing`, a `stalled` event on that lead;
 the repo's last listing is kept (`stalled` in the state with `--console`), so the next hour's sweep says nothing new
-for it, and a PR is said again only once its head moved or it left the listing and came back; a PR a sweep could not
+for it, and a PR is said again only once its head moved or it left the listing and came back. Since one sweep may
+read a PR 15 minutes before its line is acted on, each line is first checked against the PR's live pull, check runs and
+statuses (`stalled_gone`): one merged, closed, moved to a new head or held by the merge queue since is logged and not
+said, nor kept as said, so a later sweep that lists it again says it; a failed read says the line as the sweep read it
+(#2100). A PR a sweep could not
 judge keeps what was listed for it. A PR the sweep could not judge, a failed sweep and a lead on another host are logged,
 never posted, except a sweep that judged none of the repo's PRs (its last line, `<n> of <n> open PRs not judged here`):
 that is said once per reason, `<owner>/<name>: check stalled judged none of its <n> open PRs: <why>`, since its silence
@@ -784,6 +795,14 @@ route sends it to the notified session (Routing, below): a terminal event found 
 only drops the line it already settled, and a followed lead's failure or prompt is
 one event per occurrence (`occurrences` in the state counts each entry into one), so the same
 error again after a recovery is news and the one a restart finds again is not.
+
+The chief of staff's console (not a manager's `<repo>-leads.registry` one) also adopts leads no
+registry holds, since a lead started without one stalls unseen: each poll it reads the server's
+session listing and follows every live, unarchived, top-level session labelled `omni.role=lead`
+that is on neither its own registry, nor any `*.registry` beside it, nor a `leads=` file its lines
+name, and that no followed lead created (`omni.created_by`, as above). It writes the session a
+`follow` line and posts one `adopted` event, routed to `act`: the lead is followed from then on,
+and the waiter fixes whatever started it unwatched.
 
 A followed lead also has a progress deadline, since a lead that reads running for good, or goes
 quiet a second time with the same last message, makes none of those events. Its progress,
@@ -802,7 +821,7 @@ wait comes from the lead's last message: `parked` for a `PARKED` ending, the thi
 WORKING` names (`verifier`, `CI`, `worker`, `lead`, `merge`, a child's session id, or a
 background task id such as `bz3jp5aod`, `b` and 8 lowercase letters and digits with one digit at
 least, opening it or after `on`/`for`), else
-`unknown`. A last line `Waits: supervisor|session <id>|#<pr>|CI|until <UTC>|<Actions run URL>` (printed by `omnigent_agent.py wait-on`, which refuses any other form, and a bare `#<pr>` that this repo has no PR or issue for; a run's end is news once, and a line that does not parse is told to its lead once, with these forms) is read first and exactly, and a line that does not parse still decides alone: a wait on the supervisor only when it names it (supervisor, CoS or chief of staff), else none, so prose and a `CoS:` footer decide nothing; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
+`unknown`. A last line `Waits: supervisor|own supervisor|session <id>|#<pr>|CI|until <UTC>|<Actions run URL>` (printed by `omnigent_agent.py wait-on`, which refuses any other form, and a bare `#<pr>` that this repo has no PR or issue for; a run's end is news once, and a line that does not parse is told to its lead once, with these forms) is read first and exactly (`own supervisor` is for a manager whose own supervisor wakes it: the turn is recorded and no wait on its parent, which `supervisor` is; a turn's ending is its first line that opens with `DONE`, `USER NEEDED`, `PARKED` or `STILL WORKING`, `USER NEEDED` anywhere winning, so a status block that opens `STILL WORKING` and lists a `DONE:` section is still working, not done), and a line that does not parse still decides alone: a wait on the supervisor only when it names it (supervisor, CoS or chief of staff), else none, so prose and a `CoS:` footer decide nothing; without one, prose decides: any single 32-hex id in the wait paragraph is a named wait, and `CoS`, `chief of staff` or a `CoS:` line count as waiting on the supervisor like `pm`. A `STILL WORKING` naming a UTC time (`until 2026-10-21T23:17Z`, `2026-10-21 23:17
 UTC`) is a timed wait, `until <time>`: no deadline before that time plus 20 minutes, then the
 named-wait rule. A last message that
 is only a report's path takes its ending and wait from the report's first line, read once per
@@ -833,6 +852,8 @@ it, and a failed turn that lost its runner (offline, or an error naming a lost r
 routes as any lead's, since the owner can't see why in that session. A direct lead that goes
 offline while idle raises nothing.
 
+`wait-on pr <n> --story <m>` also records `#<n>` as GitHub's own "blocked by" link of issue `#<m>` (REST `issues/<m>/dependencies/blocked_by`) and refuses when that link cannot be read, as where the feature is off for the repo: a blocker the supervisor cannot watch is no wait. When `#<n>` then closes or merges, the one "your wait names it" message to the waiting lead ends `#<m> is blocked by it: you can queue now`; a wait with no recorded link is told as before, and `wait-on` without `--story` reads no link.
+
 **Routing.** With `--console` an event is not posted as a line: the supervisor routes it, by
 `route`'s table (the design's § Routing an event), and settles what needs no decision itself.
 
@@ -843,16 +864,20 @@ offline while idle raises nothing.
 | a PR or session a lead's wait names settled, or a session it started reached a final state | rule | tell that lead within a minute, read from GitHub and the session; a set tells on its first failure or its last end |
 | `stalled`: a PR `check stalled` lists, once per head | rule | act: the chief of staff lands it (`land N --only`) or flags it |
 | `archived` | rule | its line and state entry dropped; no post |
+| `adopted`: a live top-level lead no registry held, read from the server's listing, and at least 60 seconds old so its launcher has written its registry (#2181, #2313) | rule | act: followed from now on; fix what started it unwatched |
 | `PARKED` after a `Park: ` message from the manager (without one: act, since the lead parked itself), a `STILL WORKING` naming its wait, an exact repeat of the lead's last event | rule | recorded; no post |
 | a `STILL WORKING` that hands back to its manager: a `Handback: #<n> <what>` line, else prose saying a PR is ready (`#12 READY`, `READY FOR VERIFY`) or a PR's step is the manager's (`#12 ... is yours`, `#12 ... over to you`) (#1753) | rule | act, to the session it notifies, with what it hands back; an exact repeat: recorded |
-| a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the turn, or restart it as a harness-tracked background task or detached with `LOOP_NOTIFY`); the same wait again after it: act |
+| a `STILL WORKING` whose wait does not wake it (#1753): a wait word and a pid, a pid file or a log, output or pid path anywhere in it, naming no `--notify` or `LOOP_NOTIFY`, no child or CI; or, in a cloud session, a background subagent; no `Waits:` line either way | rule | the untracked-wait nudge (`LEAD_UNTRACKED`: wait on it in the foreground in the turn, each call under 10 minutes, since a claude-cloud session is not woken by a finished background task, or restart it detached with `LOOP_NOTIFY`); the same wait again after it: act |
 | a quiet end (no ending, no named wait) | small model | mid-work: recorded; stalled: the nudge; for the owner: queued for them; no answer (a failure, no allowance left): act |
 | a quiet end again with no progress since the nudge | rule | act |
 | `deadline` | rule | a named wait: act, or with no live runner (nothing can end its wait) the revive, which acts only when it fails; unknown: the nudge, then act at the deadline after it; parked: none |
 | failed | rule | the first time a revive, after it act; a transient provider error (`authentication_failed`, a Cloudflare `Attention Required` page, any 5xx such as a cloud create's 503, `overloaded`: one table, `TRANSIENT_ERRORS`) instead a revive after a backoff of 2, 5, 10, 20 minutes, then every 20, and act once the next revive would fall more than 2 hours after the chain's first failure (`rate_limit` with no reset time too); a usage limit (`hit your … limit`, `usage limit`: `USAGE_LIMIT_ERRORS`, or a `rate_limit` printing its reset) is account-wide, so it parks instead: one post `usage limit: N sessions parked, resets <time>` (or `resets unknown`) for every lead parked on it, later ones joining unreported; one parked lead revived as a probe after the same backoff, or at once at the printed reset (`resets Nov 16, 6am (UTC)`, any IANA zone); one probe runs at a time; a probe failing on the limit again parks once more, and once a parked lead ends any other way (its turn ends, a prompt, another failure, which then routes as any other) every parked lead is revived and one post says how many resumed; act once an hour past the printed reset has passed (the reset is read once, when first parked), or with none once the next probe would fall 2 hours after the chain's first failure, and no parked lead is probed after. The parked state is each lead's `retrying` (`limit`, `resets`, `told`, `probe`), so a restart keeps it |
+| `DONE` with no result on its line (a bare `DONE`, even below prose), from a followed session that has its own leads registry, a manager (#2309) | rule | `done`, but the notified session is not woken: only the leads waiting on it are told, and the session stays followed. A manager with a result ends `DONE: <result>`; a turn that reports nothing may end on a bare `DONE` |
 | `DONE` | rule | act, and each lead registered `after=` it is told `Supervisor: <lead>, the lead you wait on, ended: <its first line>` |
 | a last message that is only a report path | rule | the report's first line read (`report`'s file API) and routed as the message; no ending: act |
-| `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over | small model | covered by a standing decision: act; else, or with no `--decisions`, the owner (no model) |
+| `USER NEEDED`, also below an earlier `DONE` or `PARKED` line, which it wins over, with no question card open (`unasked`) | rule | act, with or without `--decisions`: the manager puts a question that spans projects on its own card, or sends the lead back to its card; with a card open, nothing is posted |
+| a question card the lead posted (`asked`) | rule | recorded; the owner answers it in their Inbox |
+| a card still open `CARD_REMIND_SECONDS` (4 h) after the supervisor first saw it (`card-waiting`), once per card | rule | act, so a manager the owner told to act in their name can answer it; a lead the owner drives directly: recorded |
 | an approval prompt | rule | the owner; nothing in the supervisor approves |
 | a question | rule | act, for one `relay --answer` |
 | a session owing a report: its outcome; its revive or resume line | rule | act (a prompt: the owner); recorded |
@@ -949,7 +974,8 @@ python3 <abs-path>/scripts/omnigent_agent.py --server "$RUNNER_SERVER_URL" super
 ```
 
 It writes a service running that same command line less `--install` and `--log`, from this
-directory, then enables and starts it. On Linux that is a systemd user unit
+directory (an installed copy: from a developer checkout of the pack, which never sees a release, `--install`
+refuses and names the installed script to run it from, #2761), then enables and starts it. On Linux that is a systemd user unit
 `~/.config/systemd/user/omnigent-supervise-<hash>.service` with `Restart=always` (`systemctl
 --user status omnigent-supervise-<hash>` shows it); on macOS a LaunchAgent
 `~/Library/LaunchAgents/omnigent.supervise.<hash>.plist` with `KeepAlive` and `RunAtLoad`
@@ -977,6 +1003,8 @@ On Linux a user unit starts at boot only with lingering on: the install prints
 `loginctl show-user`'s `Linger` value and leaves `loginctl enable-linger $USER` to the owner,
 since it changes what runs on the host while nobody is logged in.
 
+A kill is not a stop: the service restarts the supervisor within seconds, on whatever code the checkout then holds. To pause it, stop the service (`systemctl --user stop omnigent-supervise-<hash>`, or `launchctl bootout gui/$(id -u)/omnigent.supervise.<hash>`); to pick up new code, restart it (`systemctl --user restart omnigent-supervise-<hash>`, or `launchctl kickstart -k gui/$(id -u)/omnigent.supervise.<hash>`). A supervisor its service started logs these commands, named for its unit, as its first line; one run by hand logs no such line.
+
 An update needs no restart: when `omnigent_agent.py` is replaced on disk (a skills sync
 installing a new one), `supervise --registry` re-executes itself in place with the same
 arguments, at the top of a poll with nothing waiting to be posted and its state written first,
@@ -996,7 +1024,7 @@ each and `already archived` for one finished before, and prints which it kept. I
 labels the session `omni.pr=<owner>/<name>#<n>` (a start whose label fails archives the session and fails), and
 `reap` looks the PR up in that repository, never the caller's checkout; a PR it can't read keeps the worker. A verifier
 started with `--pr` carries the same label, so its spend groups by PR, but neither `reap` nor `reap --merged` holds or finds one
-on it: a verifier ends with its verdict. A
+on it: a verifier ends with its verdict. A lead's own `omni.pr` label may list several PRs, comma-joined: `python3 scripts/omnigent_agent.py own-pr <owner>/<name>#<n> [--session <id>]` adds them, in one write, to this session's (or the named one's), once, and `approvals.py land` starts it detached for each PR it names, so a merge-queue dequeue of a PR the lead lands or took over reaches it. A PR that carries an `Owner:` record (the gatekeeper's `check build` writes it: `Owner:` and the lead's session link, nothing else) goes by the record first: a dequeue is relayed to the session it names, and for a session this server does not list (another agent tree's PR) the supervisor prints one `owned elsewhere` line and raises no event; a PR with no record is found by the label, as before. `reap` holds a labelled session until every PR it lists is merged or closed. `own-pr` checks the ref's format only, with no GitHub call per ref, so a mistyped PR number keeps the session held by `reap` until the label is fixed. A PR that waits on another agent tree carries a `Waiting on:` record with a `Deadline:` (gatekeeper's `record waiting`, #2501): past the deadline with no clearing record, the supervisor raises one `wait-due` event to the session the PR's `Owner:` record names (the lead found by label when the PR has no record), never twice for one record; for a session this server does not list it prints one `owned elsewhere` line and raises none, and a repo with no such record costs no extra call. The supervisor also sets an issue's `Session` field (the account's text issue field) from the `Session:` line of the issue's newest `Assigned:` claim record when the field is empty or differs, through gatekeeper's own GraphQL calls, which a cloud lead's claim cannot make; an account without the field is said once, a pull request has none, and a repo whose claims name no session costs no extra call (#2677). `reap` holds a labelled session until every PR it lists is merged or closed. `own-pr` checks the ref's format only, with no GitHub call per ref, so a mistyped PR number keeps the session held by `reap` until the label is fixed. A
 verdict does not release a worker, since the landing gate alone judges a verdict. `reap --merged [--pr <n>]` also
 finishes every live `--pr` worker whose PR is merged or closed, leaving an open PR's; `approvals.py land` starts it
 detached for each PR it merged, so a slow server never holds the land, and the outcome goes to a log it names. A finish that fails is printed and the rest still run, and

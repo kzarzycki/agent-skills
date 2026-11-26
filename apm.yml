@@ -9,6 +9,9 @@ dependencies:
   apm:
   - git: kzarzycki/agent-skills/engineering
     ref: engineering-v0.35.5
+  # #2797: the start fix for claude-cloud sessions is only on -next tags; drop this pin once a stable omnigent tag carries it.
+  - git: kzarzycki/agent-skills/omnigent
+    ref: omnigent-v0.1.23-next
   mcp: []
 includes:
 - .apm/instructions/**/*.md
