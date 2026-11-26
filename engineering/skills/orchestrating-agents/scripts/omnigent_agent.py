@@ -53,7 +53,18 @@ def installed(skill: str) -> Path:
 
 
 skill = "omnigent-agents"
-target = installed(skill) / "omnigent_agent.py"
+# run from a pack checkout (#2670), the sibling skill is the code of the checkout this runs in: installed() skips a
+# checkout it merely finds, so the one this forwarder sits in is taken here, outside the resolver copies kept identical
+root = Path(__file__).resolve().parents[4]
+beside = root / "omnigent" / "skills" / skill
+if (
+    (root / ".git").exists()
+    and (root / ".claude-plugin" / "marketplace.json").is_file()
+    and (beside / "SKILL.md").is_file()
+):
+    target = beside / "scripts" / "omnigent_agent.py"
+else:
+    target = installed(skill) / "omnigent_agent.py"
 print(
     f"orchestrating-agents/scripts/omnigent_agent.py is deprecated: run the `{skill}` skill's scripts/{target.name}",
     file=sys.stderr,
