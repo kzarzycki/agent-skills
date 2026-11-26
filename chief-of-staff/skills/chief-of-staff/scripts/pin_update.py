@@ -15,6 +15,10 @@ script; with no ``cos_session`` set it only prints. How often it runs is the sch
 
 * It skips, changing nothing, when the repo's ``apm.yml``, its lock or any file the lock lists as
   deployed has uncommitted changes, since those edits are the consumer's.
+* It refuses a jump the new release says it cannot take (#2709): a release ships `bump-from.yml` in its
+  package folder (`oldest:` the oldest pin it can be bumped from, `via:` the release to stop at), and a
+  pin older than `oldest` is told to move to `via` first, since the base's own gate must be able to judge
+  the bump PR and an old one cannot judge a new one's files.
 * It rolls back a failed install: tracked files are restored and files the install added removed.
 * It works only in ``--repo`` (default: the directory it runs in) and refuses the pack's own
   checkout, so it never touches a developer checkout.
@@ -30,6 +34,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -77,6 +82,31 @@ def newest_tag(remote: str, prefix: str) -> str | None:
     tags = [ln.split("refs/tags/", 1)[1] for ln in r.stdout.splitlines() if "refs/tags/" in ln]
     keyed = [(k, t) for t in tags if (k := version_key(t, prefix))]
     return max(keyed)[1] if keyed else None
+
+
+def bump_floor(remote: str, git_path: str, tag: str) -> tuple[tuple[int, ...], str] | None:
+    """`(oldest, via)` from the release's `bump-from.yml`, or None when it ships none (no limit)."""
+    sub = "/".join(git_path.split("/")[2:])
+    name = f"{sub}/bump-from.yml" if sub else "bump-from.yml"
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        for cmd in (["init", "-q"], ["fetch", "-q", "--depth", "1", remote, f"refs/tags/{tag}"]):
+            if subprocess.run(
+                ["git", "-C", tmp, *cmd], capture_output=True, check=False, env=env
+            ).returncode:
+                return None
+        shown = subprocess.run(
+            ["git", "-C", tmp, "show", f"FETCH_HEAD:{name}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if shown.returncode:
+        return None
+    data = yaml.safe_load(shown.stdout) or {}
+    oldest = version_key("v" + str(data.get("oldest", "")), "v")
+    via = str(data.get("via", ""))
+    return (oldest, via) if oldest and via else None
 
 
 def pins(repo: Path, prefix: str) -> list[tuple[str, str]]:
@@ -181,6 +211,15 @@ def run(args: argparse.Namespace) -> int:
             print(f"{git_path}: {old} is the newest `{prefix}` tag")
             continue
         link = compare_link(git_path, old, new)
+        floor = bump_floor(remote, git_path, new)
+        if floor and (version_key(old, prefix) or ()) < floor[0]:
+            say(
+                f"ACTION NEEDED: pin update {old} -> {new} refused in {repo.name}: {new} can be "
+                f"bumped only from {'.'.join(map(str, floor[0]))} or newer, since the base's own "
+                f"gate cannot judge a jump that large. Bump to {prefix}{floor[1]} first, land "
+                f"it, then run the updater again. Changes: {link}"
+            )
+            continue
         if args.dry_run:
             print(f"{git_path}: would move {old} to {new} ({link})")
             continue
