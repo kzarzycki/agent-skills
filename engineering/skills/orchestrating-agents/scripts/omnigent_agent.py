@@ -20,8 +20,7 @@ def installed(skill: str) -> Path:
     Code's cache (`<marketplace>/<plugin>/<version>/`, beside the script or in `~/.claude/plugins/cache`) that no
     update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
     searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
-    tests set it, the checkout is the GITHUB_WORKSPACE of the CI job running there, or this script is the pack's own
-    `orchestrating-agents` script running from it (#2670: its siblings are the code it already runs). Exits naming the skill to install when none holds it."""
+    tests set it, or the checkout is the GITHUB_WORKSPACE of the CI job running there. Exits naming the skill to install when none holds it."""
     # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
     import os
 
@@ -35,7 +34,6 @@ def installed(skill: str) -> Path:
         not checkout
         or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
         or bool(workspace and Path(workspace).resolve() == root)
-        or own.name == "orchestrating-agents"
     )
     cached = [
         *(root.parent.glob(f"[!.]*/[!.]*/skills/{skill}") if laid else []),
@@ -55,7 +53,18 @@ def installed(skill: str) -> Path:
 
 
 skill = "omnigent-agents"
-target = installed(skill) / "omnigent_agent.py"
+# run from a pack checkout (#2670), the sibling skill is the code of the checkout this runs in: installed() skips a
+# checkout it merely finds, so the one this forwarder sits in is taken here, outside the resolver copies kept identical
+root = Path(__file__).resolve().parents[4]
+beside = root / "omnigent" / "skills" / skill
+if (
+    (root / ".git").exists()
+    and (root / ".claude-plugin" / "marketplace.json").is_file()
+    and (beside / "SKILL.md").is_file()
+):
+    target = beside / "scripts" / "omnigent_agent.py"
+else:
+    target = installed(skill) / "omnigent_agent.py"
 print(
     f"orchestrating-agents/scripts/omnigent_agent.py is deprecated: run the `{skill}` skill's scripts/{target.name}",
     file=sys.stderr,
