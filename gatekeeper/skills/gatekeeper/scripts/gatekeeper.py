@@ -84,7 +84,7 @@ Under Omnigent (the lead's own `OMNIGENT_SESSION_LINK`, else `OMNIGENT_RUNNER_PR
 issue field is set to the same link. The field is optional: the account's owner creates it (a text field); without it,
 the run says so in one line after one lookup, the record still carries the link, and the claim and the exit code are
 unchanged. A refused write is a line too. Where GitHub refuses GraphQL, REST sets it, with the field's id read off an
-issue already carrying a value. `check setup` prints one line and GitHub's steps when the account lacks the field.
+issue already carrying a value; otherwise the supervisor, which runs where GraphQL works, sets it from the record. `check setup` prints one line and GitHub's steps when the account lacks the field.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` also fails a PR that itself carries `needs-owner` (`#<n> waits for the owner (needs-owner)`), so `land`
@@ -2504,7 +2504,7 @@ def session_field(number: int, link: str) -> str | None:
             if rest_field is None:
                 raise LookupError(
                     f"GitHub refuses GraphQL here, and REST names the `{SESSION_FIELD}` field's id only once an issue"
-                    " carries a value: set it on one issue by hand"
+                    " carries a value: the supervisor sets the field from this claim's record on its next poll"
                 )
         field = rest_field
         return lambda: rest_set_issue_field(number, field, link)

@@ -41,7 +41,7 @@ it uses the gatekeeper unchanged: every command works, the record still carries 
 one lookup and one informational line a run, never an error or a non-zero exit. Outside Omnigent neither is written.
 Where GitHub refuses GraphQL, REST checks the field exists and sets it, reading the field's id off an issue that
 already carries a value, since no REST route lists a personal account's fields: until one does, the run says so in its
-one line. `check setup` reports a missing field in one line, with the steps to create it on GitHub (Settings >
+one line, and the omnigent-agents supervisor, which runs where GraphQL works, sets the field from the claim's `Session:` line. `check setup` reports a missing field in one line, with the steps to create it on GitHub (Settings >
 Planning > Issue fields > New field, name `Session`, type Text), and exits as it would without it.
 
 ## Files
