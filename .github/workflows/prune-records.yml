@@ -1,0 +1,41 @@
+name: prune gate records
+
+# `approvals.py local-ci --record` and `rerun.yml` push a gate pass as the branch `loop-gate/<tree>-<key>`. `land`
+# deletes those of the trees it merges (drop_records), but a PR merged by Mergify or a merge queue, merged by hand,
+# or closed unmerged is swept by the next `land`; this job runs the same deletion at once
+# when a PR closes, naming its head, and daily for anything left: a record whose tree is no open PR's head and that
+# is over a day old. It checks out the base branch only and runs no PR code; the head sha is read as data.
+on:
+  pull_request_target:
+    types: [closed]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: prune-gate-records
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+      - name: Delete the record branches no open PR needs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "${HEAD_SHA:-}" ]; then args=(--head "$HEAD_SHA"); fi
+          uv run gatekeeper/skills/gatekeeper/scripts/gatekeeper.py prune-records "${args[@]}"
