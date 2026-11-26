@@ -134,7 +134,8 @@ def test_failed_install_is_rolled_back(world):
 def test_up_to_date_changes_nothing(world):
     (world["repo"] / "apm.yml").write_text(APM_YML.replace("1.2.0", "1.10.0"))
     sh(world["repo"], "git", "commit", "-qam", "pin")
-    r = run(world)
+    stub(world, "apm-noop", "exit 0\n")
+    r = run(world, "apm-noop")
     assert r.returncode == 0 and "newest" in r.stdout and not world["sent"].exists()
 
 
@@ -261,3 +262,24 @@ def test_commits_with_a_compare_link_per_moved_pin(world):
         check=True,
     ).stdout
     assert status == ""
+
+
+def test_a_sibling_release_alone_is_updated_and_committed(world):
+    """#2706: the direct pin is current, only a transitive package has a newer release."""
+    (world["repo"] / "apm.yml").write_text(APM_YML.replace("1.2.0", "1.10.0"))
+    lock = "dependencies:\n- name: loop\n  repo_url: acme/pack\n  virtual_path: loop\n  resolved_ref: loop-v1.0.0\n"
+    (world["repo"] / "apm.lock.yaml").write_text(
+        lock + "  deployed_files:\n  - .agents/skills/a.md\n"
+    )
+    sh(world["repo"], "git", "commit", "-qam", "pin")
+    new = lock.replace("1.0.0", "1.1.0") + "  deployed_files:\n  - .agents/skills/a.md\n"
+    stub(world, "apm-sib", f'[ "$1" = update ] && cat > apm.lock.yaml <<"E"\n{new}E\nexit 0\n')
+    r = run(world, "apm-sib")
+    assert r.returncode == 0, r.stderr
+    msg = subprocess.run(
+        ["git", "-C", str(world["repo"]), "log", "-1", "--format=%B"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "compare/loop-v1.0.0...loop-v1.1.0" in msg

@@ -231,11 +231,13 @@ def run(args: argparse.Namespace) -> int:
     for git_path, old in found:
         remote = args.remote or "https://github.com/" + "/".join(git_path.split("/")[:2])
         new = newest_tag(remote, prefix)
-        if new is None or version_key(new, prefix) <= (version_key(old, prefix) or ()):
+        moved = not (new is None or version_key(new, prefix) <= (version_key(old, prefix) or ()))
+        if not moved:
+            # A sibling package can release on its own: `apm update` still runs.
             print(f"{git_path}: {old} is the newest `{prefix}` tag")
-            continue
+            new = old
         link = compare_link(git_path, old, new)
-        floor = bump_floor(remote, git_path, new)
+        floor = bump_floor(remote, git_path, new) if moved else None
         if floor and (version_key(old, prefix) or ()) < floor[0]:
             say(
                 f"ACTION NEEDED: pin update {old} -> {new} refused in {repo.name}: {new} can be "
@@ -245,7 +247,11 @@ def run(args: argparse.Namespace) -> int:
             )
             continue
         if args.dry_run:
-            print(f"{git_path}: would move {old} to {new} ({link})")
+            print(
+                f"{git_path}: would move {old} to {new} ({link})"
+                if moved
+                else f"{git_path}: would run apm update at {old}"
+            )
             continue
         edited = dirty(repo)
         if edited:
@@ -256,7 +262,7 @@ def run(args: argparse.Namespace) -> int:
             )
             continue
         text = (repo / "apm.yml").read_text()
-        if text.count(f"ref: {old}") != 1:
+        if moved and text.count(f"ref: {old}") != 1:
             say(
                 f"ACTION NEEDED: pin update {old} -> {new} skipped in {repo.name}: "
                 f"`ref: {old}` is not on exactly one line of apm.yml. Changes: {link}"
@@ -264,7 +270,8 @@ def run(args: argparse.Namespace) -> int:
             continue
         before, was_modified = untracked(repo), modified(repo)
         refs_before, files_before = lock_refs(repo), deployed(repo)
-        (repo / "apm.yml").write_text(text.replace(f"ref: {old}", f"ref: {new}"))
+        if moved:
+            (repo / "apm.yml").write_text(text.replace(f"ref: {old}", f"ref: {new}"))
         failure = ""
         for step in (["install"], ["update"], ["audit", "--ci", "--no-policy"]):
             done = subprocess.run(
@@ -294,23 +301,27 @@ def run(args: argparse.Namespace) -> int:
                 f"back ({failure}). Changes: {link}"
             )
             return 1
-        links = [link]
+        links = [link] if moved else []
         for pkg, (ref, _) in lock_refs(repo).items():
             was = refs_before.get(pkg, ("", ""))[0]
             if was and ref and was != ref and pkg != git_path:
                 links.append(compare_link(pkg, was, ref))
         watched = sorted({"apm.yml", "apm.lock.yaml"} | files_before | deployed(repo))
         git(repo, "add", "-A", "--", *watched)
+        if not git(repo, "diff", "--cached", "--name-only").strip():
+            print(f"{git_path}: nothing moved")
+            continue
+        what = f"pin {old} -> {new}" if moved else "sibling packages"
         git(
             repo,
             "commit",
             "-q",
             "-m",
-            f"chore: move the {prefix.rstrip('-v')} pin {old} -> {new}\n\n"
+            f"chore: move the {prefix.rstrip('-v')} {what}\n\n"
             + "\n".join(f"Changes: {u}" for u in links),
         )
         say(
-            f"ACTION NEEDED: {repo.name} pin moved {old} -> {new}, installed, audited and "
+            f"ACTION NEEDED: {repo.name} {what} moved, installed, audited and "
             f"committed: review. Changes: {' '.join(links)}"
         )
     return 0
