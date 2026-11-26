@@ -207,3 +207,30 @@ def test_an_apm_only_package_on_its_first_release_is_cut_and_tagged(tmp_path: Pa
     for tag in tags:
         _git(repo, "tag", tag)
     validate_release_candidate(hooks, "hooks-v0.1.0")
+
+
+def test_an_apm_only_package_is_found_versioned_bumped_and_tagged_beside_its_dependent(
+    tmp_path: Path,
+) -> None:
+    """A package with no plugin manifest keeps its version in `apm.yml` alone: a later release bumps it there, and
+    every release tags the dependent and the package on one commit, so `^0.1.0` resolves (#2683)."""
+    from tools.capability_pack.release import packages
+
+    repo = _repository(tmp_path)
+    _package(repo, "hooks", "0.1.0", {"5": "- hooks: first (#5)"})
+    (repo / "hooks" / ".claude-plugin" / "plugin.json").unlink()
+    (repo / "hooks" / ".claude-plugin").rmdir()
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "add")
+    assert "hooks" in [p.name for p in packages(repo)]
+    _cut_and_commit(repo)
+    assert {"alpha-v0.1.1", "hooks-v0.1.0"} <= set(
+        release_tags(repo)
+    )  # first cut: the version no cut moves
+    _git(repo, "tag", "hooks-v0.1.0")
+    (repo / "hooks" / "changelog.d" / "9.md").write_text("- hooks: later (#9)\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "entry")
+    _cut_and_commit(repo)
+    assert "version: 0.1.1  # bumped by the release" in (repo / "hooks" / "apm.yml").read_text()
+    assert "hooks-v0.1.1" in release_tags(repo)

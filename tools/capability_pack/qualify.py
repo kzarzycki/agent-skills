@@ -261,24 +261,40 @@ def validate_release_candidate(package_root: Path, tag: str) -> None:
     tagged = set(_git_output(["tag", "--points-at", "HEAD"], cwd=repository).split())
     untagged = []
     for path in sorted(changed):
-        manifest = re.fullmatch(
-            r"([^/]+)/(?:\.claude-plugin/plugin\.json|apm\.yml|CHANGELOG\.md)", path
-        )
-        if not manifest or manifest.group(1) == package.name:
+        name = released_package_of(repository, path)
+        if name is None or name == package.name:
             continue
-        sibling = repository / manifest.group(1)
-        if not ((sibling / "changelog.d").is_dir() and (sibling / "apm.yml").is_file()):
-            continue  # not a released package
-        try:
-            version = yaml.safe_load((sibling / "apm.yml").read_text()).get("version")
-        except OSError, yaml.YAMLError, AttributeError:
-            version = None
-        if f"{manifest.group(1)}-v{version}" not in tagged:
-            untagged.append(f"{path} ({manifest.group(1)}-v{version} is not tagged on this commit)")
+        version = package_version(repository / name)
+        if f"{name}-v{version}" not in tagged:
+            untagged.append(f"{path} ({name}-v{version} is not tagged on this commit)")
     if untagged:
         raise ConfigurationError(
             "release commit changes package manifest(s) it doesn't release: " + ", ".join(untagged)
         )
+
+
+_RELEASE_FILE = re.compile(r"([^/]+)/(?:\.claude-plugin/plugin\.json|apm\.yml|CHANGELOG\.md)")
+
+
+def released_package_of(repository: Path, path: str) -> str | None:
+    """The released package a changed repository path belongs to, by its manifest or changelog, or None. A released
+    package is a top-level directory with `apm.yml` and `changelog.d/`; its Claude Code plugin manifest is optional,
+    since an APM-only package (`engineering-hooks`) has none. The one place that says which paths a release changes."""
+    found = _RELEASE_FILE.fullmatch(path)
+    if not found:
+        return None
+    package = repository / found.group(1)
+    if (package / "apm.yml").is_file() and (package / "changelog.d").is_dir():
+        return found.group(1)
+    return None
+
+
+def package_version(package: Path) -> str | None:
+    """The version `apm.yml` sets, the one place a package with no plugin manifest keeps it."""
+    try:
+        return yaml.safe_load((package / "apm.yml").read_text()).get("version")
+    except OSError, yaml.YAMLError, AttributeError:
+        return None
 
 
 def _mapping(value: object, label: str) -> dict:

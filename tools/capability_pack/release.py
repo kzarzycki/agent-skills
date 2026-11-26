@@ -19,7 +19,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.capability_pack.qualify import ConfigurationError, _next_version, _semver
+from tools.capability_pack.qualify import (
+    ConfigurationError,
+    _next_version,
+    _semver,
+    released_package_of,
+)
 
 MAGNITUDES = ("patch", "minor")
 OWNER_REPO = "kzarzycki/agent-skills"
@@ -44,11 +49,6 @@ def packages(root: Path) -> list[Path]:
         for path in root.iterdir()
         if (path / "changelog.d").is_dir() and (path / "apm.yml").is_file()
     )
-
-
-def _released(package: Path) -> bool:
-    """Whether a top-level directory is a released package: it has an `apm.yml` and a `changelog.d/`."""
-    return (package / "apm.yml").is_file() and (package / "changelog.d").is_dir()
 
 
 def released_versions(repository: Path) -> dict[str, str]:
@@ -311,9 +311,7 @@ def release_tags(repository: Path, commit: str = "HEAD") -> list[str]:
     ).stdout.split()
     tags = []
     for path in changed:
-        manifest = re.fullmatch(
-            r"([^/]+)/(?:\.claude-plugin/plugin\.json|apm\.yml|CHANGELOG\.md)", path
-        )
-        if manifest and _released(repository / manifest.group(1)):
-            tags.append(f"{manifest.group(1)}-v{_current_version(repository / manifest.group(1))}")
+        name = released_package_of(repository, path)
+        if name:
+            tags.append(f"{name}-v{_current_version(repository / name)}")
     return sorted(set(tags))
