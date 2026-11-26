@@ -18,7 +18,8 @@ report and no host or repo went unreached.
   to drop and edits nothing.
 * ``pack lag``: for each host, each installed package whose version is behind the pack's latest
   release tag (``<package>-v<version>`` on ``--pack-repo``). ``--installed-cmd`` is run once per
-  host with ``{host}`` replaced and prints ``{"<package>": "<version>"}``.
+  host with ``{host}`` replaced and prints ``{"<package>": "<version>"}`` or an ``apm.lock.yaml``
+  (JSON or YAML), of which every package counts, transitive ones too.
 * ``restate``: a setup file (``CLAUDE.md``, ``AGENTS.md``, ``docs/agents/*.md``) of a repo in
   ``hygiene.repos``, found at ``--checkouts/<name>``, or the ``## Standing decisions`` section of
   the board, with a sentence copied from a skill of the pack at ``--pack``.
@@ -200,6 +201,26 @@ def hosts_in_scope(values: cos_values.Values) -> list[str]:
     return sorted({h for repo, hs in table.items() if repo in scoped or not scoped for h in hs})
 
 
+def installed_versions(out: str) -> dict | None:
+    """``{package: version}`` from a JSON map, or from every package of an ``apm.lock.yaml``."""
+    try:
+        data = json.loads(out)
+    except ValueError:
+        import yaml
+
+        try:
+            data = yaml.safe_load(out)
+        except yaml.YAMLError:
+            return None
+    if isinstance(data, dict) and isinstance(data.get("dependencies"), list):
+        return {
+            str(d["name"]): str(d["version"])
+            for d in data["dependencies"]
+            if isinstance(d, dict) and d.get("name") and d.get("version")
+        }
+    return data if isinstance(data, dict) else None
+
+
 def check_pack_lag(
     hosts: list[str], installed_cmd: str | None, pack_repo: str
 ) -> tuple[list[str], list[str]]:
@@ -222,7 +243,7 @@ def check_pack_lag(
                 timeout=120,
                 check=False,
             )
-            installed = json.loads(r.stdout) if r.returncode == 0 else None
+            installed = installed_versions(r.stdout) if r.returncode == 0 else None
             if not isinstance(installed, dict):
                 raise TypeError(r.stderr.strip() or "no JSON object")
         except (ValueError, TypeError, OSError, subprocess.TimeoutExpired) as e:

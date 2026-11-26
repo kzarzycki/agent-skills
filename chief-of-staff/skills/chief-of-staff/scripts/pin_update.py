@@ -3,7 +3,10 @@
 
 A consumer repo pins the pack in its ``apm.yml`` (``ref: <tag_prefix>X.Y.Z``) and deploys it with
 ``apm install``. This script finds the newest tag with the prefix, and when it is newer than the
-pin, rewrites the pin and installs. It never commits: the consumer reviews and commits the change.
+pin, rewrites the pin, installs, then runs ``apm update`` so the sibling packages the lock holds (transitive ones
+too, which ``apm install`` keeps at their locked refs) move to their newest release, and ``apm audit --ci
+--no-policy`` so a committed local edit to an installed skill fails the run. A clean run is committed, the
+message listing a compare link for each pin that moved, the direct one and every lock entry the update moved.
 
     pin_update.py [--repo <dir>] [--dry-run] [--file <values>] [--home <dir>]
                   [--remote <url>] [--apm <command>] [--omnigent <omnigent_agent.py>]
@@ -19,7 +22,8 @@ script; with no ``cos_session`` set it only prints. How often it runs is the sch
   package folder (`oldest:` the oldest pin it can be bumped from, `via:` the release to stop at), and a
   pin older than `oldest` is told to move to `via` first, since the base's own gate must be able to judge
   the bump PR and an old one cannot judge a new one's files.
-* It rolls back a failed install: tracked files are restored and files the install added removed.
+* It rolls back a failed install, a failed update, a failed audit, and an install or update that removes a
+  skill file the repo had committed: tracked files are restored and files they added removed.
 * It works only in ``--repo`` (default: the directory it runs in) and refuses the pack's own
   checkout, so it never touches a developer checkout.
 
@@ -187,6 +191,26 @@ def installed_omnigent() -> Path:
     raise PinError("needs the `omnigent-agents` skill: install the package that ships it")
 
 
+def lock_refs(repo: Path) -> dict[str, tuple[str, str]]:
+    """``owner/repo[/path]`` -> (resolved ref, deployed files joined) of every package in the lock."""
+    lock = repo / "apm.lock.yaml"
+    out: dict[str, tuple[str, str]] = {}
+    if lock.is_file():
+        for dep in (yaml.safe_load(lock.read_text()) or {}).get("dependencies") or []:
+            key = "/".join(x for x in (dep.get("repo_url"), dep.get("virtual_path")) if x)
+            out[key or str(dep.get("name"))] = (str(dep.get("resolved_ref") or ""), "")
+    return out
+
+
+def deployed(repo: Path) -> set[str]:
+    lock = repo / "apm.lock.yaml"
+    files: set[str] = set()
+    if lock.is_file():
+        for dep in (yaml.safe_load(lock.read_text()) or {}).get("dependencies") or []:
+            files |= {str(f) for f in dep.get("deployed_files") or []}
+    return files
+
+
 def compare_link(git_path: str, old: str, new: str) -> str:
     owner, repo = git_path.split("/")[:2]
     return f"https://github.com/{owner}/{repo}/compare/{old}...{new}"
@@ -207,11 +231,13 @@ def run(args: argparse.Namespace) -> int:
     for git_path, old in found:
         remote = args.remote or "https://github.com/" + "/".join(git_path.split("/")[:2])
         new = newest_tag(remote, prefix)
-        if new is None or version_key(new, prefix) <= (version_key(old, prefix) or ()):
+        moved = not (new is None or version_key(new, prefix) <= (version_key(old, prefix) or ()))
+        if not moved:
+            # A sibling package can release on its own: `apm update` still runs.
             print(f"{git_path}: {old} is the newest `{prefix}` tag")
-            continue
+            new = old
         link = compare_link(git_path, old, new)
-        floor = bump_floor(remote, git_path, new)
+        floor = bump_floor(remote, git_path, new) if moved else None
         if floor and (version_key(old, prefix) or ()) < floor[0]:
             say(
                 f"ACTION NEEDED: pin update {old} -> {new} refused in {repo.name}: {new} can be "
@@ -221,7 +247,11 @@ def run(args: argparse.Namespace) -> int:
             )
             continue
         if args.dry_run:
-            print(f"{git_path}: would move {old} to {new} ({link})")
+            print(
+                f"{git_path}: would move {old} to {new} ({link})"
+                if moved
+                else f"{git_path}: would run apm update at {old}"
+            )
             continue
         edited = dirty(repo)
         if edited:
@@ -232,35 +262,67 @@ def run(args: argparse.Namespace) -> int:
             )
             continue
         text = (repo / "apm.yml").read_text()
-        if text.count(f"ref: {old}") != 1:
+        if moved and text.count(f"ref: {old}") != 1:
             say(
                 f"ACTION NEEDED: pin update {old} -> {new} skipped in {repo.name}: "
                 f"`ref: {old}` is not on exactly one line of apm.yml. Changes: {link}"
             )
             continue
         before, was_modified = untracked(repo), modified(repo)
-        (repo / "apm.yml").write_text(text.replace(f"ref: {old}", f"ref: {new}"))
-        install = subprocess.run(
-            [*args.apm.split(), "install"], cwd=repo, capture_output=True, text=True, check=False
-        )
-        if install.returncode:
-            # Restore every tracked file the install or the pin edit changed (the pre-run state of
-            # the watched set was clean), then remove what the install added.
+        refs_before, files_before = lock_refs(repo), deployed(repo)
+        if moved:
+            (repo / "apm.yml").write_text(text.replace(f"ref: {old}", f"ref: {new}"))
+        failure = ""
+        for step in (["install"], ["update"], ["audit", "--ci", "--no-policy"]):
+            done = subprocess.run(
+                [*args.apm.split(), *step], cwd=repo, capture_output=True, text=True, check=False
+            )
+            if done.returncode:
+                tail = (done.stderr.strip() or done.stdout.strip()).splitlines()[-1:]
+                failure = f"`apm {step[0]}`: {tail[0] if tail else f'exit {done.returncode}'}"
+                break
+            if step[0] != "audit":
+                # An install or update that deletes a skill file the repo committed is a loss.
+                gone = sorted(f for f in files_before if not (repo / f).exists())
+                if gone:
+                    failure = f"`apm {step[0]}` removed {', '.join(gone[:5])}"
+                    break
+        if failure:
+            # Restore every tracked file the run changed (the pre-run state of the watched set was
+            # clean), then remove what it added.
             if changed := sorted(modified(repo) - was_modified):
                 git(repo, "checkout", "HEAD", "--", *changed)
             for extra in untracked(repo) - before:
                 path = repo / extra
                 if path.is_file() or path.is_symlink():
                     path.unlink()
-            tail = (install.stderr.strip() or install.stdout.strip()).splitlines()[-1:]
             say(
                 f"ACTION NEEDED: pin update {old} -> {new} failed in {repo.name} and was rolled "
-                f"back ({tail[0] if tail else f'exit {install.returncode}'}). Changes: {link}"
+                f"back ({failure}). Changes: {link}"
             )
             return 1
+        links = [link] if moved else []
+        for pkg, (ref, _) in lock_refs(repo).items():
+            was = refs_before.get(pkg, ("", ""))[0]
+            if was and ref and was != ref and pkg != git_path:
+                links.append(compare_link(pkg, was, ref))
+        watched = sorted({"apm.yml", "apm.lock.yaml"} | files_before | deployed(repo))
+        git(repo, "add", "-A", "--", *watched)
+        if not git(repo, "diff", "--cached", "--name-only").strip():
+            print(f"{git_path}: nothing moved")
+            continue
+        what = f"pin {old} -> {new}" if moved else "sibling packages"
+        git(
+            repo,
+            "commit",
+            "-q",
+            "-m",
+            f"chore: move the {prefix.rstrip('-v')} {what}\n\n"
+            + "\n".join(f"Changes: {u}" for u in links),
+        )
         say(
-            f"ACTION NEEDED: {repo.name} pin moved {old} -> {new}, installed, not committed: "
-            f"review and commit. Changes: {link}"
+            f"ACTION NEEDED: {repo.name} {what} moved, installed, audited and "
+            f"committed: review. Changes: {' '.join(links)}"
         )
     return 0
 
