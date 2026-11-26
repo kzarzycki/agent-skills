@@ -212,3 +212,56 @@ def test_the_adapter_reads_flaky_issue_ids_from_the_titles_of_open_issues(
     monkeypatch.setattr(approvals.github, "gh", gh)
     assert approvals.github.flaky_issue_ids() == {"tests/a.py::t1", "tests/b.py::t2"}
     assert seen[0][:3] == ("issue", "list", "--state")
+
+
+MERGIFY_COMMENT = (
+    '<!--\n-*- Mergify Payload -*-\n{"version": 1, "state": "dequeued"}\n-*- Mergify Payload End -*-\n-->\n\n'
+    "### Left the queue\n\n**So far**\n\n"
+    "- Entered the queue\n"
+    "- ❌ **Checks failed (attempt 1/2)** 22:25 · draft [#9](/o/r/pull/9)\n"
+    "  - ❌ [`qualify`](https://github.com/o/r/actions/runs/5/job/@JOB@) "
+    "([job log](https://github.com/o/r/actions/runs/5/job/@JOB@))\n"
+    "- Re-batched\n"
+    "- ❌ **Checks failed (attempt 2/2)** 22:56 · draft [#10](/o/r/pull/10)\n"
+    "  - ❌ [`qualify`](https://github.com/o/r/actions/runs/6/job/@LAST@) "
+    "([job log](https://github.com/o/r/actions/runs/6/job/@LAST@))\n"
+)
+
+
+def mergify_flake(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch, failed: list[str]
+) -> tuple[int, list[str]]:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    cut(monkeypatch, ["src/app.py"], [])
+    monkeypatch.setattr(approvals, "flaky_issue_ids", lambda: {"tests/a.py::t1"})
+    # only the last attempt's job is read
+    logs = {
+        111: "FAILED tests/other.py::x",
+        222: "\n".join(f"FAILED {test} - t" for test in failed),
+    }
+    monkeypatch.setattr(approvals, "job_log", lambda job: logs[job])
+    mergify["pulls"][7]["comments"]["nodes"].append(
+        {
+            "body": MERGIFY_COMMENT.replace("@JOB@", "111").replace("@LAST@", "222"),
+            "createdAt": "2026-10-02T00:00:00Z",
+        }
+    )
+    return dequeued(mergify, head)
+
+
+def test_a_mergify_dequeue_whose_failed_tests_all_have_flaky_issues_is_queued_again(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, lines = mergify_flake(mergify, monkeypatch, ["tests/a.py::t1"])
+    assert code == 0, lines
+    assert any("every test that failed has an open `Flaky:` issue" in line for line in lines)
+    assert not mergify["pulls"][7]["isDraft"]
+
+
+def test_a_mergify_dequeue_with_a_failed_test_lacking_a_flaky_issue_is_evicted(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, lines = mergify_flake(mergify, monkeypatch, ["tests/a.py::t1", "tests/b.py::real"])
+    assert code == 1, lines
+    assert mergify["pulls"][7]["isDraft"]

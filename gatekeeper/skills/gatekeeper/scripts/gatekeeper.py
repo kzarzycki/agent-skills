@@ -9281,13 +9281,18 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
                     number,
                     fold(
                         UNREACHABLE_RED,
-                        "Dequeued on a red no path the PR changes can reach: queued again, not counted.",
+                        "Dequeued on a red no path the PR changes can reach, or on tests with open `Flaky:` issues: queued again, not counted.",
                         f"Head: {head}",
                     ),
                 )
                 print(
-                    f"{where}: Mergify dequeued it at {head}, but no path it changes can reach a test: queued again,"
-                    " not evicted"
+                    f"{where}: Mergify dequeued it at {head}, but "
+                    + (
+                        "no path it changes can reach a test"
+                        if unreachable(pull)
+                        else "every test that failed has an open `Flaky:` issue"
+                    )
+                    + ": queued again, not evicted"
                 )
                 return 0
             if ours:
@@ -9400,8 +9405,8 @@ UNREACHABLE_RED = "Queued again: red on a test no changed path reaches"
 
 
 def unreachable_dequeue(pull: dict[str, Any]) -> bool:
-    """Whether a Mergify dequeue at the head is retried, not counted: unreachable, and fewer than UNREACHABLE_RETRIES
-    earlier retries at this head (their UNREACHABLE_RED records)."""
+    """Whether a Mergify dequeue at the head is retried, not counted: unreachable or known flaky (mergify_flaky), and
+    fewer than UNREACHABLE_RETRIES earlier retries at this head (their UNREACHABLE_RED records)."""
     head = pull["headRefOid"]
     # since it last went ready, so a ready-again starts the count anew, as the GitHub queue's removals do
     ready = max(
@@ -9418,7 +9423,32 @@ def unreachable_dequeue(pull: dict[str, Any]) -> bool:
         and (note.get("createdAt") or "") > ready
         for note in notes(pull)
     )
-    return tried < UNREACHABLE_RETRIES and unreachable(pull)
+    return tried < UNREACHABLE_RETRIES and (unreachable(pull) or mergify_flaky(pull))
+
+
+# a failing job in Mergify's queue status comment on the PR, which links each attempt's failed jobs
+MERGIFY_JOB = re.compile(r"/actions/runs/\d+/job/(\d+)")
+
+
+def mergify_flaky(pull: dict[str, Any]) -> bool:
+    """Whether every test that failed in the last attempt Mergify's newest dequeued status comment on the PR lists
+    has an open `Flaky: <test id>` issue: the failed jobs it links (`/job/<id>`), their logs' `FAILED <id>` lines. A
+    comment that links no job, a log with no such line or one GitHub can't give is no known flake (#2146)."""
+    comments = [
+        note["body"]
+        for note in notes(pull)
+        if "Mergify Payload" in note["body"] and '"state": "dequeued"' in note["body"]
+    ]
+    if not comments or "**Checks failed" not in comments[-1]:
+        return False
+    last = comments[-1].split("**Checks failed")[-1].split("\n- ")[0]
+    failed: set[str] = set()
+    try:
+        for job in dict.fromkeys(MERGIFY_JOB.findall(last)):
+            failed |= set(FAILED_TEST.findall(job_log(int(job))))
+        return bool(failed) and failed <= flaky_issue_ids()
+    except subprocess.CalledProcessError:
+        return False
 
 
 def mergify_evict(pull: dict[str, Any], labels: set[str]) -> None:
