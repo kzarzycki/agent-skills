@@ -1000,6 +1000,7 @@ or the owner's private network.
   for the fix ([#1482](https://github.com/kzarzycki/agent-skills/issues/1482)). Neither the rerun nor that fix adds a
   sleep, a wait loop or a retry to the test itself (R5). A test red on both tries is a real failure: run it on main before blaming
   the PR.
+  A test that fails only under load usually asserts on wall-clock time: the fix is an injected clock (`now`/`sleep` parameter or fake clock) asserted on its own time, and a real-time wait is bounded only by `timeouts.test` (the `tdd` skill, Tests worth keeping).
 - **Known-red tests.** A test red for a reason the PR's diff doesn't explain (it fails the same
   on main, or in a file the change doesn't touch) is skipped, not waived and not listed as an
   expected failure: a list keeps the test running and its cost on every PR, and a waived
