@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.13 - 2026-11-26
+
+- `cloud_verifier.py verify --harness gemini` now runs the Antigravity CLI (`agy -p`, installed in the VM when missing) instead of the Gemini CLI, on `AGY_OAUTH_JSON` (the base64 of a tar of its two login files, unpacked with mode 0600 and any other tar member refused) in place of `GEMINI_OAUTH_JSON`; with no login it still prints one line and exits 5 (#2756).
+
 ## 0.1.12 - 2026-11-26
 
 - `cloud_verifier.py verify --harness gemini` runs the Gemini verifier in the worker's cloud VM on the owner's login (`GEMINI_OAUTH_JSON`), and with no login prints one line and exits 5 so the lead starts a host verifier (#2694).
