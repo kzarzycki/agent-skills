@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -39,6 +40,12 @@ SELECT = """select:
     - paths: [scripts/release.sh]
       command: {check} release {release_exit}
 """
+
+
+# the same policy, declaring the build inputs that select the whole test root (#2621)
+WHOLE = SELECT.replace(
+    "    - package.json\n", "    - package.json\n    - conftest.py\n    - uv.lock\n"
+) + ("  whole_suite: [conftest.py, uv.lock]\n")
 
 
 @pytest.fixture
@@ -168,6 +175,79 @@ def test_a_build_input_or_an_unclear_path_runs_the_selector(
     worker["commit"]("docs/guide.md", path)
     assert approvals.main(["affected-tests"]) == 0
     assert worker["ran"]() == ["selector"]
+
+
+@pytest.mark.parametrize("path", ["conftest.py", "uv.lock"])
+def test_a_whole_suite_selection_under_ci_runs_nothing_and_says_so(
+    worker: dict[str, Any], capsys: Any, path: str
+) -> None:
+    """#2621: a declared `whole_suite` input selects the whole suite, which CI runs."""
+    worker["start"](WHOLE)
+    worker["commit"]("docs/guide.md", path)
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == []
+    assert "whole suite selected; CI runs it" in capsys.readouterr().err
+
+
+def test_a_source_build_input_still_runs_the_selector_under_ci(worker: dict[str, Any]) -> None:
+    """A `build_inputs` source dir the selector narrows is not a whole-suite input (#2621 review)."""
+    worker["start"](WHOLE)
+    worker["commit"]("src/app.py")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_local_runs_a_whole_suite_selection_here(worker: dict[str, Any]) -> None:
+    worker["start"](WHOLE)
+    worker["commit"]("conftest.py")
+    assert approvals.main(["affected-tests", "--local"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_without_ci_a_whole_suite_selection_runs_here_as_before(worker: dict[str, Any]) -> None:
+    worker["start"]("ci: false\n" + WHOLE)
+    worker["commit"]("conftest.py")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_a_whole_suite_selection_still_runs_the_checks_the_rest_touches(
+    worker: dict[str, Any],
+) -> None:
+    worker["start"](WHOLE)
+    worker["commit"]("conftest.py", "apm.yml")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["agent-sync"]
+
+
+def test_the_skip_records_the_tests_pass_land_reads_and_local_keeps_its_key(
+    worker: dict[str, Any],
+) -> None:
+    """The open question of #2621: the skip is keyed `select.checks: ... ci` in the narrowed gate, the record
+    `head_recorded` (so `check merge`, `land` and the verifier start) reads; no second kind. `--record --local`
+    runs the suite but records under that same key, so the reader finds it."""
+    worker["start"](WHOLE)
+    worker["commit"]("conftest.py", "apm.yml")
+    base = base_of_work()
+    with approvals.narrowed_to(base):
+        command = approvals.narrowed_gate()[0]
+    assert "agent-sync' ci" in command and command.endswith("(narrowed)")
+    assert approvals.main(["affected-tests", "--record", "--base", base]) == 0
+    assert worker["ran"]() == ["agent-sync"]
+    head = git_in(Path.cwd(), "rev-parse", "HEAD").strip()
+    assert approvals.gate_record(head, shlex.split(command)) == 0
+
+
+def test_record_local_runs_the_suite_and_records_the_same_key(worker: dict[str, Any]) -> None:
+    worker["start"](WHOLE)
+    worker["commit"]("conftest.py")
+    base = base_of_work()
+    with approvals.narrowed_to(base):
+        command = approvals.narrowed_gate()[0]
+    assert approvals.main(["affected-tests", "--record", "--local", "--base", base]) == 0
+    assert worker["ran"]() == ["selector"]
+    head = git_in(Path.cwd(), "rev-parse", "HEAD").strip()
+    assert approvals.gate_record(head, shlex.split(command)) == 0
 
 
 def test_a_build_input_under_a_non_product_glob_still_tests(worker: dict[str, Any]) -> None:

@@ -33,7 +33,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
 2. **Gates and push.** A check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change): run nothing whose result a passed run on the same inputs already gives, and the push hook's run is the run you report: don't run the affected tests a second time beside it, since the hook runs the same selection on the same head. Iterate on the narrowest check that covers the change: an incremental build of the touched
    target, then the tests of the module you changed, since a whole-suite run can take twenty minutes to show a compile
    error a build shows in one. The run you report is the tests the PR affects, on every head you push, and
-   never the whole suite. A fix round selects against the last head its run passed on, not the PR's base
+   never the whole suite: where a change selects it (a `select.whole_suite` input) and the project's CI is the merge proof, `approvals.py affected-tests` records `whole suite selected; CI runs it` and runs no test, and `--local` runs it here. A fix round selects against the last head its run passed on, not the PR's base
    (SKILL.md, A check runs only if it can fail because of the change, R4): `approvals.py affected-tests --base <the last head its run passed on>`.
    Where loop.md has an `Affected tests:` line, `uv run
    <gatekeeper>/scripts/approvals.py affected-tests`, which runs that selection against `git merge-base origin/<base>
