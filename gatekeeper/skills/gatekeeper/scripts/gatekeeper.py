@@ -2461,6 +2461,11 @@ def set_issue_field(issue: str, field: str, text: str) -> None:
     github.set_issue_field(issue, field, text)
 
 
+def issue_field_database_id(name: str) -> int | None:
+    found: int | None = github.issue_field_database_id(name)
+    return found
+
+
 def rest_has_issue_field(name: str) -> bool:
     found: bool = github.rest_has_issue_field(name)
     return found
@@ -2498,12 +2503,20 @@ def recorded_session_field() -> int | None:
 def record_session_field(root: Path) -> list[str]:
     """`check setup`'s record of the `Session` field's REST id in the working tree's gatekeeper.md as
     `loop.session_field_id`, for a commit: one line saying what it did or why not. Nothing where the policy records
-    an id already, where the repo has no gatekeeper.md, or where no issue carries a value to read the id off."""
+    an id already or where the repo has no gatekeeper.md; the id is read over GraphQL, else REST off an issue that
+    carries a value, else one line says so."""
     path = root / POLICY
     try:
         if recorded_session_field() is not None or not path.exists():
             return []
-        found = rest_issue_field_id(SESSION_FIELD)
+        try:
+            found = issue_field_database_id(
+                SESSION_FIELD
+            )  # GraphQL: no issue needs to hold a value
+        except (subprocess.CalledProcessError, KeyError, TypeError, ValueError):
+            found = None
+        if found is None:
+            found = rest_issue_field_id(SESSION_FIELD)
     except (subprocess.CalledProcessError, Refused, OSError):
         return []
     if found is None:

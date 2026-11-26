@@ -303,7 +303,8 @@ def test_a_recorded_id_sets_the_field_over_rest_where_no_issue_holds_a_value_yet
     """A cloud claim: GraphQL refused, REST names no id (no issue carries a value), the policy records one."""
     monkeypatch.setattr(approvals.github, "_rest_only", True)
     monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: None)
-    monkeypatch.setattr(approvals, "recorded_session_field", lambda: 77)
+    recorded = POLICY_TEXT.replace("make check\n", "make check\n  session_field_id: 77\n")
+    monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(recorded)))
     assert approvals.claim(pull(), [free(1), free(2)]) == []
     assert session_fields == [("rest set", 1, 77, LINK), ("rest set", 2, 77, LINK)]
 
@@ -314,7 +315,7 @@ def test_without_a_recorded_id_a_cloud_claim_is_as_before(
 ) -> None:
     monkeypatch.setattr(approvals.github, "_rest_only", True)
     monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: None)
-    monkeypatch.setattr(approvals, "recorded_session_field", lambda: None)
+    monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(POLICY_TEXT)))
     [line] = approvals.claim(pull(), [free(1)])
     assert "REST names the `Session` field's id only once an issue carries a value" in line
     assert [call for call in session_fields if call[0] == "rest set"] == []
@@ -344,10 +345,47 @@ def test_check_setup_finds_the_field_and_writes_its_id_to_the_policy(
     monkeypatch.setattr(approvals, "mergify_drift", lambda *_a, **_k: None)
     monkeypatch.setattr(approvals, "tree_policy", lambda _root: "")
     monkeypatch.setattr(approvals, "rest_has_issue_field", lambda name: True)
-    monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: 42)
+    monkeypatch.setattr(approvals, "issue_field_database_id", lambda name: 42)  # GraphQL answers
+    monkeypatch.setattr(
+        approvals, "rest_issue_field_id", lambda name: None
+    )  # no issue holds a value
     assert approvals.setup() == 0
     assert "recorded the `Session` field's id 42" in capsys.readouterr().out
     assert "loop:\n  session_field_id: 42" in policy.read_text()
     assert approvals.settings(approvals.Policy(policy.read_text()))["session_field_id"] == 42
     assert approvals.setup() == 0  # recorded: nothing more to write
     assert policy.read_text().count("session_field_id: 42") == 1
+
+
+def test_check_setup_falls_back_to_rest_when_graphql_gives_no_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    policy = tmp_path / approvals.POLICY
+    policy.parent.mkdir(parents=True)
+    policy.write_text(POLICY_TEXT, encoding="utf-8")
+    monkeypatch.setattr(approvals, "project", lambda: (None, approvals.Policy(policy.read_text())))
+
+    def refuse(name: str) -> int | None:
+        raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: Forbidden")
+
+    monkeypatch.setattr(approvals, "issue_field_database_id", refuse)
+    monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: 5)
+    assert approvals.record_session_field(tmp_path)
+    assert "session_field_id: 5" in policy.read_text()
+    policy.write_text(POLICY_TEXT, encoding="utf-8")
+    monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: None)
+    [line] = approvals.record_session_field(tmp_path)
+    assert "no issue carries a `Session` value yet" in line
+
+
+def test_the_adapter_reads_the_field_s_database_id_over_graphql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nodes = [{}, {"name": "Priority", "databaseId": 1}, {"name": "Session", "databaseId": 9}]
+    monkeypatch.setattr(
+        approvals.github,
+        "gh",
+        lambda *_a, **_k: json.dumps({"data": {"repository": {"issueFields": {"nodes": nodes}}}}),
+    )
+    assert approvals.github.issue_field_database_id("Session") == 9
+    assert approvals.github.issue_field_database_id("Owner") is None
