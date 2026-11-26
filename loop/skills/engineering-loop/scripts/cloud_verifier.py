@@ -138,6 +138,8 @@ AGY_FILES = (
 AGY_INSTALL = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
 # `agy -p` with no login runs until killed, so every run is bounded, under an hour's pass.
 AGY_PRINT_TIMEOUT = "3300s"
+# A login file is a few hundred bytes; a bigger tar or member is not one.
+AGY_MAX_BYTES = 64 * 1024
 HOSTS = ["chatgpt.com", "*.chatgpt.com", "auth.openai.com", "api.openai.com"]
 # ponytail: the refresh call mirrors the Codex CLI's own (codex-rs/login/src/auth/manager.rs: the endpoint, the
 # CLI's public client id, a JSON body), because the CLI only refreshes a token within 5 minutes of expiry and a
@@ -171,15 +173,27 @@ class Redactor:
         self.add(*(tokens.values() if isinstance(tokens, dict) else ()))
 
     def agy(self, content: str) -> None:
-        """A file of an `agy` login: the tokens when it is JSON (its other values, `scope` and the like, are no secret
-        and masking them would break every link in a report), else the whole text, which is the secret."""
+        """A file of an `agy` login: every string in it that could be a secret when it is JSON (long, no whitespace,
+        no `://`: a `scope` URL is no secret and masking it would break every link in a report), else the whole text,
+        which is the secret."""
         try:
             auth = json.loads(content)
         except ValueError:
             self.add(content.strip(), *content.split())
             return
-        if isinstance(auth, dict):
-            self.add(*(auth.get(k) for k in ("access_token", "refresh_token", "id_token", "token")))
+
+        def walk(node: object) -> None:
+            if isinstance(node, str):
+                if len(node) >= 16 and "://" not in node and not any(c.isspace() for c in node):
+                    self.add(node)
+            elif isinstance(node, dict):
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+
+        walk(auth)
 
     def seed(self, value: str) -> None:
         """The seeded variable and the tokens it decodes to, whatever state it is in."""
@@ -522,6 +536,8 @@ def agy_login(seeded: str) -> dict[str, bytes]:
     )
     files: dict[str, bytes] = {}
     try:
+        if len(seeded) > AGY_MAX_BYTES * 4:
+            raise Refused(f"${GEMINI_VAR} is larger than two login files can be: put it in again")
         blob = base64.b64decode(seeded, validate=True)
         with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
             for member in tar.getmembers():
@@ -529,6 +545,10 @@ def agy_login(seeded: str) -> dict[str, bytes]:
                 if not member.isreg() or name not in AGY_FILES or name in files:
                     raise Refused(
                         f"${GEMINI_VAR} holds a tar member `{name[:80]}` that is not one of the two agy login files"
+                    )
+                if member.size > AGY_MAX_BYTES:
+                    raise Refused(
+                        f"${GEMINI_VAR} holds `{name}` of {member.size} bytes, over {AGY_MAX_BYTES}"
                     )
                 files[name] = tar.extractfile(member).read()  # type: ignore[union-attr]
     except (ValueError, tarfile.TarError):

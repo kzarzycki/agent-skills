@@ -195,6 +195,33 @@ def test_a_tar_member_at_any_other_path_is_refused(monkeypatch, home, kind) -> N
     assert not (home / TOKEN).exists() and not (home / ".bashrc").exists()
 
 
+def test_an_oversized_member_is_refused_even_compressed(monkeypatch, home) -> None:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(TOKEN)
+        info.size = 10 * 1024 * 1024
+        tar.addfile(info, io.BytesIO(b"x" * info.size))
+    monkeypatch.setenv("AGY_OAUTH_JSON", base64.b64encode(buf.getvalue()).decode())
+    with pytest.raises(cv.Refused, match="over"):
+        cv.ensure_gemini()
+    assert not (home / TOKEN).exists()
+
+
+@pytest.mark.parametrize(
+    ("content", "secret"),
+    [
+        ('{"session": {"key": "secret-under-another-key"}}', "secret-under-another-key"),
+        ('"bare-json-string-secret"', "bare-json-string-secret"),
+        ("plain-text-secret-file", "plain-text-secret-file"),
+    ],
+)
+def test_a_secret_under_any_key_or_shape_is_redacted(content, secret) -> None:
+    redact = cv.Redactor()
+    redact.agy(content)
+    assert redact(f"leak {secret} end") == "leak [secret] end"
+    assert redact("see https://github.com/x/y end") == "see https://github.com/x/y end"
+
+
 def test_a_variable_that_is_not_a_tar_is_refused(monkeypatch, home) -> None:
     monkeypatch.setenv("AGY_OAUTH_JSON", "WzFd")  # base64 of [1]
     with pytest.raises(cv.Refused, match="not a base64 tar"):
