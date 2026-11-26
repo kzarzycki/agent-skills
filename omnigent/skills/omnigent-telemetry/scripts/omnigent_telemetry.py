@@ -46,6 +46,11 @@ TOP_TREES = 15  # trees in the text and HTML tables; --json has all
 
 # Enum codes from Omnigent's omnigent/db/enum_codecs.py.
 COMPACTION = 6  # conversation_items.type
+USER_TURN, TOOL_CALL = (
+    1,
+    4,
+)  # ponytail: codes read off a server's enum_codecs.py, not checked against one
+CALL_CODES = str(TOOL_CALL)
 FAILED_SESSION = 4  # omnigent_conversation_metadata.live_status
 RUN_SUCCEEDED, RUN_FAILED, RUN_SKIPPED = 3, 4, 5  # scheduled_task_runs.status
 LIVE = {1: "idle", 2: "running", 3: "waiting", 4: "failed"}
@@ -58,6 +63,9 @@ INHERITED_ITEMS = 500  # items a session created in the window inherited from a 
 SUBSCRIBERS = 2  # sessions one target wakes when it ends a turn
 CRON_FAILURES = 3  # failed runs of one scheduled task in the window
 SIDEBAR_SESSIONS = 10  # unarchived top-level sessions scheduled runs created
+CLOUD_AGENT = "claude-cloud"  # agent name of a session that runs in a cloud VM
+GEMINI_AGENT = "antigravity-native"
+ROLES = ("lead", "worker", "verifier")  # `omni.role` label values, else a word of the title
 PASS = re.compile(r"(?:-p|\bpass\s*)(\d+)\b", re.IGNORECASE)
 
 DB_SECTIONS = (
@@ -116,7 +124,13 @@ def fetch_db(container: str, since: int) -> dict:
             f"""SELECT encode(c.id, 'hex') AS id, encode(c.parent_conversation_id, 'hex') AS parent_id,
               encode(c.root_conversation_id, 'hex') AS root_id, c.title, c.created_at, c.updated_at,
               c.archived, c.next_position AS items, a.name AS agent, h.name AS host,
-              m.workspace, m.live_status, m.sub_agent_name,
+              m.workspace, m.live_status, m.sub_agent_name, m.labels,
+              (SELECT coalesce(json_object_agg(n, k), '{{}}') FROM (
+                 SELECT i.tool_name AS n, count(*) AS k FROM conversation_items i
+                 WHERE i.conversation_id = c.id AND i.workspace_id = c.workspace_id
+                   AND i.type IN ({CALL_CODES}) GROUP BY i.tool_name) q) AS tool_calls,
+              (SELECT count(*) FROM conversation_items i WHERE i.conversation_id = c.id
+                 AND i.workspace_id = c.workspace_id AND i.type = {USER_TURN}) AS turns,
               encode(m.session_usage, 'hex') AS usage,
               (SELECT count(*) FROM conversation_items i WHERE i.conversation_id = c.id
                  AND i.workspace_id = c.workspace_id AND i.type = {COMPACTION}) AS compactions,
@@ -164,6 +178,7 @@ def fetch_db(container: str, since: int) -> dict:
     }
     for s in db["sessions"]:  # ponytail: one decode per blob; batch them if this gets slow
         s["usage"] = decode_usage(s["usage"])
+        s["labels"] = s["labels"] if isinstance(s.get("labels"), dict) else {}
     # Last, and the API right after it (main): today's row grows by the second while sessions run.
     db["daily"] = psql(
         container,
@@ -212,6 +227,137 @@ def window_start(days: int, now: float) -> int:
 
 def cost(usage: dict) -> float:
     return float(usage.get("total_cost_usd") or 0.0)
+
+
+def role_of(s: dict) -> str:
+    """lead, worker or verifier from the `omni.role` label, else a word of the title; else ''."""
+    named = (s.get("labels") or {}).get("omni.role")
+    if named in ROLES:
+        return named
+    words = re.findall(r"[a-z]+", (s.get("title") or "").lower())
+    return next((r for r in ROLES if r in words), "")
+
+
+def tokens_of(usage: dict) -> int:
+    return int(usage.get("total_tokens") or 0)
+
+
+def side_metrics(members: list[dict], tool: str | None) -> dict:
+    """One side's numbers. `tool_calls` is {name: count} per session; `tool` the split's tool, if any."""
+    calls = sum(sum((s.get("tool_calls") or {}).values()) for s in members)
+    own = sum((s.get("tool_calls") or {}).get(tool, 0) for s in members) if tool else 0
+    priced = [s for s in members if s["usage"].get("total_tokens") is not None]
+    return {
+        "sessions": len(members),
+        "cost_usd": sum(cost(s["usage"]) for s in members),
+        "tokens": sum(tokens_of(s["usage"]) for s in priced) if priced else None,
+        "turns": sum(s.get("turns") or 0 for s in members),
+        "wall_seconds": sum(
+            max(0, (s["updated_at"] or 0) - (s["created_at"] or 0)) for s in members
+        ),
+        "tool_calls": calls,
+        "split_tool_calls": own,
+        "split_tool_share": (own / calls) if tool and calls else None,
+    }
+
+
+def split_of(sessions: list[dict], tool: str | None, label: str | None) -> dict | None:
+    """Sessions in two sides, by a named tool called at least once or by a launch label key.
+
+    Both sides get the same metrics, overall and by role. The names come from the caller's
+    arguments only; nothing here knows which tool or label a setup compares.
+    """
+    if not (tool or label):
+        return None
+    if tool:
+        kind, key = "tool", tool
+        sides = {
+            f"called {tool}": [s for s in sessions if (s.get("tool_calls") or {}).get(tool)],
+            f"never called {tool}": [
+                s for s in sessions if not (s.get("tool_calls") or {}).get(tool)
+            ],
+        }
+    else:
+        kind, key = "label", str(label)
+        sides = {
+            f"has label {label}": [s for s in sessions if (s.get("labels") or {}).get(label)],
+            f"no label {label}": [s for s in sessions if not (s.get("labels") or {}).get(label)],
+        }
+        values = sorted(
+            {str(s["labels"][label]) for s in sessions if (s.get("labels") or {}).get(label)}
+        )
+        sides = (
+            {
+                **sides,
+                **{
+                    f"{label}={v}": [
+                        s for s in sessions if str((s.get("labels") or {}).get(label)) == v
+                    ]
+                    for v in values
+                },
+            }
+            if len(values) > 1
+            else sides
+        )
+    out = {}
+    for name, members in sides.items():
+        out[name] = {
+            **side_metrics(members, tool),
+            "roles": {
+                r: side_metrics([s for s in members if role_of(s) == r], tool)
+                for r in ROLES
+                if any(role_of(s) == r for s in members)
+            },
+        }
+    return {"kind": kind, "key": key, "sides": out}
+
+
+def cloud_of(sessions: list[dict]) -> dict:
+    """Cloud sessions as their own group: cost, models and the usage their child CLIs reported."""
+    group = [s for s in sessions if s.get("agent") == CLOUD_AGENT]
+    kids: dict[str, list[dict]] = defaultdict(list)
+    for (
+        s
+    ) in sessions:  # child usage posted under a parent: usage.child_usage = [{harness, model, ...}]
+        for c in s["usage"].get("child_usage") or []:
+            kids[s["id"]].append(c)
+    rows = []
+    for s in group:
+        by = s["usage"].get("by_model") or {}
+        children = kids.get(s["id"], [])
+        rows.append(
+            {
+                "id": s["id"],
+                "title": s["title"] or "",
+                "cost_usd": cost(s["usage"]),
+                "models": sorted(by),
+                "status": LIVE.get(s.get("live_status"), ""),
+                "children": [
+                    {
+                        "harness": c.get("harness") or "?",
+                        "model": c.get("model") or "?",
+                        "cost_usd": c.get("cost_usd"),
+                        "tokens": c.get("total_tokens"),
+                    }
+                    for c in children
+                ],
+                "child_cost_usd": sum(float(c.get("cost_usd") or 0) for c in children),
+            }
+        )
+    return {
+        "sessions": len(rows),
+        "cost_usd": sum(r["cost_usd"] for r in rows),
+        "child_cost_usd": sum(r["child_cost_usd"] for r in rows),
+        "rows": sorted(rows, key=lambda r: -r["cost_usd"]),
+    }
+
+
+def priced_note(s: dict) -> str | None:
+    """ "no price" for a Gemini session that has tokens and no cost, so $0 is never shown for it."""
+    u = s["usage"]
+    if s.get("agent") == GEMINI_AGENT and tokens_of(u) and not cost(u):
+        return f"{tokens_of(u):,} tokens, no price"
+    return None
 
 
 def verifier_pass(title: str) -> int:
@@ -332,6 +478,8 @@ def build(
     days: int,
     now: float,
     left_out: dict[str, str] | None = None,
+    split_tool: str | None = None,
+    split_label: str | None = None,
 ) -> dict:
     """The report from whatever sources answered; ``left_out`` maps each missing section to why."""
     since = window_start(days, now)
@@ -363,6 +511,13 @@ def build(
         "subscriptions": len(db["subscriptions"]) if db else None,
         "sidebar": db["sidebar"] if db else None,
         "flags": flags_of(db, trees, since) if db else None,
+        "split": split_of(db["sessions"], split_tool, split_label) if db else None,
+        "cloud": cloud_of(db["sessions"]) if db else None,
+        "unpriced": [
+            {"id": s["id"], "title": s["title"], "note": n}
+            for s in (db["sessions"] if db else [])
+            if (n := priced_note(s))
+        ],
         "left_out": left_out,
     }
 
@@ -428,6 +583,60 @@ def task_cells(t: dict) -> list[str]:
     return [str(c) for c in cells] + [t["last_error"] or "", t["workspace"] or ""]
 
 
+def split_rows(r: dict) -> list[list[str]]:
+    rows = []
+    for name, side in r["split"]["sides"].items():
+        for role, m in [("all", side), *side["roles"].items()]:
+            share = "-" if m["split_tool_share"] is None else f"{100 * m['split_tool_share']:.0f}%"
+            tok = "no tokens recorded" if m["tokens"] is None else mtok(m["tokens"])
+            rows.append(
+                [
+                    name,
+                    role,
+                    str(m["sessions"]),
+                    usd(m["cost_usd"]),
+                    tok,
+                    str(m["turns"]),
+                    f"{m['wall_seconds'] / 3600:.1f}h",
+                    str(m["tool_calls"]),
+                    share,
+                ]
+            )
+    return rows
+
+
+SPLIT_HEAD = [
+    "side",
+    "role",
+    "sessions",
+    "cost",
+    "tokens",
+    "turns",
+    "wall",
+    "tool calls",
+    "split tool share",
+]
+SPLIT_NOTE = (
+    "One call of a tool that runs code can do the work of several direct calls,"
+    " so raw call counts are not comparable across sides."
+)
+CLOUD_HEAD = ["session", "cost", "models", "status", "child CLIs (harness model cost)", "title"]
+
+
+def cloud_rows(r: dict) -> list[list[str]]:
+    return [
+        [
+            c["id"][:8],
+            usd(c["cost_usd"]),
+            ", ".join(c["models"]),
+            c["status"],
+            "; ".join(f"{k['harness']} {k['model']} {usd(k['cost_usd'])}" for k in c["children"]),
+            c["title"],
+        ]
+        for c in r["cloud"]["rows"]
+    ]
+
+
 def daily_total(r: dict) -> float:
     return sum(d["cost_usd"] for d in r["daily"])
 
@@ -462,6 +671,20 @@ def text(r: dict) -> str:
         TREE_HEAD,
         [tree_cells(t) for t in r["trees"][:TOP_TREES]],
     )
+    if r.get("split"):
+        sp = r["split"]
+        table(f"Split by {sp['kind']} {sp['key']}", SPLIT_HEAD, split_rows(r))
+        out.append(f"  Note: {SPLIT_NOTE}")
+    if r.get("cloud") and r["cloud"]["sessions"]:
+        c = r["cloud"]
+        table(
+            f"Cloud sessions: {c['sessions']}, {usd(c['cost_usd'])} (child CLIs {usd(c['child_cost_usd'])})",
+            CLOUD_HEAD,
+            cloud_rows(r),
+        )
+    if r.get("unpriced"):
+        out += ["", "Tokens with no price (not $0):"]
+        out += [f"  {u['id'][:8]} {u['title'][:40]}: {u['note']}" for u in r["unpriced"]]
     if r["tasks"] is not None:
         table("Scheduled tasks", TASK_HEAD, [task_cells(t) for t in r["tasks"] if t["runs"]])
         out.append(
@@ -550,6 +773,21 @@ def page(r: dict) -> str:
         TREE_HEAD,
         [tree_cells(t) for t in r["trees"][:TOP_TREES]],
     )
+    if r.get("split"):
+        table(f"Split by {r['split']['kind']} {r['split']['key']}", SPLIT_HEAD, split_rows(r))
+        body.append(f"<p class=muted>{e(SPLIT_NOTE)}</p>")
+    if r.get("cloud") and r["cloud"]["sessions"]:
+        table(
+            f"Cloud sessions: {r['cloud']['sessions']}, {usd(r['cloud']['cost_usd'])}",
+            CLOUD_HEAD,
+            cloud_rows(r),
+        )
+    if r.get("unpriced"):
+        body.append("<h2>Tokens with no price</h2><ul>")
+        body += [
+            f"<li>{e(u['id'][:8])} {e(u['title'][:40])}: {e(u['note'])}</li>" for u in r["unpriced"]
+        ]
+        body.append("</ul>")
     if r["tasks"] is not None:
         table("Scheduled tasks", TASK_HEAD, [task_cells(t) for t in r["tasks"] if t["runs"]])
     if r["left_out"]:
@@ -583,7 +821,22 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--db-container", default=DB_CONTAINER, help=f"Postgres container ({DB_CONTAINER})"
     )
+    p.add_argument(
+        "--split-tool", help="compare sessions that called this tool with those that did not"
+    )
+    p.add_argument("--split-label", help="compare sessions by this launch label key")
+    p.add_argument(
+        "--values",
+        metavar="FILE",
+        help="JSON file with split_tool / split_label, as the setup passes them",
+    )
     args = p.parse_args(argv)
+    if args.values:
+        vals = json.loads(Path(args.values).read_text())
+        args.split_tool = args.split_tool or vals.get("split_tool")
+        args.split_label = args.split_label or vals.get("split_label")
+    if args.split_tool and args.split_label:
+        p.error("--split-tool and --split-label are one split each: pick one")
     if args.days < 1:
         p.error("--days must be at least 1")
     now = time.time()
@@ -600,7 +853,9 @@ def main(argv: list[str] | None = None) -> int:
         )
     except (Fail, OSError, ValueError) as e:
         left_out["spend and session-tree cost (API)"] = str(e)
-    r = build(usage, db, codex_rate_limits(), args.days, now, left_out)
+    r = build(
+        usage, db, codex_rate_limits(), args.days, now, left_out, args.split_tool, args.split_label
+    )
     if args.html:
         Path(args.html).write_text(page(r))
     print(json.dumps(r, indent=2) if args.json else text(r), end="" if not args.json else "\n")

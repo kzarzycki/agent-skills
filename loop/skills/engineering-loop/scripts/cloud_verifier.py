@@ -710,6 +710,43 @@ def linked_report(final: str, root: Path) -> tuple[str, str] | None:
     return None
 
 
+RELAYED: list[str] = [""]  # the tail of what the last relayed CLI printed, for `child_usage`
+CHILD_USAGE_URL = (
+    "OMNIGENT_CHILD_USAGE_URL"  # off unless the deployment sets it: usage leaves the VM only then
+)
+TOKENS = re.compile(r"(?:tokens used|total tokens)\D{0,12}([\d,]+)", re.IGNORECASE)
+COST = re.compile(r"(?:total )?cost\D{0,6}\$\s*([\d.]+)", re.IGNORECASE)
+
+
+def child_usage(harness: str, model: str | None, output: str) -> dict | None:
+    """The usage `codex` or `agy` printed, as {harness, model, total_tokens, cost_usd?}; None when it printed none."""
+    tokens = TOKENS.findall(output)
+    if not tokens:
+        return None
+    got = {
+        "harness": harness,
+        "model": model or "?",
+        "total_tokens": int(tokens[-1].replace(",", "")),
+    }
+    if cost := COST.findall(output):
+        got["cost_usd"] = float(cost[-1])
+    return got
+
+
+def post_child_usage(usage: dict | None, parent: str | None = None) -> bool:
+    """Post a child's usage to Omnigent under its parent session (`$OMNIGENT_SESSION_ID`). Needs the deployment's
+    `$OMNIGENT_CHILD_USAGE_URL` (a `{session}` template) and never fails the pass."""
+    url, parent = os.environ.get(CHILD_USAGE_URL), parent or os.environ.get("OMNIGENT_SESSION_ID")
+    if not (usage and url and parent):
+        return False
+    try:
+        post_json(url.format(session=parent), usage, {})
+    except (OSError, ValueError) as e:
+        print(f"cloud_verifier: child usage not posted: {e}", file=sys.stderr)
+        return False
+    return True
+
+
 def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
     """Run a verifier CLI on the brief (stdin) without the seeded variable (Codex reads the auth.json `verify` wrote,
     Claude its own login), its output relayed line by line through this process's redacted stdout and stderr, so a
@@ -743,6 +780,7 @@ def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
         for line in stream:
             to.write(line)
             to.flush()
+            RELAYED[0] = (RELAYED[0] + line)[-4000:]
             if into is not None:
                 into.append(line)
 
@@ -760,6 +798,7 @@ def relay_exec(cmd: list[str], brief: str, keep: Path | None = None) -> int:
         )
     for thread in threads:
         thread.start()
+    RELAYED[0] = ""
     code = child.wait()
     # a background descendant of the CLI can hold the pipe open long after it exits: wait only briefly for the tail
     for thread in threads:
@@ -1018,6 +1057,7 @@ def review(
             else codex_exec([*cmd, "-"], brief)
         )
         ended = time.time()
+        post_child_usage(child_usage(harness, model, RELAYED[0]))
         print(f"{harness} exited {code} after {ended - started:.0f} s", flush=True)
         # read before the checkout back, which rewrites a report path that both commits track
         wrote = {
