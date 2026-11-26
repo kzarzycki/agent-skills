@@ -66,12 +66,12 @@ def test_digest_flags_a_hand_edited_entry_with_no_undo(home):
     assert "NO UNDO LINE" in run(home, "digest").stdout
 
 
-def test_digest_reads_cos_session_and_cos_line_from_values(home):
-    (home / "cos-values.yml").write_text(
-        "cos_session: sess-1\ndecisions:\n  cos_line: Chief of staff, sess-1\n"
-    )
-    out = run(home, "digest").stdout
-    assert "Chief of staff, sess-1" in out and "Reply in session sess-1." in out
+def test_digest_names_the_cos_session_from_cos_session_only(home):
+    (home / "cos-values.yml").write_text("cos_session: sess-1\n")
+    assert "Reply in session sess-1." in run(home, "digest").stdout
+    (home / "cos-values.yml").write_text("cos_session: sess-1\ndecisions:\n  cos_line: x\n")
+    bad = run(home, "digest")
+    assert bad.returncode != 0 and "decisions.cos_line: unknown key" in bad.stderr
 
 
 def test_decisions_file_comes_from_the_values(home):

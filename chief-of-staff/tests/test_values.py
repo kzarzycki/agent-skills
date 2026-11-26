@@ -32,8 +32,7 @@ def test_no_file_gives_the_pack_defaults(tmp_path, monkeypatch):
     v = cv.load(home=tmp_path)
     assert v.file is None
     assert v.get("delegation.on") is False
-    assert v.get("releases") == "held"
-    assert v.get("hygiene.retention_days") == 14
+    assert v.get("hygiene.repos") == []
     assert v.get("server") is None
     assert v.path("board") == tmp_path / "tmp/loop/chief-of-staff.md"
     assert v.path("registry") == tmp_path / "tmp/loop/leads.registry"
@@ -43,16 +42,16 @@ def test_file_is_plain_yaml_a_person_edits(tmp_path):
     p = _write(tmp_path, "# a comment the owner leaves\ndelegation:\n  on: true\n")
     v = cv.load(home=tmp_path)
     assert v.file == p and v.get("delegation.on") is True and v.is_set("delegation.on")
-    assert not v.is_set("releases")
+    assert not v.is_set("hygiene.repos")
 
 
 def test_unknown_key_is_named_with_the_nearest(tmp_path):
-    _write(tmp_path, "delegation:\n  onn: true\nrelease: held\n")
+    _write(tmp_path, "delegation:\n  onn: true\nregisty: x\n")
     with pytest.raises(cv.ValuesError) as e:
         cv.load(home=tmp_path)
-    assert set(e.value.keys) == {"delegation.onn", "release"}
+    assert set(e.value.keys) == {"delegation.onn", "registy"}
     assert "delegation.onn: unknown key; did you mean `delegation.on`?" in str(e.value)
-    assert "release: unknown key; did you mean `releases`?" in str(e.value)
+    assert "registy: unknown key; did you mean `registry`?" in str(e.value)
 
 
 def test_unknown_key_on_get_is_named():
@@ -65,16 +64,16 @@ def test_missing_key_is_named_by_require(tmp_path):
     with pytest.raises(cv.ValuesError, match="cos_session: missing") as e:
         v.require("cos_session")
     assert e.value.keys == ("cos_session",)
-    assert v.require("releases") == "held"
+    assert v.require("reports_dir") == "tmp/loop"
 
 
 def test_wrong_type_and_choice_are_named(tmp_path):
     _write(
-        tmp_path, "delegation: {on: yes please}\nreleases: sometimes\nmodels: {tiers: {boss: x}}\n"
+        tmp_path, "delegation: {on: yes please}\nhygiene: {repos: 5}\nmodels: {tiers: {boss: x}}\n"
     )
     with pytest.raises(cv.ValuesError) as e:
         cv.load(home=tmp_path)
-    assert set(e.value.keys) == {"delegation.on", "releases", "models.tiers.boss"}
+    assert set(e.value.keys) == {"delegation.on", "hygiene.repos", "models.tiers.boss"}
 
 
 def test_manager_missing_field_is_named(tmp_path):
@@ -99,9 +98,9 @@ def test_named_file_must_exist(tmp_path, monkeypatch):
 
 def test_env_names_the_file(tmp_path, monkeypatch):
     p = tmp_path / "elsewhere.yml"
-    p.write_text("releases: continuous\n")
+    p.write_text("delegation: {on: true}\n")
     monkeypatch.setenv(cv.ENV_VAR, str(p))
-    assert cv.load().get("releases") == "continuous"
+    assert cv.load().get("delegation.on") is True
 
 
 def test_owner_only_adds_never_shortens(tmp_path):
@@ -117,15 +116,11 @@ def test_get_returns_a_copy(tmp_path):
 
 
 def test_path_keys_resolve_beside_board_or_home(tmp_path):
-    _write(tmp_path, "board: boards/root.md\ndecisions: {file: /abs/d.md}\ndrafts_dir: in\n")
+    _write(tmp_path, "board: boards/root.md\ndecisions: {file: /abs/d.md}\nreports_dir: in\n")
     v = cv.load(home=tmp_path)
     assert v.path("registry") == tmp_path / "boards/leads.registry"
     assert v.path("decisions.file") == Path("/abs/d.md")
-    assert v.path("drafts_dir") == tmp_path / "in"
-    with pytest.raises(
-        cv.ValuesError, match="reports_dir: not a path|data.allowed_hosts: not a path"
-    ):
-        v.path("data.allowed_hosts")
+    assert v.path("reports_dir") == tmp_path / "in"
     with pytest.raises(cv.ValuesError, match="server: not a path key"):
         v.path("server")
 
@@ -181,12 +176,12 @@ def test_every_key_default_passes_its_own_check():
 
 def test_cli(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv(cv.ENV_VAR, raising=False)
-    _write(tmp_path, "releases: continuous\n")
-    assert cv.main(["--home", str(tmp_path), "get", "releases"]) == 0
-    assert capsys.readouterr().out.strip() == '"continuous"'
+    _write(tmp_path, "delegation: {on: true}\n")
+    assert cv.main(["--home", str(tmp_path), "get", "delegation.on"]) == 0
+    assert capsys.readouterr().out.strip() == "true"
     assert cv.main(["--home", str(tmp_path), "get", "server"]) == 1
     assert "server: missing" in capsys.readouterr().err
-    _write(tmp_path, "relaeses: held\n")
+    _write(tmp_path, "relaeses: x\n")
     assert cv.main(["--home", str(tmp_path), "check"]) == 1
     assert "relaeses: unknown key" in capsys.readouterr().err
     assert cv.main(["keys"]) == 0
@@ -211,3 +206,41 @@ def test_relative_home_resolves_to_absolute(tmp_path, monkeypatch):
     v = cv.load(home="h")
     monkeypatch.chdir("/")
     assert v.path("registry") == tmp_path / "h/tmp/loop/leads.registry"
+
+
+DROPPED = [
+    *("hosts." + k for k in ("cloud_bridge", "no_local_loop", "orchestration", "memory_floor")),
+    "decisions.cos_line",
+    "hygiene.retention_days",
+    "hygiene.our_authors",
+    "pin.notify",
+    "pin.schedule",
+    "deps.repos",
+    "deps.schedule",
+    "bridge.never_crosses",
+    "data.allowed_hosts",
+    "drafts_dir",
+    "planning.backlog",
+    "releases",
+    "harness.default",
+    "harness.codex_opt_in",
+    "models.cap",
+    "scheduled.cap_usd",
+    "memory",
+    "permissions.coordinator_mode",
+    "prompts.cos_approves",
+    "owner.language",
+    "owner.reply_format",
+]
+
+
+@pytest.mark.parametrize("name", DROPPED)
+def test_a_dropped_key_is_not_in_the_table_and_fails_as_unknown(name, tmp_path):
+    assert name not in cv.KEYS
+    group, _, leaf = name.partition(".")
+    _write(tmp_path, f"{group}: {{{leaf}: x}}\n" if leaf else f"{name}: x\n")
+    with pytest.raises(cv.ValuesError) as e:
+        cv.load(home=tmp_path)
+    # A group with no key left is unknown as a whole, and is the name the loader gives.
+    named = name if any(k.startswith(group + ".") for k in cv.KEYS) or not leaf else group
+    assert f"{named}: unknown key" in str(e.value)
