@@ -20,7 +20,7 @@ def test_a_changed_skill_runs_the_repo_wide_rule_tests_it_did_not_change() -> No
 
 def test_the_loop_runs_one_pre_queue_command_the_queue_selection_in_its_policy() -> None:
     tasks = tomllib.loads((ROOT / "mise.toml").read_text())["tasks"]
-    assert tasks["check-affected"]["run"].splitlines()[-1] == "GATE_IN_QUEUE=1 mise run test-batch"
+    assert tasks["check-affected"]["run"].splitlines()[-1] == "GATE_IN_QUEUE=1 CROSS_CHANGE_PR_HEAD=1 mise run test-batch"
     loop = (ROOT / "docs" / "agents" / "loop.md").read_text()
     assert re.search(r"^Affected tests:[ \t]*mise run check-affected[ \t]*$", loop, re.MULTILINE)
 
