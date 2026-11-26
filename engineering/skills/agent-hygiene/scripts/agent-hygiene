@@ -21,6 +21,8 @@ Steps, each skipped when in use:
                 `omnigent/terminals/program_status.py` wrappers whose --bridge-dir no longer exists get SIGTERM, then SIGKILL
                 (the wrapper ignores SIGTERM) on their process group; launchd reaps the zombies. Logs ptys and zombies before
                 and after, and warns above 80% of the pty limit
+  temp          directories this user owns directly under /var/tmp and $TMPDIR (default /tmp) that no process has open and
+                nothing in changed for over 3 days, with their size; a held-open or other user's one is kept and named
   caches        each tool's own command (uv, pnpm, npm, go, pre-commit, brew, and docker's
                 build cache unused for 24 h)
   sessions      once a day, Omnigent sessions idle over a day, archived through omnigent-agents' finish_delivered
@@ -709,6 +711,68 @@ def environments(run, found, idle_days, procs):
                 run.say(f'removed env {env}: freed {(free() - before) / GB:.2f} GB')
 
 
+TEMP_IDLE_DAYS = 3  # a scratch directory nothing changed in for longer than this is a straggler
+
+
+def temp_roots():
+    """The system temp folders swept: /var/tmp and $TMPDIR (default /tmp), each once."""
+    roots = []
+    for root in (Path('/var/tmp'), Path(os.environ.get('TMPDIR') or '/tmp')):
+        if root.is_dir() and (root := root.resolve()) not in roots:
+            roots.append(root)
+    return roots
+
+
+def tree_state(path):
+    """(newest mtime, bytes) of a directory and everything under it; symlinks are not followed."""
+    newest, size = path.lstat().st_mtime, 0
+    for here, dirs, files in os.walk(path):
+        for name in (*dirs, *files):
+            try:
+                info = os.lstat(os.path.join(here, name))
+            except OSError:
+                continue
+            newest = max(newest, info.st_mtime)
+            size += info.st_size
+    return newest, size
+
+
+def temp_dirs(run, procs, roots=None, idle_days=TEMP_IDLE_DAYS):
+    """Directories this user owns directly under the temp folders that no process holds and nothing changed in for more
+    than idle_days: removed, each with its size. Kept and named: one a process holds, another user's."""
+    cutoff = time.time() - idle_days * 86400
+    for root in temp_roots() if roots is None else roots:
+        try:
+            entries = sorted(root.iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if path.is_symlink() or not path.is_dir():
+                continue  # files, and links to elsewhere, are not swept
+            if info.st_uid != os.getuid():
+                run.say(f'skip tmp {path}: owned by another user')
+                continue
+            newest, size = tree_state(path)
+            if why := in_use(path, procs):
+                run.say(f'skip tmp {path}: {why}')
+            elif newest > cutoff:
+                continue  # fresh: neither reported nor removed
+            elif run.dry:
+                run.say(f'would remove tmp {path}: {size / GB:.2f} GB')
+            else:
+                try:
+                    shutil.rmtree(path)
+                except OSError as error:
+                    run.failed = True
+                    run.say(f'FAIL tmp {path}: {error}')
+                    continue
+                run.say(f'removed tmp {path}: freed {size / GB:.2f} GB')
+
+
 # {server: token} for the servers named in argv that this account is logged in to.
 LOGINS = """import json, sys
 from omnigent.cli_auth import load_token, refresh_stored_token
@@ -1188,6 +1252,7 @@ def main():
             found = checkouts(args.dev.resolve())
             worktrees(run, found, args.dev.resolve(), procs, asks)
             environments(run, found, args.idle_days, procs)
+        temp_dirs(run, procs)
     drifted = drift(run, procs)
     # Caches last: a pnpm node_modules is an APFS clone of the store, so removing one frees its
     # blocks only once `pnpm store prune` drops the store's copy.

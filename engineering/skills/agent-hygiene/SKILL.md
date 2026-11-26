@@ -51,6 +51,13 @@ A round outside a schedule (a low disk, a pty pool near its limit) is the same s
   the prune at that account's files (`Permission denied`): the round doesn't fail on it, and
   tells the chief of staff once, naming the cache folder and how to share or split it; it
   changes no ownership or permissions itself.
+- **Stragglers in the temp folders:** directories this user owns directly under `/var/tmp` and
+  `$TMPDIR` (default `/tmp`) that no process has open (or as cwd, or names) and nothing in
+  changed for more than 3 days, each removed with its size reported. A directory a live
+  process holds, or one another user owns, is kept and named in the report; files and symlinks
+  there are left alone. Scratch homes and proof directories belong under `$TMPDIR`, made with
+  `T=$(mktemp -d)` and removed on exit (`trap 'rm -rf "$T"' EXIT`), never left under `/var/tmp`
+  (the OS cleans it after 30 days, if at all); the sweep removes the ones that were left.
 - **Worktrees** under `~/dev` whose branch has a merged PR on the GitHub origin (or,
   detached, whose HEAD is the head of a merged or closed PR), and the worktrees with no PR
   of their own inside one (a worker's or agent's), judged with that PR and removed first.
