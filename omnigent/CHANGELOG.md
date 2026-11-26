@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.20 - 2026-11-26
+
+- omnigent-agents: an idle session whose `Waits:` names its supervisor is recorded with no event while the owner has an open question card on that supervisor or up its parent chain, since the wait is on the owner's answer; with no open card the wait is still acted on (#2755).
+
 ## 0.1.19 - 2026-11-26
 
 - omnigent-agents: `claude-cloud-run` takes the forge's remote from the branch's upstream (else the policy's `forge_remote`, else `origin`) as the gatekeeper does, so a worktree tracking a fork starts its cloud session on the fork's repo; its launch dir sits beside the worktree it serves; the folder-trust check accepts a folder whose parent is trusted; and a `--reference`/`--shared` clone is refused before any session is created (#2710).
