@@ -1,5 +1,9 @@
-# One run releases every package with pending `changelog.d/` entries, with no agent (#1861):
-# - `cut` (workflow_dispatch) runs `cli cut-release`, the fold a person and the gate run too, commits its tree on a
+# One run releases every package with pending `changelog.d/` entries, with no agent (#1861), on two lines (#2678):
+# - `next`: `gate` accepts a green push run of the CI workflow on main whose tree a merge-queue batch tested (`nightly.py
+#   moved push`) while no release PR is open; `cut` releases what its fold finds, and `tag` pushes `<pkg>-vX.Y.Z-next`.
+# - `stable`: `promote` accepts a green scheduled run of the CI workflow that ran the full suite, and tags
+#   `<pkg>-vX.Y.Z` on the newest covered `-next` commit, the same sha. `workflow_dispatch` stays for a minor bump or a rerun.
+# - `cut` runs `cli cut-release`, the fold a person and the gate run too, commits its tree on a
 #   `release/` branch and opens the PR with `loop:queued` and the `land` status, so Mergify queues it. Its `qualify`
 #   runs `cli release-verify`, which fails the PR unless its tree is exactly the fold of its branch point, so the PR is
 #   risk low with no verifier (docs/agents/gatekeeper.md's `bot.release`).
@@ -22,19 +26,78 @@ on:
   push:
     branches:
       - main
+  # A `workflow_run` job gets secrets, so `gate` and `promote` accept only a green run of this repository's main on the
+  # expected event (tools/capability_pack/release_lines.py), and check out that run's commit, never `github.sha`.
+  workflow_run:
+    workflows: ["Engineering capability pack"]
+    types: [completed]
 
 permissions:
   contents: read
 
-concurrency:
-  group: release
-  cancel-in-progress: false
-
 jobs:
+  # `next`: is there a tested merge to release, and no release PR already open?
+  gate:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      go: ${{ steps.decide.outputs.go }}
+      sha: ${{ steps.decide.outputs.sha }}
+    steps:
+      # main's own code decides, whatever commit the run was on
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - run: mise install
+      - run: uv sync --frozen
+      # skip=true names the batch run that tested this tree; skip=false means no batch did
+      - id: tested
+        if: github.event_name == 'workflow_run'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: python3 loop/skills/engineering-loop/scripts/nightly.py moved push --sha "$RUN_SHA" --workflow engineering-ci.yml
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN_JSON: ${{ toJSON(github.event.workflow_run) }}
+          TESTED: ${{ steps.tested.outputs.skip || 'false' }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_run ]; then
+            uv run python -m tools.capability_pack.release_lines gate next --tested "$TESTED"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"; echo "sha=main" >> "$GITHUB_OUTPUT"
+          fi
+          # while a release PR is open its entries go out when it lands; a second one would fold the same ones twice
+          open=$(gh api "repos/$REPO/pulls?state=open&base=main&per_page=100" --paginate --jq '[.[] | {state, html_url, head: {ref: .head.ref}}]' \
+            | uv run python -m tools.capability_pack.release_lines open-pr)
+          if [ -n "$open" ]; then
+            echo "release PR already open: $open; its entries go out when it lands" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
   cut:
-    if: github.event_name == 'workflow_dispatch'
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # a running cut is never cancelled; GitHub keeps one waiting run per group and replaces an older one with a newer,
+    # whose fold holds every entry the older would have cut
+    concurrency:
+      group: release
+      cancel-in-progress: false
     permissions:
       contents: read
       statuses: write
@@ -49,7 +112,7 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ needs.gate.outputs.sha }}
           fetch-depth: 0 # the tags: each package's version moves past its last one
           token: ${{ secrets.RELEASE_TOKEN }}
       - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
@@ -102,6 +165,10 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # one group per commit: a waiting tag run is never replaced by a later one
+    concurrency:
+      group: release-tag-${{ github.sha }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: read
@@ -186,6 +253,10 @@ jobs:
           set -euo pipefail
           git config user.name "Release workflow"
           git config user.email "release-workflow@users.noreply.invalid"
+          # the `next` line: a stable tag is a later nightly's promotion of this same commit (#2678)
+          nexts=""
+          for tag in $TAGS; do nexts="$nexts $tag-next"; done
+          TAGS=${nexts# }
           for tag in $TAGS; do git tag -a "$tag" -m "$tag" "$SHA"; done
           # every manifest the commit changes is tagged on it now, which each check requires; the step above
           # was engineering's smoke run
@@ -195,3 +266,60 @@ jobs:
           # one push: each tag check starts with every tag of the commit already in place
           git push origin $TAGS
           printf 'tagged %s: %s\n' "$SHA" "$TAGS" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # `stable`: a green nightly that ran the full suite promotes the newest `next` commit it covered, with no rebuild
+  promote:
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: release-promote
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: read
+    env:
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+    steps:
+      - name: Require the release credential
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "::error::set the RELEASE_TOKEN secret: a tag pushed with github.token starts no tag check"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0 # every tag and the history `merge-base --is-ancestor` reads
+          token: ${{ secrets.RELEASE_TOKEN }}
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - run: mise install
+      - run: uv sync --frozen
+      - name: Promote what the nightly covered
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_JSON: ${{ toJSON(github.event.workflow_run) }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # the green scheduled runs, to tell a nightly that ran the suite from one that skipped it
+          gh api "repos/$REPO/actions/workflows/engineering-ci.yml/runs?event=schedule&branch=main&status=success&per_page=50" > "$RUNNER_TEMP/nightlies.json"
+          uv run python -m tools.capability_pack.release_lines gate stable --nightlies "$RUNNER_TEMP/nightlies.json"
+          [ "$(grep '^go=' "$GITHUB_OUTPUT" | tail -1)" = go=true ] || exit 0
+          plan=$(uv run python -m tools.capability_pack.release_lines promote --head "$RUN_SHA")
+          if [ -z "$plan" ]; then
+            echo "nothing to promote: no unpromoted next tag on a commit this nightly covered" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          git config user.name "Release workflow"
+          git config user.email "release-workflow@users.noreply.invalid"
+          tags=""
+          while read -r tag commit; do
+            git tag -a "$tag" -m "$tag" "$commit"   # the next tag's own commit: stable ships exactly the tested tree
+            tags="$tags $tag"
+          done <<< "$plan"
+          git push origin $tags
+          printf 'promoted to stable: %s\n' "$tags" | tee -a "$GITHUB_STEP_SUMMARY"

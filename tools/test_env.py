@@ -20,9 +20,12 @@ RUNNER = (
     "GITHUB_REF_NAME",
     "GITHUB_REPOSITORY",
     "GITHUB_SHA",
+    "GITHUB_STEP_SUMMARY",
     "GITHUB_TOKEN",
     "GITHUB_WORKFLOW_REF",
     "GITHUB_WORKSPACE",
+    "REPO",
+    "RUN_JSON",
 )
 
 # Which agent session the run is in: an Omnigent session, a cloud VM's marker, the host's model and effort defaults.
