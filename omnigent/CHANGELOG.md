@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.22 - 2026-11-26
+
+- omnigent-telemetry: `--split-tool` / `--split-label` (or `--values`) compare two sides of sessions by the same metrics, overall and by role; cloud sessions get their own table with their children's usage; Gemini sessions with tokens and no cost show "no price" instead of $0 (#2775).
+
 ## 0.1.21 - 2026-11-26
 
 - omnigent-agents: `supervise --install` run from a developer checkout of the pack refuses and names the installed copy to run it from, instead of writing a service that runs that checkout for ever (#2761)
