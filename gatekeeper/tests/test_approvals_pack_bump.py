@@ -233,7 +233,7 @@ def test_a_mechanical_pack_bump_on_a_risk_path_is_no_spec_hold_under_spec_auto_t
     )
     ask = issue(5, "kind:chore", "size:XS")
     held = [
-        "#5: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path `apm.yml`)"
+        "#5: its spec is the owner's to approve under `spec.auto: true`, since it matches a risk rule (path `apm.yml`); it still awaits their approval"
     ]
     spec = ["#5 has no `Approved: spec` record by the owner", "#5 lacks the `approved:spec` label"]
     bump = cloud_bump("apm.yml", "apm.lock.yaml")
