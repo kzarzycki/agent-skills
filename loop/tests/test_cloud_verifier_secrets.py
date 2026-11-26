@@ -356,7 +356,7 @@ def test_a_background_descendant_of_codex_does_not_hold_verify_up(
     codex = tmp_path / "bin" / "codex"
     sleeper = tmp_path / "sleeper.pid"
     text = codex.read_text().replace(
-        "cat >/dev/null\n", f"cat >/dev/null\nsleep 30 &\necho $! > {sleeper}\necho trailing line\n"
+        "cat >/dev/null\n", f"cat >/dev/null\nsleep 120 &\necho $! > {sleeper}\necho trailing line\n"
     )
     codex.write_text(text)
     assert cv.main(argv) == 0
