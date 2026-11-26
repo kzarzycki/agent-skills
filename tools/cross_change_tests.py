@@ -87,8 +87,13 @@ def select(
     base: str,
     record: Callable[[str, str], tuple[bool, str]] = recorded,
     unkeyed: Callable[[], list[str]] = unkeyed_checks,
+    *,
+    pr_head: bool = False,
 ) -> tuple[list[str], list[str]]:
-    """The batch's unkeyed checks and its test targets; Refused when both are empty and a PR has no record."""
+    """The batch's unkeyed checks and its test targets; Refused when both are empty and a PR has no record.
+    `pr_head`: the run is loop.md's `Affected tests:` on a PR head (`check-affected`), not a queue batch. A plain head
+    doesn't split into PRs, and an empty selection there is a pass of that PR's selected tests (there are none), so
+    it is no refusal and `affected-tests --record` can record it (#2719)."""
     checks = unkeyed()
     say(f"{len(checks)} unkeyed checks (select.unkeyed){': ' if checks else ''}{'; '.join(checks)}")
     g = gatekeeper()
@@ -96,6 +101,9 @@ def select(
     if isinstance(pulls, str):
         say(f"fallback to the batch's affected tests: the commits don't split into PRs ({pulls})")
         picked = a.targets(a.changed(base), base)
+        if pr_head and not (checks or picked):
+            say("a PR head that reaches no test: nothing to run is a pass of its selected tests")
+            return checks, picked
         if why := g.queue_refusal(bool(checks or picked), [], pulls):
             raise Refused(why)
         return checks, picked
@@ -144,9 +152,14 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("base", nargs="?", default="origin/main")
     parser.add_argument("--unkeyed-out", type=Path)
+    parser.add_argument(
+        "--pr-head",
+        action="store_true",
+        help="a PR head's `Affected tests:` run (check-affected), not a queue batch: an empty selection passes",
+    )
     args = parser.parse_args(argv)
     try:
-        checks, targets = select(args.base)
+        checks, targets = select(args.base, pr_head=args.pr_head)
     except Refused as exc:
         say(f"refused: {exc}")
         return 1
