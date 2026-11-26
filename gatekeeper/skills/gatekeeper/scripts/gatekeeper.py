@@ -83,8 +83,8 @@ Under Omnigent (`OMNIGENT_RUNNER_PRIMARY_SESSION_ID` and `RUNNER_SERVER_URL` set
 <server>/c/<lead's session id>`, which names the lead from inside its workers and verifiers too, and the issue's `Session`
 issue field is set to the same link. The field is optional: the account's owner creates it (a text field); without it,
 the run says so in one line after one lookup, the record still carries the link, and the claim and the exit code are
-unchanged. A refused write is a line too. Where GitHub refuses GraphQL, REST sets it, with the field's id from the policy's
-`loop.session_field_id`, else read off an issue already carrying a value. `check setup` prints one line and GitHub's steps when the account lacks the field.
+unchanged. A refused write is a line too. Where GitHub refuses GraphQL, REST sets it, with the field's id read off an
+issue already carrying a value; otherwise the supervisor, which runs where GraphQL works, sets it from the record. `check setup` prints one line and GitHub's steps when the account lacks the field.
 A repo without docs/agents/gatekeeper.md or loop.md has no rules: each issue needs only `approved:spec` and no `needs-owner`, with no
 approval record. Without docs/agents/issue-tracker.md no label's shape is checked.
 `check merge` also fails a PR that itself carries `needs-owner` (`#<n> waits for the owner (needs-owner)`), so `land`
@@ -991,7 +991,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "pack_staleness": Choice(("warn", "refuse")),
         "stalled_after_hours": int,
         "rerun_pusher": str,
-        "session_field_id": int,
     },
     "mutate": {"inconclusive_exit": int},
     "spec": {"auto": SPEC_KINDS},
@@ -2482,12 +2481,6 @@ SESSION_STEPS = (
 )
 
 
-def configured_session_field() -> int | None:
-    """`loop.session_field_id`: the `Session` field's id as the project states it, None when it states none."""
-    given = settings(project()[1]).get("session_field_id")
-    return int(given) if given else None
-
-
 def session_field(number: int, link: str) -> str | None:
     """Set issue `number`'s `Session` field to `link`: None once set, else the line saying why not. Best effort, like a
     board move, since the claim's record carries the link too. GraphQL reads the field and the issue's id in one call
@@ -2506,17 +2499,13 @@ def session_field(number: int, link: str) -> str | None:
     def rest() -> Callable[[], None] | None:
         global rest_field
         if rest_field is None:
-            # the project's own statement of the id needs no lookup, so it works in a repo no issue carries a value in
-            rest_field = configured_session_field()
-        if rest_field is None:
             if not rest_has_issue_field(SESSION_FIELD):
                 return None
             rest_field = rest_issue_field_id(SESSION_FIELD)
             if rest_field is None:
                 raise LookupError(
                     f"GitHub refuses GraphQL here, and REST names the `{SESSION_FIELD}` field's id only once an issue"
-                    " carries a value: set `loop.session_field_id` in docs/agents/gatekeeper.md to the field's id"
-                    " (`gh api /user/issue-fields`, run where GitHub allows it), or set the field on one issue by hand"
+                    " carries a value: the supervisor sets the field from this claim's record on its next poll"
                 )
         field = rest_field
         return lambda: rest_set_issue_field(number, field, link)
