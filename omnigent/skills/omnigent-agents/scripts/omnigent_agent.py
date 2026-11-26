@@ -13643,9 +13643,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         survivors: list[str] = []
 
         def arm_launched(s: str) -> None:
-            # a supervisor reads the report file, which for --pr only wait writes: it would revive
-            # and nudge a cloud worker toward a host path it can't write
-            if (not remote or (registry and args.top_level)) and not args.pr:
+            # a --pr session writes no report file here (only wait does), so its line is a followed
+            # one: the supervisor tells its end from the last message and never nudges a cloud
+            # worker toward a host path it can't write (#2718)
+            if args.pr and registry:
+                arm_quietly(registry, s, report, None, verdict=verifier, followed=True)
+            elif not remote or (registry and args.top_level):
                 arm_quietly(
                     registry,
                     s,
@@ -13684,8 +13687,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 top_level=args.top_level,
                 workspace=str(workspace),
                 host_id=host,
-                # the supervisor follows it instead, but never a --pr one, which it can't arm
-                subscribe=not (registry and args.top_level and not args.pr),
+                # the supervisor follows it instead
+                subscribe=not (registry and (args.top_level or args.pr)),
                 subscriber=lead,
                 pr=args.pr,
                 files=args.file,
