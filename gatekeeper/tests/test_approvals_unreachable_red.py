@@ -93,6 +93,6 @@ def test_a_ci_only_diff_selects_no_product_test() -> None:
         "non_product": [".github/**", "docs/agents/**", "tools/ci/**"],
         "checks": [{"paths": ["tools/ci/**"], "command": "pytest tools/ci"}],
     }
-    files = [".github/workflows/ci.yml", "docs/agents/loop.md", "tools/ci/run.py"]
+    files = [".github/workflows/ci.yml", "docs/agents/roles.md", "tools/ci/run.py"]
     assert approvals.classify(files, select) == ([], ["pytest tools/ci"])
     assert approvals.classify([*files, "src/app.py"], select)[0] == ["src/app.py"]
