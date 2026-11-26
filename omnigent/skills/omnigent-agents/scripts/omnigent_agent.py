@@ -2672,7 +2672,29 @@ def unasked_end(
         return False
     said = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
     text = text_of(said[-1]).strip() if said else ""
-    return ending_of(text) == "USER NEEDED"
+    if ending_of(text) != "USER NEEDED":
+        return False
+    return not named_card_open(og, sid, info, text)
+
+
+def named_card_open(og: Omnigent, sid: str, info: dict, text: str) -> bool:
+    """Whether a ``question_<id>`` card ``text`` names is open on ``sid`` or up its ``parent_session_id`` chain: a lead
+    ends ``USER NEEDED`` on the card its parent posted, so the owner gets one card. An unreadable parent counts as none."""
+    ids = set(re.findall(rf"\b{CARD_ID}[A-Za-z0-9_-]+", text))
+    seen: set[str] = set()
+    while ids and sid and sid not in seen:
+        seen.add(sid)
+        if any(
+            str(e.get("elicitation_id") or "") in ids
+            for e in info.get("pending_elicitations") or []
+        ):
+            return True
+        sid = str(info.get("parent_session_id") or "")
+        try:
+            info = og.info(sid) if sid else {}
+        except Fail:
+            return False
+    return False
 
 
 def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:

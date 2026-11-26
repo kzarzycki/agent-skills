@@ -444,3 +444,20 @@ def test_a_cloud_lead_brief_says_its_manager_runs_the_verifier_and_a_host_lead_b
     assert brief(True).count(line) == 1
     assert line not in brief(False)  # a host lead starts its own verifier
     assert line not in brief(True, top_level=False)  # a cloud worker is no lead
+
+
+def test_unasked_end_counts_a_named_card_open_on_the_parent() -> None:
+    """#2145: a lead ending USER NEEDED on a card its parent posted raises no unasked event."""
+    parent_card = {**CARD, "elicitation_id": "question_abc123"}
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return {"pending_elicitations": [parent_card]} if sid == "p" else {}
+
+    child = {"parent_session_id": "p"}
+    named = [ending("USER NEEDED: owner's answer on card question_abc123", 1)]
+    assert omnigent_agent.unasked_end(Og(), "c", child, named, False) is False
+    other = [ending("USER NEEDED: owner's answer on card question_zzz", 1)]
+    assert omnigent_agent.unasked_end(Og(), "c", child, other, False) is True
+    answered = {"parent_session_id": "q"}  # the card is gone once answered: events resume
+    assert omnigent_agent.unasked_end(Og(), "c", answered, named, False) is True
