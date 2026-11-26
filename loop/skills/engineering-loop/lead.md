@@ -238,7 +238,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode (a lead in a cloud VM can't start it, since the VM has no Omnigent server route: it asks its coordinator to start the Gemini verifier, and `start` refuses at once from the cloud), with a model
    from that host's `agy models` (`gemini-4-hydrogen-medium`; verifier.md's `Verifier:` line names it as
    `agy/<model>/<effort>`), and the PR body's review line says "verifier ran on Gemini (experimental
-   fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
+   fallback)"; where the worker is a claude-cloud VM, try `cloud_verifier.py verify --harness gemini` in it first
+   (SKILL.md, Gemini verifier in the worker's VM): exit 5 means no Gemini login there (or a host worker), so start
+   the host route above; its model is the Gemini CLI's own, passed with `--model`, so use an id its picker lists
+   (an `agy models` id may not be accepted: untested without a login); `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
    author context, the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
    of quota)". A satisfied fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
