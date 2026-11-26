@@ -15195,3 +15195,39 @@ def test_an_online_lead_past_its_deadline_still_gets_one_inspect_the_wait(
     sent = [t for s, t in og.inbox if s == "a"]
     acts = [x for p in posted(og) for x in p.splitlines() if x.startswith("[act]")]
     assert sent == [] and len(acts) == 1 and "inspect the wait" in acts[0]
+
+
+def test_a_lead_with_an_unknown_wait_and_no_runner_is_revived_not_nudged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: on it", 3600))
+    og.offline.add("a")
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_REVIVE]
+    assert og.retried == ["a"]
+
+
+def test_a_named_session_with_no_runner_shows_no_life_though_it_runs_and_was_just_updated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    last = time.time() - 60
+    stamp = datetime.fromtimestamp(last, UTC).strftime("%H:%MZ")
+    snap = {"status": "running", "updated_at": last, "runner_online": False}
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on {LEAD}. Report: m.md", **{LEAD: snap}
+    )
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    text = next(t for _, t in og.inbox if t.startswith("Supervisor: m t-m: no progress"))
+    assert f"{LEAD} has no runner (last activity {stamp})" in text
+
+
+def test_route_revives_an_offline_deadline_for_an_unknown_wait_and_records_a_parked_one() -> None:
+    def route(wait: str) -> tuple[str, str]:
+        event = {"kind": "deadline", "wait": wait, "offline": True, "line": "", "last": ""}
+        by, action, _ = omnigent_agent.route(event, lambda: ("unsure", ""))
+        return by, action
+
+    assert route("unknown") == ("rule", "revive")
+    assert route("merge") == ("rule", "revive")
+    assert route("parked") == ("rule", "record")
