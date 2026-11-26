@@ -381,11 +381,15 @@ def test_check_setup_falls_back_to_rest_when_graphql_gives_no_id(
 def test_the_adapter_reads_the_field_s_database_id_over_graphql(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    nodes = [{}, {"name": "Priority", "databaseId": 1}, {"name": "Session", "databaseId": 9}]
+    nodes = [
+        {},
+        {"name": "Priority", "fullDatabaseId": "1"},
+        {"name": "Session", "fullDatabaseId": "50381584"},
+    ]
     monkeypatch.setattr(
         approvals.github,
         "gh",
         lambda *_a, **_k: json.dumps({"data": {"repository": {"issueFields": {"nodes": nodes}}}}),
     )
-    assert approvals.github.issue_field_database_id("Session") == 9
+    assert approvals.github.issue_field_database_id("Session") == 50381584
     assert approvals.github.issue_field_database_id("Owner") is None

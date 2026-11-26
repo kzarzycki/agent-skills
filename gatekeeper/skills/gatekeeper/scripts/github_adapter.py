@@ -1284,15 +1284,17 @@ FIELDS_VERSION = "X-GitHub-Api-Version: 2026-03-10"
 
 
 def issue_field_database_id(name: str) -> int | None:
-    """The database id, the one REST writes by, of the repository's text issue field `name`, read over GraphQL where an
+    """The database id, the one REST writes by, of the repository's text issue field `name`, read over GraphQL (`fullDatabaseId`) where an
     issue holds no value yet; None when the account defines no such field or GitHub gives no database id."""
+    # checked against GitHub's schema: IssueFieldText has no `databaseId`; its `fullDatabaseId` (a string) is the id
+    # REST shows as `issue_field_id` and writes by
     query = (
         "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {"
-        " issueFields(first: 100) { nodes { ... on IssueFieldText { name databaseId } } } } }"
+        " issueFields(first: 100) { nodes { ... on IssueFieldText { name fullDatabaseId } } } } }"
     )
     found = _graphql(query)
     fields = ((found.get("issueFields") or {}).get("nodes")) or []
-    ids = [field["databaseId"] for field in fields if field and field.get("name") == name]
+    ids = [field["fullDatabaseId"] for field in fields if field and field.get("name") == name]
     return int(ids[0]) if ids and ids[0] is not None else None
 
 
