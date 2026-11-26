@@ -13463,6 +13463,36 @@ def test_a_childs_end_is_news_to_its_lead_once_per_end_not_once_per_lead_turn(
     assert len(news()) == 2
 
 
+@pytest.mark.parametrize("carded", [True, False])
+def test_a_wait_on_the_supervisor_records_quietly_while_its_owner_card_is_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, carded: bool
+) -> None:
+    """#2755: the wait is on the owner's answer when a card is open on the supervisor; no card, still acted on."""
+    pm = "9" * 32
+    card = {"elicitation_id": "question_pm1", "params": {"message": "which?"}}
+
+    class Carded(Lead):
+        def info(self, sid: str) -> dict:
+            info = super().info(sid)
+            return {**info, "pending_elicitations": [card]} if sid == pm and carded else info
+
+    registry = following(tmp_path)
+    og = Carded(told("brief", 600), ending("STILL WORKING: waiting on the PM. Report: a.md", 400))
+    og.snap = {"status": "idle"}
+    offset = skewed(monkeypatch)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        3,
+        lambda poll: offset.__setitem__(0, 400.0 * poll),
+        notify=pm,
+        console=True,
+    )
+    acts = [t for s, t in og.inbox if s == pm and "waits on its supervisor" in t]
+    assert bool(acts) is (not carded)
+
+
 @pytest.mark.parametrize(
     "wait", ["waiting on the PM", "waiting on [the pm](http://h/s/{P}) now", "waiting on {P}"]
 )
