@@ -92,6 +92,37 @@ def test_a_resolver_in_a_checkout_returns_the_installed_copy(
     assert resolve("omnigent-agents") == installed / "scripts"
 
 
+@pytest.mark.parametrize("layout", [".agents/skills", ".claude/skills"])
+def test_the_gatekeeper_finds_a_user_level_skill_install_from_a_checkout(
+    layout: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_SKILLS_CHECKOUT", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    installed = home / layout / "omnigent-agents"
+    installed.mkdir(parents=True)
+    (installed / "SKILL.md").write_text("x")
+    script = "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"
+    resolve = load_at(checkout_with_skill(tmp_path), script, REPOSITORY / script)
+    assert resolve("omnigent-agents") == installed / "scripts"
+
+
+def test_the_gatekeeper_prefers_the_plugin_cache_to_a_user_level_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_SKILLS_CHECKOUT", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    cached = home / ".claude/plugins/cache/mkt/omnigent/1.0.0/skills/omnigent-agents"
+    user = home / ".agents/skills/omnigent-agents"
+    for folder in (cached, user):
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text("x")
+    script = "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"
+    resolve = load_at(checkout_with_skill(tmp_path), script, REPOSITORY / script)
+    assert resolve("omnigent-agents") == cached / "scripts"
+
+
 def test_the_pack_own_tests_may_opt_into_the_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
