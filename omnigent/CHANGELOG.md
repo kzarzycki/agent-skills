@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.18 - 2026-11-26
+
+- omnigent: a lead whose `USER NEEDED` line names a `question_<id>` card that is open on its parent no longer draws the supervisor's "no question card open" event; once the card is answered the usual events resume (#2145).
+
 ## 0.1.17 - 2026-11-26
 
 - omnigent: a `--pr` cloud worker started with a supervise registry now gets a followed line, so its supervisor tells its end from its last message and never nudges it toward a host report path (#2718).
