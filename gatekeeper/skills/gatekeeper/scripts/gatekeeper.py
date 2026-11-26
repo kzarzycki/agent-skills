@@ -9430,16 +9430,53 @@ def unreachable_dequeue(pull: dict[str, Any]) -> bool:
 MERGIFY_JOB = re.compile(r"/actions/runs/\d+/job/(\d+)")
 
 
+def instant(text: str) -> datetime | None:
+    """A GitHub or Mergify timestamp as a time, None where it is not one."""
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def mergify_flaky(pull: dict[str, Any]) -> bool:
-    """Whether every test that failed in the last attempt Mergify's newest dequeued status comment on the PR lists
-    has an open `Flaky: <test id>` issue: the failed jobs it links (`/job/<id>`), their logs' `FAILED <id>` lines. A
-    comment that links no job, a log with no such line or one GitHub can't give is no known flake (#2146)."""
+    """Whether every test that failed in the last attempt of Mergify's newest dequeued status comment on the PR has an
+    open `Flaky: <test id>` issue: the failed jobs it links (`/job/<id>`), their logs' `FAILED <id>` lines. Only a
+    comment of this dequeue counts: its payload's `left_at` is after the head's push, the PR's last ready and the last
+    UNREACHABLE_RED record at this head, so an earlier head's or an already-retried dequeue's comment, which Mergify
+    leaves until it posts the next, reads nothing. A comment that links no job, a log with no such line or one GitHub
+    can't give is no known flake (#2146)."""
+    head = pull["headRefOid"]
     comments = [
         note["body"]
         for note in notes(pull)
         if "Mergify Payload" in note["body"] and '"state": "dequeued"' in note["body"]
     ]
     if not comments or "**Checks failed" not in comments[-1]:
+        return False
+    try:
+        left = instant(
+            json.loads(comments[-1].split("-*- Mergify Payload -*-", 1)[1].split("-*-", 1)[0]).get(
+                "left_at", ""
+            )
+        )
+    except (IndexError, ValueError, AttributeError):
+        return False
+    since = [
+        *(
+            event.get("createdAt") or ""
+            for event in (pull.get("timelineItems") or {}).get("nodes") or []
+            if event.get("__typename") == "ReadyForReviewEvent"
+        ),
+        *(
+            note.get("createdAt") or ""
+            for note in notes(pull)
+            if note["body"].startswith(UNREACHABLE_RED) and f"Head: {head}" in note["body"]
+        ),
+        head_pushed(pull) or "",
+    ]
+    if left is None or any(
+        (when := instant(each)) is not None and when >= left for each in since if each
+    ):
         return False
     last = comments[-1].split("**Checks failed")[-1].split("\n- ")[0]
     failed: set[str] = set()
@@ -9780,12 +9817,17 @@ def known_flaky(group: str, required: set[str]) -> bool:
     try:
         checks = commit_checks(group)
         red = sorted(name for name, run in checks.items() if run["conclusion"] in RED)
-        name = next((name for name in red if name in required), red[0] if red else None)
-        if name is None:
+        # every red required check, not the first: one failing on a real test must not hide behind another's flake
+        names = [name for name in red if name in required] or red[:1]
+        if not names:
             return False
-        log = job_log(checks[name]["id"])
-        failed = set(FAILED_TEST.findall(log))
-        return bool(failed) and failed <= flaky_issue_ids()
+        failed: set[str] = set()
+        for name in names:
+            ids = set(FAILED_TEST.findall(job_log(checks[name]["id"])))
+            if not ids:
+                return False
+            failed |= ids
+        return failed <= flaky_issue_ids()
     except subprocess.CalledProcessError:
         return False
 

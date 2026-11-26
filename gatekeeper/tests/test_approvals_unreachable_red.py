@@ -16,8 +16,9 @@ from test_approvals_github_queue import (  # noqa: F401
     notes_on,
     queue,
     red_group,
+    run,
 )
-from test_approvals_mergify_queue import mergify, run  # noqa: F401
+from test_approvals_mergify_queue import mergify  # noqa: F401
 from test_approvals_mergify_solo import labels_of
 
 
@@ -215,7 +216,7 @@ def test_the_adapter_reads_flaky_issue_ids_from_the_titles_of_open_issues(
 
 
 MERGIFY_COMMENT = (
-    '<!--\n-*- Mergify Payload -*-\n{"version": 1, "state": "dequeued"}\n-*- Mergify Payload End -*-\n-->\n\n'
+    '<!--\n-*- Mergify Payload -*-\n{"version": 1, "state": "dequeued", "left_at": "@LEFT@"}\n-*- Mergify Payload End -*-\n-->\n\n'
     "### Left the queue\n\n**So far**\n\n"
     "- Entered the queue\n"
     "- ❌ **Checks failed (attempt 1/2)** 22:25 · draft [#9](/o/r/pull/9)\n"
@@ -228,8 +229,16 @@ MERGIFY_COMMENT = (
 )
 
 
+def mergify_comment(left: str) -> str:
+    return MERGIFY_COMMENT.replace("@JOB@", "111").replace("@LAST@", "222").replace("@LEFT@", left)
+
+
 def mergify_flake(
-    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch, failed: list[str]
+    mergify: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    failed: list[str],
+    left: str = "2099-01-01T00:00:00+00:00",
+    answered_at: str | None = None,
 ) -> tuple[int, list[str]]:
     head = mergify["opened"](7)
     assert mergify["land"]("7")[0] == 0
@@ -241,9 +250,12 @@ def mergify_flake(
         222: "\n".join(f"FAILED {test} - t" for test in failed),
     }
     monkeypatch.setattr(approvals, "job_log", lambda job: logs[job])
+    if answered_at:  # an unreachable retry of this head already answered an earlier dequeue
+        record = f"{approvals.UNREACHABLE_RED}\n\nHead: {head}"
+        mergify["pulls"][7]["comments"]["nodes"].append({"body": record, "createdAt": answered_at})
     mergify["pulls"][7]["comments"]["nodes"].append(
         {
-            "body": MERGIFY_COMMENT.replace("@JOB@", "111").replace("@LAST@", "222"),
+            "body": mergify_comment(left),
             "createdAt": "2026-10-02T00:00:00Z",
         }
     )
@@ -265,3 +277,45 @@ def test_a_mergify_dequeue_with_a_failed_test_lacking_a_flaky_issue_is_evicted(
     code, lines = mergify_flake(mergify, monkeypatch, ["tests/a.py::t1", "tests/b.py::real"])
     assert code == 1, lines
     assert mergify["pulls"][7]["isDraft"]
+
+
+def test_a_mergify_comment_older_than_the_heads_push_is_no_known_flake(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The status comment an earlier head's dequeue left, before Mergify posts this dequeue's, says nothing of it."""
+    monkeypatch.setattr(approvals, "head_pushed", lambda pull: "2026-10-05T00:00:00Z")
+    code, lines = mergify_flake(
+        mergify, monkeypatch, ["tests/a.py::t1"], left="2026-10-01T00:00:00Z"
+    )
+    assert code == 1, lines
+    assert mergify["pulls"][7]["isDraft"]
+
+
+def test_a_mergify_comment_an_unreachable_retry_already_answered_is_no_known_flake(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, lines = mergify_flake(
+        mergify,
+        monkeypatch,
+        ["tests/a.py::t1"],
+        left="2026-10-02T00:00:00Z",
+        answered_at="2026-10-03T00:00:00Z",
+    )
+    assert code == 1, lines
+
+
+def test_a_second_red_required_check_on_a_real_test_is_not_hidden_by_a_flaky_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checks = {
+        "qualify": {"conclusion": "FAILURE", "id": 1},
+        "qualify-two": {"conclusion": "FAILURE", "id": 2},
+    }
+    logs = {1: "FAILED tests/a.py::t1 - x", 2: "FAILED tests/real.py::boom - x"}
+    monkeypatch.setattr(approvals, "commit_checks", lambda ref: checks)
+    monkeypatch.setattr(approvals, "job_log", lambda job: logs[job])
+    monkeypatch.setattr(approvals, "flaky_issue_ids", lambda: {"tests/a.py::t1"})
+    required = {"qualify", "qualify-two"}
+    assert not approvals.known_flaky("g", required)
+    logs[2] = "FAILED tests/a.py::t1 - y"
+    assert approvals.known_flaky("g", required)
