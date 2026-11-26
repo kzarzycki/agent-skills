@@ -243,8 +243,8 @@ posts that pass rather than running the check again (with no usable pass it refu
 command (a rebase or reworded commit keeps its tree), in any other, host or cloud session, from that branch, at every
 risk, through the same code. The branch is the one route a pass travels: the `gate` commit status the run and each
 reader write on the head, where the token allows, only shows the pass on the PR, and no decision reads it, since
-anyone who can write a status may type one. `land` deletes a record branch once its tree has landed, or once it is a
-day old and its tree is no open PR's head. `gate` is one command with no shell operator, so a
+anyone who can write a status may type one. Every `land` ends by deleting the record branches of a PR it finds merged, and any that is a
+day old with a tree no open PR's head, whichever way the PR merged (a refused delete is a warning, never a failure); `approvals.py prune-records` runs it by hand. `gate` is one command with no shell operator, so a
 chain of checks is one task, or the steps of `gate_steps`, each a command and where it runs (`any`, or `host` for one
 a cloud VM can't run, such as an Apple build, or `linux` for one a Mac can't). Each step's pass is its own record and branch, named by the tree and
 the step's command, so `local-ci`, `local-ci --record` and `land` run only the steps with no pass on the tree and print
