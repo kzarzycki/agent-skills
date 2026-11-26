@@ -1322,6 +1322,12 @@ def main():
         parts.append(old)
     # told once per unit and state, the restart count and log line aside (they change on every restart)
     stable = lambda line: re.sub(r', restarted \d+ times; last log line:.*', '', line)
+    live = {stable(line) for line in looping}
+    pruned = {line for line in asked if not line.startswith('supervisor unit ') or stable(line) in live}
+    if pruned != asked:  # a unit that recovered is told again if it loops again
+        asked = pruned
+        if not args.dry_run:
+            asked_file.write_text(json.dumps(sorted(asked)))
     asked_loops = {stable(line) for line in asked}
     if news := [line for line in looping if stable(line) not in asked_loops]:
         parts.append('Supervisor units that are not running or loop through restarts (their manager sees only silence; '

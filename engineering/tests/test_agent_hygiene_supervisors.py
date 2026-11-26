@@ -66,3 +66,30 @@ def test_each_unit_state_is_told_once(tmp_path, monkeypatch):
     first = len(calls)
     out = run()
     assert "LOOP:" in out and len(calls) == first, (out, calls)
+
+
+def test_a_unit_that_recovers_and_loops_again_is_told_again(tmp_path, monkeypatch):
+    _clones, _heads, run, calls, _git = world(tmp_path, monkeypatch, ["acme/managed"])
+    fake_systemctl(tmp_path.resolve())
+    run()
+    first = len(calls)
+    healthy = ("active", "running", 0, 99999)
+    looping = UNITS["omnigent-supervise-looping"]
+    try:
+        for name in UNITS:
+            UNITS[name] = healthy
+        fake_systemctl(tmp_path.resolve())
+        assert "LOOP:" not in run()
+        UNITS["omnigent-supervise-looping"] = looping
+        fake_systemctl(tmp_path.resolve())
+        out = run()
+    finally:
+        UNITS.update(
+            {
+                "omnigent-supervise-looping": looping,
+                "omnigent-supervise-dead": ("failed", "failed", 1, 5000),
+                "omnigent-supervise-healthy": healthy,
+                "omnigent-supervise-old": ("active", "running", 9, 99999),
+            }
+        )
+    assert "LOOP:" in out and len(calls) == first + 1, (out, calls)
