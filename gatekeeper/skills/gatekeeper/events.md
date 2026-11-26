@@ -80,5 +80,13 @@ exits 0, so an event reports a step and is never part of it. A native lead in th
 - **A push of `refs/loop/probe/<branch>`:** accepted by GitHub with a plain token from a host. One `events.py emit` took
   2.3 s end to end (process start, commit, push); `git ls-remote origin 'refs/loop/*'` with one such ref took 0.46 s;
   `events.py clear` removed it from `origin`. A cloud session's proxy refuses refs outside `refs/heads/` (`RPC failed;
-  HTTP 403`), so **a cloud session's events stay local and warn once** (Degraded); only a host with push access
-  writes events another host reads.
+  HTTP 403`), so a cloud session's `refs/loop/` push fails and warns once (Degraded).
+
+## Cloud sessions: the branch form
+
+Where `CLAUDE_CODE_REMOTE=true` (the gatekeeper's cloud test), `emit` also pushes the same commit as the branch
+`claude/loop-event/<kind>/<branch>`, which the proxy and a session's `claude/` branch grant allow; a host's `emit` stays
+the one `refs/loop/` push. A probe from a cloud VM found the proxy also accepts a bare `loop-event/<kind>/<branch>`
+push, so `read`, `wait` and `clear` take both prefixes, and `read` lists them in its one `ls-remote`: each maps to the
+same `refs/loop-remote/<kind>/<branch>` mirror, one event per kind and branch, the later `at` winning where both forms
+exist. The proxy refuses a branch delete too, so only a host's `clear` (run by `land` and `reap`) removes them.

@@ -41,6 +41,12 @@ TIMEOUT, SILENT = 3, 4
 NAMESPACE = "refs/loop"
 # where `read` and `wait` keep the last fetch of a remote event, so it never overwrites the ref a local producer wrote
 MIRROR = "refs/loop-remote"
+# the variable Claude Code sets to `true` in a cloud session's VM: the gatekeeper's own cloud test (`in_cloud`)
+CLOUD = "CLAUDE_CODE_REMOTE"
+# the branch form of an event, `refs/heads/<prefix>/<kind>/<branch>`, which a cloud session's proxy lets a VM push where
+# it refuses `refs/loop/` (events.md, Cloud sessions). `emit` writes the first prefix, the one the session's branch grant
+# allows; `read` and `clear` take both, since a bare `loop-event/` branch is accepted by the proxy too
+BRANCH_PREFIXES = ("claude/loop-event", "loop-event")
 # the seen-sha file `read` keeps, in the git dir: {ref: {"sha": ..., "changed": <epoch seconds>}}
 SEEN = "loop-events-seen.json"
 # seconds one git call that reaches origin may take before it counts as a failed push or read
@@ -128,9 +134,26 @@ def sha_by_ref(listing: str) -> dict[str, str]:
     return dict(zip(words[1::2], words[0::2]))
 
 
-def remote_refs(cwd: Path | str | None, pattern: str) -> dict[str, str]:
-    """`git ls-remote origin <pattern>` as {ref: sha}; UNREACHABLE's errors when origin can't be read."""
-    return sha_by_ref(run(cwd, "ls-remote", "origin", pattern, timeout=NETWORK))
+def remote_refs(cwd: Path | str | None, *patterns: str) -> dict[str, str]:
+    """`git ls-remote origin <patterns>` as {ref: sha}; UNREACHABLE's errors when origin can't be read."""
+    return sha_by_ref(run(cwd, "ls-remote", "origin", *patterns, timeout=NETWORK))
+
+
+def in_cloud() -> bool:
+    return os.environ.get(CLOUD) == "true"
+
+
+def branch_refs(kind: str, branch: str) -> list[str]:
+    """The branch forms of the event `<kind>/<branch>`, one per prefix."""
+    return [f"refs/heads/{prefix}/{kind}/{branch}" for prefix in BRANCH_PREFIXES]
+
+
+def canonical(ref: str) -> str:
+    """The `refs/loop/<kind>/<branch>` an event ref, in either form, stands for."""
+    for prefix in BRANCH_PREFIXES:
+        if ref.startswith(f"refs/heads/{prefix}/"):
+            return f"{NAMESPACE}/{ref.removeprefix(f'refs/heads/{prefix}/')}"
+    return ref
 
 
 def local_refs(cwd: Path | str | None, prefix: str) -> dict[str, str]:
@@ -208,15 +231,17 @@ def emit(
         env=IDENTITY,
     ).strip()
     run(cwd, "update-ref", ref, commit)
-    try:
-        # the lease is the sha origin holds now: this writer rewrites its own ref, and only a push that races another
-        # writer between the two calls is refused
-        # ponytail: one ls-remote per beat, not a lease on a remembered sha, so a producer restarted on another host
-        # takes the ref over instead of failing for good
-        held = remote_refs(cwd, ref).get(ref, "")
-        push(cwd, f"{commit}:{ref}", lease=f"{ref}:{held}")
-    except UNREACHABLE as exc:
-        warn(f"{ref} written here, not pushed", exc)
+    # a cloud session's proxy refuses the ref but takes a branch, so the commit goes to both there; each push fails alone
+    for target in [ref, *(branch_refs(kind, branch)[:1] if in_cloud() else [])]:
+        try:
+            # the lease is the sha origin holds now: this writer rewrites its own ref, and only a push that races
+            # another writer between the two calls is refused
+            # ponytail: one ls-remote per beat, not a lease on a remembered sha, so a producer restarted on another
+            # host takes the ref over instead of failing for good
+            held = remote_refs(cwd, target).get(target, "")
+            push(cwd, f"{commit}:{target}", lease=f"{target}:{held}")
+        except UNREACHABLE as exc:
+            warn(f"{target} written here, not pushed", exc)
     return commit
 
 
@@ -233,8 +258,9 @@ def load_seen(cwd: Path | str | None) -> dict[str, Any]:
 
 
 def fetch_event(cwd: Path | str | None, ref: str) -> dict[str, Any]:
-    """The event origin's `ref` holds: fetched into the mirror, then parsed. A failed fetch: state `unknown`."""
-    mirror = mirror_of(ref)
+    """The event origin's `ref` (either form) holds: fetched into the event's mirror, then parsed. A failed fetch:
+    state `unknown`."""
+    mirror = mirror_of(canonical(ref))
     try:
         run(
             cwd,
@@ -252,7 +278,7 @@ def fetch_event(cwd: Path | str | None, ref: str) -> dict[str, Any]:
 
 
 def split(ref: str) -> tuple[str, str]:
-    kind, _, branch = ref.removeprefix(NAMESPACE + "/").partition("/")
+    kind, _, branch = canonical(ref).removeprefix(NAMESPACE + "/").partition("/")
     return kind, branch
 
 
@@ -264,35 +290,57 @@ def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict
     `refs/loop/` (`records/*`, `landing`) are skipped."""
     prefix = f"{NAMESPACE}/{kind}/" if kind else f"{NAMESPACE}/"
     try:
-        shas = remote_refs(cwd, prefix + "*")
+        # the branch forms of a cloud session's events come in the same call (events.md, Cloud sessions)
+        shas = remote_refs(
+            cwd,
+            prefix + "*",
+            *(f"refs/heads/{p}/{prefix.removeprefix(NAMESPACE + '/')}*" for p in BRANCH_PREFIXES),
+        )
         remote = True
     except UNREACHABLE as exc:
         warn("origin not read, showing the local refs", exc)
         shas = local_refs(cwd, prefix)
         remote = False
-    shas = {ref: sha for ref, sha in shas.items() if split(ref)[0] in BEATS}
+    sources: dict[
+        str, list[tuple[str, str]]
+    ] = {}  # the event's refs/loop/ name -> (ref on origin, sha) of each form
+    for ref, sha in sorted(shas.items()):
+        if split(ref)[0] in BEATS:
+            sources.setdefault(canonical(ref), []).append((ref, sha))
     seen = load_seen(cwd)
     found = []
-    for ref, sha in sorted(shas.items()):
-        note = seen.get(ref, {})
-        if remote:
-            moved = note.get("sha") != sha
-            event = fetch_event(cwd, ref) if moved or "event" not in note else note["event"]
-            if event.get("state") != "unknown":
-                seen[ref] = {
-                    "sha": sha,
-                    "changed": time.time() if moved else note.get("changed", time.time()),
-                    "event": event,
-                }
-            changed = seen.get(ref, {}).get("changed", time.time())
-        else:
-            event, changed = event_at(cwd, sha), time.time()
+    for name, forms in sorted(sources.items()):
+        candidates = []
+        for ref, sha in forms:
+            note = seen.get(ref, {})
+            if remote:
+                moved = note.get("sha") != sha
+                event = fetch_event(cwd, ref) if moved or "event" not in note else note["event"]
+                if event.get("state") != "unknown":
+                    seen[ref] = {
+                        "sha": sha,
+                        "changed": time.time() if moved else note.get("changed", time.time()),
+                        "event": event,
+                    }
+                changed = seen.get(ref, {}).get("changed", time.time())
+            else:
+                event, changed = event_at(cwd, sha), time.time()
+            candidates.append((event, sha, changed))
+        # the newer event wins when both forms exist; an unreadable one only when nothing else is
+        event, sha, changed = max(
+            candidates,
+            key=lambda c: (
+                c[0].get("state") != "unknown",
+                str(c[0].get("at", "")),
+                int(c[0].get("seq", 0)),
+            ),
+        )
         found.append(
             {
                 **event,
-                "kind": split(ref)[0],
-                "branch": split(ref)[1],
-                "ref": ref,
+                "kind": split(name)[0],
+                "branch": split(name)[1],
+                "ref": name,
                 "sha": sha,
                 "changed": changed,
             }
@@ -300,8 +348,11 @@ def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict
     if remote:
         with contextlib.suppress(OSError):
             # what this listing did not cover (another kind, after a filtered read) stays cached as it was
-            kept = {r: note for r, note in seen.items() if not r.startswith(prefix)}
-            seen_path(cwd).write_text(json.dumps(kept | {r: seen[r] for r in shas if r in seen}))
+            kept = {r: note for r, note in seen.items() if not canonical(r).startswith(prefix)}
+            now_seen = {
+                ref: seen[ref] for forms in sources.values() for ref, _ in forms if ref in seen
+            }
+            seen_path(cwd).write_text(json.dumps(kept | now_seen))
     return found
 
 
@@ -327,9 +378,10 @@ def wait(
         if sha := local_sha(cwd, ref):
             events.append(event_at(cwd, sha))
         with contextlib.suppress(*UNREACHABLE):
-            remote = remote_refs(cwd, ref).get(ref)
-            if remote and remote != sha:
-                events.append(fetch_event(cwd, ref))
+            forms = branch_refs(kind, branch)
+            for there, remote in remote_refs(cwd, ref, *forms).items():
+                if there in (ref, *forms) and remote != sha:
+                    events.append(fetch_event(cwd, there))
         known = [e for e in events if e["state"] != "unknown"]
         # ponytail: the later `at` wins, so two hosts' clocks decide a tie; a producer has one writer per ref
         event = (
@@ -363,7 +415,7 @@ def wait(
 
 
 def clear(branch: str, *, cwd: Path | str | None = None) -> None:
-    """Remove the refs of `branch` (one per kind) here and on origin. A delete origin refuses prints one warning."""
+    """Remove the refs of `branch` (one per kind, and each branch form) here and on origin. A delete origin refuses prints one warning."""
     mine = [ref_of(kind, branch) for kind in BEATS]
     for ref in mine:
         if local_sha(cwd, ref):
@@ -371,8 +423,14 @@ def clear(branch: str, *, cwd: Path | str | None = None) -> None:
         mirror = mirror_of(ref)
         if local_sha(cwd, mirror):
             run(cwd, "update-ref", "-d", mirror)
+    mine += [
+        form for kind in BEATS for form in branch_refs(kind, branch)
+    ]  # a cloud session's branch forms go too
     try:
-        there = [ref for ref in mine if ref in remote_refs(cwd, f"{NAMESPACE}/*/{branch}")]
+        listed = remote_refs(
+            cwd, f"{NAMESPACE}/*/{branch}", *(f"refs/heads/{p}/*/{branch}" for p in BRANCH_PREFIXES)
+        )
+        there = [ref for ref in mine if ref in listed]
         if there:
             push(cwd, *(f":{ref}" for ref in there))
     except UNREACHABLE as exc:
