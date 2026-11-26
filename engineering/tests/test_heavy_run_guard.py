@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-HOOKS = Path(__file__).resolve().parents[1] / "hooks"
+HOOKS = Path(__file__).resolve().parents[2] / "engineering-hooks" / "hooks"
 SCRIPT = HOOKS / "heavy_run_guard.py"
 spec = importlib.util.spec_from_file_location("heavy_run_guard", SCRIPT)
 assert spec and spec.loader
@@ -278,7 +278,9 @@ def test_the_pack_registers_the_hook_on_bash_for_claude() -> None:
     assert secrets["command"] == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/secret_env_guard.py"'
     assert pushes["command"] == 'python3 "${CLAUDE_PLUGIN_ROOT}/hooks/push_merge_guard.py"'
     # no plugin.json "hooks" field: APM would then deploy the hook to every target, Codex too
-    plugin = json.loads((HOOKS.parent / ".claude-plugin" / "plugin.json").read_text())
+    plugin = json.loads(
+        (HOOKS.parents[1] / "engineering" / ".claude-plugin" / "plugin.json").read_text()
+    )
     assert "hooks" not in plugin
 
 
