@@ -6577,6 +6577,78 @@ def wait_note(memo: dict, comment: dict) -> None:
         waits[pr[1]] = {"what": found["what"], "deadline": found["deadline"]}
 
 
+# a claim record's `Session: <link>` details line, which gatekeeper's `check build` writes (#2324)
+SESSION_LINE = re.compile(r"^Session: (\S+)[ \t]*$", re.MULTILINE)
+SESSION_FIELD = "Session"  # the account's issue field naming the session that holds an issue
+SESSION_FIELD_TRIES = 3  # reads and writes of one issue's field before the supervisor leaves it
+FIELDS_VERSION = (
+    "X-GitHub-Api-Version: 2026-03-10"  # the REST version whose issues carry `issue_field_values`
+)
+
+
+def session_note(memo: dict, comment: dict) -> None:
+    """Keep in ``memo["session_fields"]`` (issue number to ``link``, ``tries``) the link an ``Assigned:`` claim record
+    names, until ``session_field_round`` has the issue's field equal to it. Read off the comments ``queue_read``
+    already lists, so a project whose claims name no session costs no call; the newest record wins."""
+    body = str(comment.get("body") or "").lstrip()
+    found = SESSION_LINE.search(body)
+    issue = re.search(r"/issues/(\d+)$", str(comment.get("issue_url") or ""))
+    if body.startswith("Assigned: ") and found and issue:
+        memo.setdefault("session_fields", {})[issue[1]] = {"link": found[1], "tries": 0}
+
+
+def session_field_round(repo: str, memo: dict) -> str | None:
+    """Set each issue's ``Session`` field to the link its claim record names (``session_note``) when the field is empty
+    or differs, through gatekeeper's own ``issue_field`` and ``set_issue_field`` (GraphQL), which a cloud session's
+    claim cannot call: the host is where this runs, and the field is the account's, so no repo states anything. One
+    REST read of the issue first, which skips a field already equal and a pull request (no field). An account without
+    the field is said once and asked no more this run; a failed read or write is tried ``SESSION_FIELD_TRIES`` times
+    over the next polls. Returns the one note to log, else None; a rate limit raises with every record kept."""
+    pending = memo.get("session_fields") or {}
+    if not pending or memo.get("fieldless") or not (gk := _load_gatekeeper()):
+        return None
+    note = None
+    for number, item in sorted(pending.items(), key=lambda x: int(x[0])):
+        try:
+            data = json.loads(gh("api", "-H", FIELDS_VERSION, f"repos/{repo}/issues/{number}"))
+            have = [
+                v.get("value")
+                for v in data.get("issue_field_values") or []
+                if v.get("issue_field_name") == SESSION_FIELD
+            ]
+            if "pull_request" not in data and item["link"] not in have:
+                with environ_set(GH_REPO=repo):  # gatekeeper's calls fill {owner}/{repo} from it
+                    field, node = gk.issue_field(int(number), SESSION_FIELD)
+                    if field is None:
+                        memo["fieldless"] = True
+                        return f"{repo}: the account has no `{SESSION_FIELD}` issue field, so none is set"
+                    gk.set_issue_field(node, field, item["link"])
+        except RateLimited:
+            raise
+        except Exception as e:  # noqa: BLE001 - tried again at the next poll, up to SESSION_FIELD_TRIES
+            item["tries"] += 1
+            if item["tries"] < SESSION_FIELD_TRIES:
+                note = f"{repo}#{number}: `{SESSION_FIELD}` field not set: {reason(e)}"
+                continue
+        del pending[number]
+    return note
+
+
+@contextlib.contextmanager
+def environ_set(**values: str) -> Iterator[None]:
+    """The environment variables ``values`` for the block, then as they were."""
+    before = {k: os.environ.get(k) for k in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for k, v in before.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def queue_read(repo: str, memo: dict, now: float | None = None) -> list[str]:
     """Read GitHub repo ``repo``'s issue comments updated since the last read (the first read: ``QUEUE_WINDOW`` back),
     paged and ETag-guarded (``rest_pages``, its ``since`` moved only when a comment is new, so a poll where nothing
@@ -6598,6 +6670,7 @@ def queue_read(repo: str, memo: dict, now: float | None = None) -> list[str]:
     for comment in listed:
         cid = str(comment.get("id"))
         wait_note(memo, comment)
+        session_note(memo, comment)
         entry = queue_comment(comment)
         if cid in entries or not entry or entry["state"] not in ("merged", "dequeued"):
             continue
@@ -10745,6 +10818,11 @@ def supervise_registry(
         log(("queue", repo), None)
         etags_save(etags_path)
         wait_round(repo, memo, sid)
+        try:
+            noted = session_field_round(repo, memo)
+        except Exception as e:  # noqa: BLE001 - kept, set at the next poll
+            noted = f"{repo}: `{SESSION_FIELD}` fields not set: {reason(e)}"
+        log(("session-field", repo), noted)
         entries = memo["entries"]
         flakes = queue_counts(entries)["flakes"]
         sessions: list[dict] | None = None
