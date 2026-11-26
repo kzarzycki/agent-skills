@@ -13952,6 +13952,7 @@ def test_a_set_that_names_ci_is_not_over_when_only_its_pr_ended(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976, CI", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "blocks", lambda repo, number: [])  # no GitHub here
     monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     assert [t for s, t in og.inbox if s == "m" and "your wait names it" in t] == []
