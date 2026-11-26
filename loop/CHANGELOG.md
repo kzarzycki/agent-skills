@@ -5,6 +5,27 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.11 - 2026-11-26
+
+- engineering-loop: SKILL.md says every `land` sweeps the `loop-gate/` record branches, merged by Mergify or a queue too, so a consumer needs no cleanup workflow (#1869).
+engineering-loop: a change that can't reach the product runs no product suite (#2175, R2 of #2143). An instructions change's verifier pass runs the `select` checks its layer reaches, and the product's affected tests only for a build input or an unclassified file; PR CI's scope is unchanged here (R1's line stands).
+engineering-loop: Adopting the loop gains "Moving a repo onto the rule set" (#2231, part of #2143): the three steps, the `gatekeeper.md` keys a repo states and the table of local copies to delete by kind, so a repo's migration story is a release tag, a config block and one row per deleted file.
+engineering-loop: `nightly.py moved tag --nightly <file>` names a consumer's nightly workflow (default `engineering-ci.yml`), and a verb-level test pins that `moved tag` asks for the tagged commit's runs (#2323).
+engineering-loop: `affected-tests` always runs `tests/test_one_package_per_skill_name.py`, a sweep of every skill folder that names no script, so a batch can no longer land a file it rejects (#2372).
+- engineering-loop: the pre-queue run is the queue's own selection: the worker's proof and the verifier's run are loop.md's `Affected tests:` command, not the changed test files, so a root rule test the PR did not change fails before the PR is queued (SKILL.md, Narrowed mode; lead.md, verifier.md) (#2455).
+engineering-loop: one placement rule, "Where work runs" (#2469, part of #2459). All loop work runs in the cloud, lead, worker and verifier alike; a host only when the step needs that machine. The heavy/light split and its "heavy run" definition are gone, "Where heavy steps run" is renamed, and every pointer to it (role files, the heavy-run hook's refusals, omnigent-agents, a lead's brief) names the new section. The launch fallback order is unchanged. A cloud lead's role file names the Omnigent session tools (`sys_session_create` with a `model`, `sys_session_get_history`, `sys_session_close`) for starting its children.
+- engineering-loop: its forwarders resolve the installed copy of the pack's skills, never a developer checkout: a checkout (a git tree holding the marketplace file) is searched only where `AGENT_SKILLS_CHECKOUT` is set, as the pack's own tests set it (#2485).
+- loop: the pack's own CI finds its scripts in the checkout it runs in: a checkout counts when it is the `GITHUB_WORKSPACE` of the job running there, so main's push run, the nightly and the tag check run `nightly.py moved` again (#2560).
+gatekeeper: the deny list (`LOOP_DENY_LIST`) lets an Omnigent session link (`<scheme>://<host>[:port]/c/<32 hex id>`) through, so a listed host name inside one no longer refuses a post, and still refuses the same name anywhere else; `gatekeeper.py`, engineering-loop's `nightly.py` and `omnigent_agent.py` now share the one check in `scripts/denylist.py`, and engineering-loop's public-repo rule says session links may be posted (#2571).
+- engineering-loop: lead.md's Verifier route says a lead in a cloud VM cannot start a Gemini verifier and asks its coordinator to (#2572).
+- engineering-loop: a fix round or verifier brief sent to a kept cloud worker names `send --pr --wait`, since `send` alone now returns once delivered (#2578).
+engineering-loop: SKILL.md says a green cloud gate run is recorded by `approvals.py local-ci --record`, the one writer, with a plain git push and no host credential, and that a project's gate script writes no record of its own (#2579).
+- engineering-loop: a claude-cloud session is not woken by a finished background task, so the rule (verifier.md, worker.md, lead.md, orchestrating-agents) and the cloud brief tell it to wait in the foreground, each call under 10 minutes, and never end a turn on a background task (#2593).
+- loop: lead.md names the pack's push hook that refuses a clean merge of the base into a PR and its `LOOP_MERGE_MAIN=<why>` bypass (#2602).
+- engineering-loop: `affected-tests` runs no test for a change that selects the whole suite (a declared `select.whole_suite` file; `select.checks` still run) when the project's CI is the merge proof (`loop.ci` not false): it records `whole suite selected; CI runs it` as the head's tests pass, and `--local` runs the suite here (#2621).
+- engineering-loop: `nightly.py moved` takes `--sha` and `--workflow`, so a `workflow_run` job asks about the CI run's commit and workflow instead of its own (#2678).
+- engineering-loop: a PR head always lints its changed files, with no tests and no build, and a gate record skips that only when it shows lint ran on that tree (R1); the role files stop relying on the commit hook for a cloud session (#2687).
+
 ## 0.1.10 - 2026-11-24
 
 - R5 and loop.md's settings name the `Test report:` line: a rerun whose report shows zero tests, where the red run had some, did not run (#2277).
