@@ -78,7 +78,12 @@ class Origin:
             return "".join(f"{tips[ref]}\t{ref}\n" for ref in args[2:] if ref in tips)
         if args[0] == "fetch":
             return ""
-        if args[0] in ("remote", "rev-parse", "symbolic-ref", "config"):  # the forge remote's lookup: no fork here
+        if args[0] in (
+            "remote",
+            "rev-parse",
+            "symbolic-ref",
+            "config",
+        ):  # the forge remote's lookup: no fork here
             raise subprocess.CalledProcessError(1, args)
         if args[0] == "log":
             return f"{self.titles[args[-1]]} [skip ci]\0{self.parents[args[-1]]}\n"
