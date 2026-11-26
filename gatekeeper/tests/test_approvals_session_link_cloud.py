@@ -40,8 +40,18 @@ def test_a_value_that_is_not_a_session_link_names_no_session(
     assert approvals.session_link() is None
 
 
-def test_the_server_variables_win_over_the_given_link(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_given_link_wins_over_the_server_variables(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The runner's primary session is the root of the tree: a lead started under a manager must name itself (#2583)."""
     monkeypatch.setenv("RUNNER_SERVER_URL", "https://a.test")
-    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "one")
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "root")
     monkeypatch.setenv("OMNIGENT_SESSION_LINK", LINK)
-    assert approvals.session_link() == "https://a.test/c/one"
+    assert approvals.session_link() == LINK
+
+
+def test_a_malformed_given_link_falls_back_to_the_server_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RUNNER_SERVER_URL", "https://a.test")
+    monkeypatch.setenv("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "root")
+    monkeypatch.setenv("OMNIGENT_SESSION_LINK", "https://example.test/c/id?token=abc")
+    assert approvals.session_link() == "https://a.test/c/root"

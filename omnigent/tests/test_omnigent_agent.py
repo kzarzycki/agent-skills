@@ -59,6 +59,7 @@ class FakeOmnigent:
         self.hold = hold  # polls of info() a send stays pending: a turn busy in a long tool call
         self.held: list[tuple[str, str, int]] = []
         self.posts = 0
+        self.base = "https://omnigent.test"
         self.sessions: dict[str, list[dict]] = {}
         self.archived: list[str] = []
         self.kids: list[str] = []  # sub-agents children() lists
@@ -3701,7 +3702,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     text = (tmp_path / "r.md.brief").read_text()
     assert (
         text
-        == "AGENT_SIGNATURE=cc/?/?\n"
+        == f"AGENT_SIGNATURE=cc/?/?\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/{sid}\n"
         + omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="")
         + "do X"
     )
@@ -14538,8 +14539,8 @@ def test_brief_prints_the_body_start_sends_a_child(
     sent = omnigent_agent.text_of(og.sessions[sid][1])
     inline = sent.partition("Your brief:\n\n")[2]
     full = inline or omnigent_agent.brief_of(report).read_text()
-    body = re.sub(r"\A(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n", "", full)
-    body = re.sub(r"\A(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n", "", body)
+    body = re.sub(r"\A(?:AGENT_SIGNATURE|OMNIGENT_SESSION_LINK|LOOP_HEAVY_LOCK)=.*\n", "", full)
+    body = re.sub(r"\A(?:AGENT_SIGNATURE|OMNIGENT_SESSION_LINK|LOOP_HEAVY_LOCK)=.*\n", "", body)
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
     argv = ["brief", str(brief) if as_file else text, "r.md", "--role", str(role)]
     argv += ["--cloud"] * cloud + ["--top-level"] * top_level + ["--pr", str(pr)] * bool(pr)
@@ -14591,7 +14592,9 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
         sent.partition("Your brief:\n\n")[2]
         or omnigent_agent.brief_of(tmp_path / "r.md").read_text()
     )
-    body = re.sub(r"\A(?:(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n)+", "", full)
+    body = re.sub(
+        r"\A(?:(?:AGENT_SIGNATURE|OMNIGENT_SESSION_LINK|LOOP_HEAVY_LOCK)=.*\n)+", "", full
+    )
     capsys.readouterr()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
     assert omnigent_agent.main(["brief", *argv, *["--cloud"] * cloud]) == 0
@@ -15231,3 +15234,46 @@ def test_route_revives_an_offline_deadline_for_an_unknown_wait_and_records_a_par
     assert route("unknown") == ("rule", "revive")
     assert route("merge") == ("rule", "revive")
     assert route("parked") == ("rule", "record")
+
+
+LINK_LINE = re.compile(r"^OMNIGENT_SESSION_LINK=(https://omnigent\.test/c/\S+)$", re.MULTILINE)
+
+
+@pytest.mark.parametrize("agent", ["claude-cloud", "claude"])
+def test_a_lead_is_given_its_own_session_link_and_told_to_use_it(
+    tmp_path: Path, agent: str
+) -> None:
+    """The lead's id exists only once its session does, so the launcher writes the line, after the signature (#2583)."""
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, agent, "t", "do X", report, None, 0, top_level=True)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    if agent != "claude-cloud":
+        brief = omnigent_agent.brief_of(report).read_text()
+    found = LINK_LINE.search(brief)
+    assert found and found.group(1) == f"https://omnigent.test/c/{sid}"
+    assert brief.index("AGENT_SIGNATURE=") < found.start()
+    assert (
+        "OMNIGENT_SESSION_LINK=<link>` before each `approvals.py` call that claims or builds"
+        in brief
+    )
+
+
+@pytest.mark.parametrize(
+    ("agent", "pr", "top_level"),
+    [("claude-cloud", None, False), ("claude-cloud", 7, False), ("claude", None, False)],
+)
+def test_a_child_that_is_no_lead_gets_no_session_link_line(
+    tmp_path: Path, agent: str, pr: int | None, top_level: bool
+) -> None:
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(
+        og, agent, "t", "do X", report, None, 0, top_level=top_level, pr=pr
+    )
+    brief = (
+        omnigent_agent.text_of(og.sessions[sid][1])
+        if agent == "claude-cloud"
+        else omnigent_agent.brief_of(report).read_text()
+    )
+    assert "OMNIGENT_SESSION_LINK" not in brief

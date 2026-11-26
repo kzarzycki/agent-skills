@@ -110,7 +110,11 @@ def test_a_top_level_lead_start_carries_the_text_only_under_delegate_all(
                 omnigent_agent.LEAD_PREAMBLE.removesuffix("\n") + omnigent_agent.DELEGATION + "\n"
             )
             plain = plain.format(report=report, role="")
-        assert Path(f"{report}.brief").read_text() == "AGENT_SIGNATURE=cc/?/?\n" + plain + "do X"
+        assert Path(f"{report}.brief").read_text() == (
+            "AGENT_SIGNATURE=cc/?/?\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/s0\n"
+            + plain
+            + "do X"
+        )
         # #2170: no generated lead brief tells a lead not to record the owner's answered card, or it waits on a given label
         brief = " ".join(Path(f"{report}.brief").read_text().split()).lower()
         assert "never run it" not in brief and "don't record" not in brief
@@ -420,7 +424,9 @@ def test_brief_prints_a_top_level_leads_delegation_as_start_sends_it(
         top_level=True,
         workspace=str(work),
     )
-    sent = Path(f"{report}.brief").read_text().partition("\n")[2]
+    sent = (
+        Path(f"{report}.brief").read_text().partition("\n")[2].partition("\n")[2]
+    )  # signature, session link
     monkeypatch.chdir(work)
     assert omnigent_agent.main(["brief", "do X", str(report), "--top-level"]) == 0
     printed = capsys.readouterr().out

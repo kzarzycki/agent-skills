@@ -275,7 +275,12 @@ def session_fields(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Any, ...]]:
     GraphQL and REST, answer that the account has it, and each lookup and write is recorded here instead of reaching
     GitHub."""
     calls: list[tuple[Any, ...]] = []
-    for name in ("OMNIGENT_RUNNER_PRIMARY_SESSION_ID", "OMNIGENT_SESSION_ID", "RUNNER_SERVER_URL"):
+    for name in (
+        "OMNIGENT_RUNNER_PRIMARY_SESSION_ID",
+        "OMNIGENT_SESSION_ID",
+        "OMNIGENT_SESSION_LINK",
+        "RUNNER_SERVER_URL",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(approvals, "unfielded", None, raising=False)
     monkeypatch.setattr(approvals, "rest_field", None, raising=False)
