@@ -2683,11 +2683,17 @@ def unasked_end(
 
 
 def named_card_open(
-    og: Omnigent, sid: str, info: dict, text: str, notify: str | None = None
+    og: Omnigent,
+    sid: str,
+    info: dict,
+    text: str,
+    notify: str | None = None,
+    any_card: bool = False,
 ) -> bool:
     """Whether a ``question_<id>`` card ``text`` names is open on ``sid`` or up the sessions above it: its
     ``parent_session_id`` chain and, for a ``--top-level`` lead (no parent), the sessions that created it
     (``creators``), and the ``notify`` session the supervisor reports to (a top-level lead's manager). A lead ends ``USER NEEDED`` on the card its manager posted, so the owner gets one card.
+    With ``any_card`` any open question card counts, not only one ``text`` names (#2755).
     An unreadable session counts as holding none."""
     ids = set(re.findall(rf"\b{CARD_ID}[A-Za-z0-9_-]+", text))
     seen: set[str] = set()
@@ -2697,7 +2703,7 @@ def named_card_open(
             todo.append((notify, og.info(notify)))
         except Fail:
             pass
-    while ids and todo:
+    while (ids or any_card) and todo:
         at, looked = todo.pop(0)
         if at in seen:
             continue
@@ -2707,7 +2713,8 @@ def named_card_open(
             *(getattr(og, "cards", {}).get(at) or []),
         ]
         if any(
-            str(e.get("elicitation_id") or "") in ids for e in held
+            str(e.get("elicitation_id") or "") in ids or (any_card and not holds_input(e))
+            for e in held
         ):  # ``Uncarded`` keeps cards apart
             return True
         above = {str(looked.get("parent_session_id") or ""), *creators(looked)} - {"", *seen}
@@ -2717,6 +2724,14 @@ def named_card_open(
             except Fail:
                 continue
     return False
+
+
+def card_above(og: Omnigent, sid: str) -> bool:
+    """Whether any question card is open on ``sid`` or up its parent chain (the walk ``named_card_open`` does)."""
+    try:
+        return named_card_open(og, sid, og.info(sid), "", any_card=True)
+    except Fail:
+        return False
 
 
 def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
@@ -9640,6 +9655,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         )
     if still and event.get("no_verifier"):  # a verifier wait nothing will end (#2618)
         return "rule", "act", event["no_verifier"]
+    if event.get("supervisor") and event.get("supervisor_carded"):
+        return "rule", "record", "waits on its supervisor, whose owner card is open"
     if event.get("supervisor"):
         return (
             "rule",
@@ -10174,6 +10191,10 @@ def supervise_registry(
             "offline": not info.get("runner_online", True),
             "due": eid.endswith(":due"),
             "supervisor": notify if waits_on(parsed, lead, notify, bool(lead_ev)) else "",
+            # the owner's open card on the supervisor or above it: the wait is on that answer (#2755)
+            "supervisor_carded": bool(
+                notify and waits_on(parsed, lead, notify, bool(lead_ev)) and card_above(og, notify)
+            ),
             # a subagent's end re-invokes no cloud session (#1753): read only for a wait that names one
             "cloud": bool(SUBAGENT_WAIT.search(parsed or "")) and cloud_session(og, info),
             "session": sid,
