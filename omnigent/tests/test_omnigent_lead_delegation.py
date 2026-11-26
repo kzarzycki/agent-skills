@@ -444,3 +444,101 @@ def test_a_cloud_lead_brief_says_its_manager_runs_the_verifier_and_a_host_lead_b
     assert brief(True).count(line) == 1
     assert line not in brief(False)  # a host lead starts its own verifier
     assert line not in brief(True, top_level=False)  # a cloud worker is no lead
+
+
+def wrapped(og: object) -> object:
+    """The client as ``supervise_registry`` holds it: ``Recorded(Uncarded(og))``."""
+    return omnigent_agent.Recorded(omnigent_agent.Uncarded(og))
+
+
+def test_unasked_end_counts_a_named_card_open_on_the_parent() -> None:
+    """#2145: a lead ending USER NEEDED on a card its parent posted raises no unasked event."""
+    parent_card = {**CARD, "elicitation_id": "question_abc123"}
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return {"pending_elicitations": [parent_card]} if sid == "p" else {}
+
+    child = {"parent_session_id": "p"}
+    named = [ending("USER NEEDED: owner's answer on card question_abc123", 1)]
+    assert omnigent_agent.unasked_end(wrapped(Og()), "c", child, named, False) is False
+    other = [ending("USER NEEDED: owner's answer on card question_zzz", 1)]
+    assert omnigent_agent.unasked_end(wrapped(Og()), "c", child, other, False) is True
+    answered = {"parent_session_id": "q"}  # the card is gone once answered: events resume
+    assert omnigent_agent.unasked_end(wrapped(Og()), "c", answered, named, False) is True
+
+
+def test_unasked_end_counts_a_named_card_open_on_a_top_level_leads_creator() -> None:
+    """#2145: a ``--top-level`` lead has no parent; its creator's open card counts, up a chain too."""
+    card = {**CARD, "elicitation_id": "question_top1"}
+    tree = {
+        "m": {"pending_elicitations": [card]},
+        "mid": {"parent_session_id": "m"},
+    }
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return tree.get(sid, {})
+
+    lead = {"labels": {omnigent_agent.OMNIGENT_CREATOR_LABEL: "mid"}}
+    named = [ending("USER NEEDED: owner's answer on card question_top1", 1)]
+    assert omnigent_agent.unasked_end(wrapped(Og()), "c", lead, named, False) is False
+    assert omnigent_agent.unasked_end(wrapped(Og()), "c", {}, named, False) is True
+
+
+def test_unasked_end_counts_a_card_open_on_the_notify_session() -> None:
+    """#2145: a top-level lead has no parent link; the manager the supervisor reports to holds the card."""
+    card = {**CARD, "elicitation_id": "question_mgr1"}
+    tree = {"m": {"pending_elicitations": [card]}, "gp": {"pending_elicitations": [card]}}
+    tree["m2"] = {"parent_session_id": "gp"}
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return tree.get(sid, {})
+
+    named = [ending("USER NEEDED: owner's answer on card question_mgr1", 1)]
+    assert omnigent_agent.unasked_end(wrapped(Og()), "c", {}, named, False, "m") is False
+    assert (
+        omnigent_agent.unasked_end(wrapped(Og()), "c", {}, named, False, "m2") is False
+    )  # via its parent
+    tree["m"], tree["gp"] = {}, {}  # answered: the usual event resumes
+    assert omnigent_agent.unasked_end(wrapped(Og()), "c", {}, named, False, "m") is True
+    assert omnigent_agent.unasked_end(wrapped(Og()), "c", {}, named, False, None) is True
+
+
+def test_unasked_end_sees_cards_an_uncarded_wrapper_set_apart() -> None:
+    """#2145: supervise reads sessions through Uncarded, which moves each question card out of
+    pending_elicitations into ``cards``; a card open on the notify session or a parent still counts."""
+    card = {
+        **CARD,
+        "elicitation_id": "question_wrap1",
+        "params": {"policy_name": "sys_ask_user_question"},
+    }
+
+    class Raw:
+        def info(self, sid: str) -> dict:
+            return {"pending_elicitations": [card]} if sid in ("m", "p") else {}
+
+    og = omnigent_agent.Uncarded(Raw())
+    named = [ending("USER NEEDED: owner's answer on card question_wrap1", 1)]
+    assert omnigent_agent.unasked_end(og, "c", {}, named, False, "m") is False
+    assert omnigent_agent.unasked_end(og, "c", {"parent_session_id": "p"}, named, False) is False
+    assert omnigent_agent.unasked_end(og, "c", {}, named, False, "other") is True
+
+
+def test_unasked_end_through_recorded_uncarded_as_supervise_calls_it() -> None:
+    """#2145 verifier repro: the lead's own look, its ``carded`` flag and the notify session, all read
+    through ``Recorded(Uncarded(...))``, as supervise_registry does."""
+    card = {"elicitation_id": "question_abc123", "params": {"policy_name": "sys_ask_user_question"}}
+    tree = {"m": {"pending_elicitations": [card]}, "c": {}}
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return tree.get(sid, {})
+
+    rec = wrapped(Og())
+    named = [ending("USER NEEDED: owner answer on card question_abc123", 1)]
+    carded = bool(getattr(rec, "cards", {}).get("c"))
+    assert omnigent_agent.unasked_end(rec, "c", rec.info("c"), named, carded, "m") is False
+    tree["m"] = {}
+    assert omnigent_agent.unasked_end(rec, "c", rec.info("c"), named, carded, "m") is True
