@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
@@ -15153,3 +15153,45 @@ def test_wait_on_without_story_reads_no_blocked_by_link(
     monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls))
     assert omnigent_agent.main(["wait-on", "pr", "976"]) == 0
     assert not [c for c in calls if "dependencies" in c[-1]]  # off where no one asked
+
+
+def test_a_lead_whose_deadline_fired_then_lost_its_runner_is_revived_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2667: the revive branch ran only on the one deadline event, so a runner dropping after it
+    went unseen."""
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+
+    def drop(poll: int) -> None:
+        if poll == 1:
+            og.offline.add("a")  # online at the deadline, gone on the next poll
+
+    supervised(og, registry, monkeypatch, 4, drop, notify="cos", console=True)
+    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_REVIVE]
+    assert og.retried == ["a"]
+
+
+def test_a_waiters_deadline_names_a_session_with_no_runner_and_its_last_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    last = time.time() - 1300
+    stamp = datetime.fromtimestamp(last, UTC).strftime("%H:%MZ")
+    gone = {"status": "idle", "updated_at": last, "runner_online": False}
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on {LEAD}. Report: m.md", **{LEAD: gone}
+    )
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    text = next(t for _, t in og.inbox if t.startswith("Supervisor: m t-m: no progress"))
+    assert f"\n{LEAD} has no runner (last activity {stamp})" in text and "quiet:" not in text
+
+
+def test_an_online_lead_past_its_deadline_still_gets_one_inspect_the_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    sent = [t for s, t in og.inbox if s == "a"]
+    acts = [x for p in posted(og) for x in p.splitlines() if x.startswith("[act]")]
+    assert sent == [] and len(acts) == 1 and "inspect the wait" in acts[0]
