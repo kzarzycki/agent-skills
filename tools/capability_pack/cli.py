@@ -22,7 +22,13 @@ from tools.capability_pack.qualify import (
     upstream_deltas,
     validate_release_candidate,
 )
-from tools.capability_pack.release import MAGNITUDES, cut_release, release_tags, verify_release
+from tools.capability_pack.release import (
+    MAGNITUDES,
+    check_changelog_names,
+    cut_release,
+    release_tags,
+    verify_release,
+)
 
 # EX_CONFIG: this machine isn't ready. A step that stops on QUALIFY_TIMEOUT failed for the
 # host's load, not the change, so a loop.md naming it as machine_exit has local-ci refuse it as a
@@ -80,6 +86,10 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--root", type=Path, default=Path("."))
     verify.add_argument("--base", required=True)
     verify.add_argument("--head", default="HEAD")
+    names = subparsers.add_parser(
+        "changelog-check", help="refuse a changelog.d entry not named <issue>.md, as the cut does"
+    )
+    names.add_argument("--root", type=Path, default=Path("."))
     tags = subparsers.add_parser(
         "release-tags", help="print the tag of each package whose manifest HEAD changes"
     )
@@ -121,6 +131,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "assert-codex-inventory":
             assert_codex_inventory(args.repository, args.source_tag, args.source_commit)
+            return 0
+        if args.command == "changelog-check":
+            check_changelog_names(args.root)
             return 0
         if args.command in ("cut-release", "release-verify"):
             if args.command == "cut-release":
