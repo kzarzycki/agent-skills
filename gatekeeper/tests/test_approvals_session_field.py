@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from approvals_harness import approvals, approved, held, labelled, note, pull, specced
-from test_approvals import assigned_event, in_project
+from test_approvals import assigned_event, in_project, loop_md
 
 SERVER, LEAD, WORKER = "https://example.test", "lead-session", "worker-session"
 LINK = f"{SERVER}/c/{LEAD}"
@@ -180,7 +180,38 @@ def test_over_rest_a_field_no_issue_carries_yet_is_one_line(
     monkeypatch.setattr(approvals, "rest_issue_field_id", lambda name: None)
     [line] = approvals.claim(pull(), [free(1), free(2)])
     assert "REST names the `Session` field's id only once an issue carries a value" in line
+    assert "`loop.session_field_id`" in line  # the way out is named, not only the by-hand one
     assert [call for call in session_fields if call[0] == "rest set"] == []
+
+
+@pytest.mark.usefixtures("omnigent")
+def test_over_rest_a_stated_field_id_writes_in_a_repo_no_issue_carries_a_value_in(
+    monkeypatch: pytest.MonkeyPatch, session_fields: list[tuple[Any, ...]]
+) -> None:
+    """#2677: the project states the id once, so a cloud claim needs no lookup and no value on any issue."""
+    monkeypatch.setattr(approvals.github, "_rest_only", True)
+    monkeypatch.setattr(
+        approvals, "rest_issue_field_id", lambda name: None
+    )  # what such a repo answers
+    monkeypatch.setattr(
+        approvals, "project", lambda **_: (None, loop_md("loop:\n  session_field_id: 50381584\n"))
+    )
+    assert approvals.claim(pull(), [free(1), free(2)]) == []
+    assert session_fields == [
+        ("rest set", 1, 50381584, LINK),
+        ("rest set", 2, 50381584, LINK),
+    ]
+
+
+@pytest.mark.usefixtures("omnigent")
+def test_a_stated_field_id_does_not_change_the_graphql_path(
+    monkeypatch: pytest.MonkeyPatch, session_fields: list[tuple[Any, ...]]
+) -> None:
+    monkeypatch.setattr(
+        approvals, "project", lambda **_: (None, loop_md("loop:\n  session_field_id: 50381584\n"))
+    )
+    assert approvals.claim(pull(), [free(1)]) == []
+    assert session_fields == [("lookup", 1, "Session"), ("set", "ISSUE_1", "FIELD", LINK)]
 
 
 def test_check_setup_names_a_missing_field_with_github_s_steps_and_exits_0(
