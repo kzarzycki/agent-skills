@@ -497,3 +497,23 @@ def test_unasked_end_counts_a_card_open_on_the_notify_session() -> None:
     tree["m"], tree["gp"] = {}, {}  # answered: the usual event resumes
     assert omnigent_agent.unasked_end(Og(), "c", {}, named, False, "m") is True
     assert omnigent_agent.unasked_end(Og(), "c", {}, named, False, None) is True
+
+
+def test_unasked_end_sees_cards_an_uncarded_wrapper_set_apart() -> None:
+    """#2145: supervise reads sessions through Uncarded, which moves each question card out of
+    pending_elicitations into ``cards``; a card open on the notify session or a parent still counts."""
+    card = {
+        **CARD,
+        "elicitation_id": "question_wrap1",
+        "params": {"policy_name": "sys_ask_user_question"},
+    }
+
+    class Raw:
+        def info(self, sid: str) -> dict:
+            return {"pending_elicitations": [card]} if sid in ("m", "p") else {}
+
+    og = omnigent_agent.Uncarded(Raw())
+    named = [ending("USER NEEDED: owner's answer on card question_wrap1", 1)]
+    assert omnigent_agent.unasked_end(og, "c", {}, named, False, "m") is False
+    assert omnigent_agent.unasked_end(og, "c", {"parent_session_id": "p"}, named, False) is False
+    assert omnigent_agent.unasked_end(og, "c", {}, named, False, "other") is True

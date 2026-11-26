@@ -2702,10 +2702,13 @@ def named_card_open(
         if at in seen:
             continue
         seen.add(at)
+        held = [
+            *(looked.get("pending_elicitations") or []),
+            *(getattr(og, "cards", {}).get(at) or []),
+        ]
         if any(
-            str(e.get("elicitation_id") or "") in ids
-            for e in looked.get("pending_elicitations") or []
-        ):
+            str(e.get("elicitation_id") or "") in ids for e in held
+        ):  # ``Uncarded`` keeps cards apart
             return True
         above = {str(looked.get("parent_session_id") or ""), *creators(looked)} - {"", *seen}
         for up in sorted(above):
