@@ -52,7 +52,16 @@ ALL = [
     "omnigent/tests",
 ]
 # files every test reads (the runner's config, the lock, the toolchain pins, the root conftest): a change runs the suite
-BUILD_INPUTS = ("pyproject.toml", "uv.lock", "mise.toml", "conftest.py")
+# (gatekeeper.md's `select.build_inputs` is this list, which tests/test_own_loop_settings.py holds: the selector's own code
+# and the pack's `affected_tests` are in it, since a change to the selector can't be judged by the selector it changes)
+BUILD_INPUTS = (
+    "pyproject.toml",
+    "uv.lock",
+    "mise.toml",
+    "conftest.py",
+    "tools/affected_tests.py",
+    "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py",
+)
 # paths no product test can fail on, unless a test reads one by path: design notes, the repo's own top-level prose,
 # changelog entries, an agent's config and vendored skills, the pack's own pin (fnmatch: `*` crosses `/`)
 NON_PRODUCT = (
@@ -66,7 +75,10 @@ NON_PRODUCT = (
 )
 MAP = Path(os.environ.get("TEST_MAP", ".test-map"))
 SKIPS = re.compile(r"needs_tool|skipif|pytest\.skip|importorskip")
-CHEAP = sorted(str(p) for p in Path("tests").glob("test_skill_*.py"))
+# repo-wide sweeps that name no script, so the name match never picks them: every skill folder's files, run on any
+# change (#2372). test_one_package_per_skill_name.py rejects a file a batch adds to a skill folder.
+SWEEPS = ("tests/test_one_package_per_skill_name.py",)
+CHEAP = sorted([*(str(p) for p in Path("tests").glob("test_skill_*.py")), *SWEEPS])
 # docs a test holds byte for byte against a copy, which no name match finds: a change to one runs that test
 DOC_TESTS = {
     "loop/skills/engineering-loop/": "tests/test_old_paths.py",

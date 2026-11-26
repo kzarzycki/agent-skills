@@ -7,7 +7,7 @@ Read the notes, the spec, [coding-standards.md](coding-standards.md) and the pro
 main checkout. A lead that builds an item itself follows this file on its own PR
 branch: it pushes that branch, merges nothing, and writes the report into its notes.
 A worker in a cloud session pushes to the `claude/…` branch its session started on, not to a `<branch>` a brief names, and reports that branch and its head SHA (SKILL.md, Cloud worker).
-Where your build, test and proof runs go is SKILL.md, Where heavy steps run; a worker in a
+Where your build, test and proof runs go is SKILL.md, Where work runs; a worker in a
 cloud session (the default unless loop.md's `Cloud worker:` line says `none`) follows SKILL.md, Cloud worker.
 
 1. **Build**, with the Build skill when gatekeeper.md's `practice` names one, under these rules.
@@ -33,7 +33,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
 2. **Gates and push.** A check runs only if it can fail because of the change (SKILL.md, A check runs only if it can fail because of the change): run nothing whose result a passed run on the same inputs already gives, and the push hook's run is the run you report: don't run the affected tests a second time beside it, since the hook runs the same selection on the same head. Iterate on the narrowest check that covers the change: an incremental build of the touched
    target, then the tests of the module you changed, since a whole-suite run can take twenty minutes to show a compile
    error a build shows in one. The run you report is the tests the PR affects, on every head you push, and
-   never the whole suite. A fix round selects against the last head its run passed on, not the PR's base
+   never the whole suite: where a change selects it (a `select.whole_suite` input) and the project's CI is the merge proof, `approvals.py affected-tests` records `whole suite selected; CI runs it` and runs no test, and `--local` runs it here. A fix round selects against the last head its run passed on, not the PR's base
    (SKILL.md, A check runs only if it can fail because of the change, R4): `approvals.py affected-tests --base <the last head its run passed on>`.
    Where loop.md has an `Affected tests:` line, `uv run
    <gatekeeper>/scripts/approvals.py affected-tests`, which runs that selection against `git merge-base origin/<base>
@@ -43,7 +43,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    A check runs only if it can fail because of the change): report its line as it is. You run no full `mise run
    check`, and no gate of record but the one `local-ci --record` on your final head (Report), with `ci: false` too:
    no other gate runs on the PR before it merges, and the nightly runs the full suite (SKILL.md, Merge model). Lint
-   runs at commit, in the hook's `lint:` tasks on the staged files.
+   runs at commit, in the hook's `lint:` tasks on the staged files, which a cloud session skips: run the project's lint-only task on your changed files before you push, since the PR's CI lints every push (SKILL.md, R1) and a failure there costs a round.
    Write the e2e tests that prove the change works, in the PR, and name them in the report: the verifier proves
    the change with those tests and runs no suite of its own, so a behaviour no e2e test of yours reaches is one
    nothing runs before the merge. Where the project has no e2e tier, the acceptance checks of step 1 are those tests.
@@ -74,8 +74,9 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    may outlast one tool call (a test run, a held lock, a queue) starts detached (verifier.md, A long or locked run is detached),
    with its log, pid and exit code in files, and is waited on with one wake, as that section says: one
    `wait-for --log <log> --pid <pid> --budget <the run's expected length>` (a PR's checks: `wait-for --pr <n>`) as a
-   background call your harness tracks, never a short `wait-for`, `until grep` or `sleep` loop, since each return
-   re-reads your whole context; never end a turn waiting on a detached run alone, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
+   background call whose exit wakes the session (a host's; a claude-cloud session is not woken by a background task, so it
+   runs the foreground `wait-for`, each call under 10 minutes, in the same turn), never a short `wait-for`, `until grep` or
+   `sleep` loop, since each return re-reads your whole context; never end a turn waiting on a detached run alone, since nothing wakes you and the lead reads silence as work. A `stalled:` exit (exit 1, the log silent for `--stall` seconds, the run's process group killed) means the step hung, not that the change failed: report it with the log tail, and don't rerun it unchanged.
    Any other pending condition (a queued run, a free device, an unlocked screen) is waited on the
    same way, in the foreground, with `scripts/omnigent_agent.py wait-until
    --every <s> --limit <s> -- <check>`, each call under the tool timeout: the
@@ -97,7 +98,7 @@ cloud session (the default unless loop.md's `Cloud worker:` line says `none`) fo
    check runs only if it can fail because of the change, R1). Your affected-test run on that final head is
    `approvals.py affected-tests --record`, your one recorded test run: it pushes its pass the same way, keyed by the
    tree and the narrowed command, which the merge queue's batch floor reads to leave this PR's own tests out (R6,
-   #2178); a run that fails or can't tell records nothing. Run the acceptance command on the head (SKILL.md,
+   #2178); a run that fails records nothing, nor does a run with no `Affected tests:` line, the opt-out `Gate: full`'s full check or a gate with `gate_steps`; a base git can't resolve records against the merge base. Run the acceptance command on the head (SKILL.md,
    Acceptance checks) once, into a log stamped that way, and hand it over as the spec's proof. Just before the report, run `git status
    --porcelain` and commit or remove what it lists, and the report carries the line `git status
    --porcelain: empty`, since the verifier may review in that tree and an uncommitted check

@@ -1,0 +1,23 @@
+# Sample values file for a setup whose home is a project checkout, with delegation and nightly jobs.
+# Placeholder values only; it holds just what differs from the pack defaults (scripts/cos_values.py keys).
+server: https://agents.example.invalid
+cos_session: session-cos-2
+registry: leads/leads.registry
+reports_dir: reports
+delegation:
+  on: true
+owner_only: [publish, send, delete, credentials, public-packages]
+models:
+  tiers:
+    lead: model-large
+    scheduled: {model: model-small, until: 2030-01-31}
+budget:
+  weekly_limit: 50
+  until: 2030-01-31
+parked: [{item: nightly-x, until: 2030-01-31}]
+decisions:
+  file: log/decisions.md
+hygiene:
+  repos: [owner-a/repo-a]
+pin:
+  tag_prefix: pack-v

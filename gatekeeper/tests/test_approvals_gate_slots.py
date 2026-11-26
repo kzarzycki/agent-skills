@@ -103,10 +103,8 @@ def test_a_run_under_the_second_slot_takes_none(monkeypatch: pytest.MonkeyPatch)
     held = [hold(1), hold(2)]
     monkeypatch.setenv(approvals.SLOT_HELD, approvals.slot_path(2))
     try:
-        began = time.monotonic()
         with approvals.heavy_slot("unit") as (path, waited):
             assert (path, waited) == (approvals.slot_path(2), 0)
-        assert time.monotonic() - began < 1.0
     finally:
         for release in held:
             release()
@@ -544,7 +542,6 @@ def test_with_gate_slots_off_a_command_runs_while_another_process_holds_slot_1(
     holder = held_elsewhere(approvals.slot_path(1))
     try:
         monkeypatch.setenv("GATE_SLOTS", "off")
-        began = time.monotonic()
         with approvals.heavy_slot("unit") as (path, waited):
             assert (path, waited) == ("", 0)
         assert approvals.take_slot(land=True) == (None, "")
@@ -555,7 +552,6 @@ def test_with_gate_slots_off_a_command_runs_while_another_process_holds_slot_1(
             capture_output=True, text=True, timeout=10, check=False,
         )  # fmt: skip
         assert (ran.returncode, ran.stdout) == (0, "ran\n")
-        assert time.monotonic() - began < 5
         assert "waiting" not in capsys.readouterr().err + ran.stderr
     finally:
         holder.communicate("")

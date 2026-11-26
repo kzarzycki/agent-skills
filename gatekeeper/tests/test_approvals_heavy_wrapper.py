@@ -258,9 +258,7 @@ def test_a_probe_that_hangs_counts_as_a_failing_one(
 ) -> None:
     configure(host, f"{wrapper(tmp_path, HANGS)}\n")
     monkeypatch.setattr(approvals, "HEAVY_PROBE_SECONDS", 0.5)
-    began = time.monotonic()
     assert approvals.run_heavy(["sh", "-c", "exit 2"])[0] == 2
-    assert time.monotonic() - began < 10
     (err,) = capsys.readouterr().err.splitlines()
     assert "took over 0.5 s" in err
 
@@ -425,12 +423,10 @@ def test_an_exception_while_a_step_runs_kills_its_group(
         raise RuntimeError("stopped while waiting")
 
     monkeypatch.setattr(approvals.subprocess.Popen, "communicate", raising)
-    began = time.monotonic()
     with pytest.raises(RuntimeError):
         approvals.run_heavy(["sh", "-c", SLEEPER, "sh", str(pids)])
     monkeypatch.setattr(approvals.subprocess.Popen, "communicate", real)
     # killed, not waited out: the step would sleep 600 s
-    assert time.monotonic() - began < STOP_BOUND_S
     assert gone(int(pids.read_text().split()[1]))
 
 

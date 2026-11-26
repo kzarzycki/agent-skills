@@ -94,6 +94,7 @@ class Memory:
             "run_artifact": lambda run, name: None,
             "compare": lambda base, head: {"status": "identical", "ahead_by": 0, "behind_by": 0},
             "job_log": lambda job: "",
+            "flaky_issue_ids": lambda: set(),
             "commit_tree": lambda sha: sha,
             "repo_tags": lambda repo: {},
             "tag_tree": lambda repo, tag: None,
@@ -170,8 +171,10 @@ def test_a_port_the_policy_names_no_adapter_for_is_refused_naming_it() -> None:
     assert str(refused.value) == (
         "gatekeeper.md's `adapters.forge` names 'gitlab', which no adapter implements: github"
     )
-    with pytest.raises(approvals.Refused, match="unknown setting `adapters.board`"):
-        approvals.settings(approvals.Policy(gatekeeper_md("adapters:\n  board: github\n")))
+    # a port no pack knows is a warning (#2475): a newer pack's, merged to main
+    assert approvals.settings(approvals.Policy(gatekeeper_md("adapters:\n  board: github\n"))) == {
+        "adapters": {}
+    }
 
 
 def test_every_port_defaults_to_github_and_an_adapter_lacking_an_operation_is_refused(

@@ -1,0 +1,277 @@
+"""#2485: the pack's scripts resolve the installed copy of the pack, never a developer checkout of it.
+
+A checkout (a git tree that holds the marketplace file) can sit on any branch and hold a stale script, so a
+resolver that finds a sibling there brings that script back into a run. The guard is a test, since a warning
+lets it return."""
+
+import importlib.util
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPOSITORY = Path(__file__).resolve().parents[1]
+RESOLVERS = [
+    "chief-of-staff/skills/chief-of-staff/scripts/cos_page.py",
+    "engineering/skills/chief-of-staff/scripts/cos_page.py",
+    "engineering/skills/chief-of-staff/scripts/memory.py",
+    "engineering/skills/engineering-loop/scripts/_installed.py",
+    "engineering/skills/omnigent-telemetry/scripts/omnigent_telemetry.py",
+    "engineering/skills/orchestrating-agents/scripts/claude_cloud.py",
+    "engineering/skills/orchestrating-agents/scripts/claude_environments.py",
+    "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py",
+    "github/skills/github-tracker/scripts/_installed.py",
+    "loop/skills/engineering-loop/scripts/_installed.py",
+    "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py",
+    "omnigent/skills/omnigent-agents/scripts/omnigent_agent.py",
+]
+
+
+def function(path: Path) -> tuple[str, str]:
+    found = re.search(
+        r"^def (installed(?:_scripts)?)\(.*?(?=^\S|\Z)", path.read_text(), re.MULTILINE | re.DOTALL
+    )
+    assert found, f"{path}: no resolver"
+    return found.group(1), found.group().rstrip()
+
+
+def checkout_with_skill(tmp_path: Path, skill: str = "omnigent-agents") -> Path:
+    """A developer checkout holding a sibling plugin that ships `skill`."""
+    root = tmp_path / "checkout"
+    (root / ".git").mkdir(parents=True)
+    (root / ".claude-plugin").mkdir()
+    (root / ".claude-plugin" / "marketplace.json").write_text("{}")
+    skill_dir = root / "other" / "skills" / skill
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(skill)
+    return root
+
+
+def load_at(root: Path, relative: str, source: Path):
+    """The resolver alone, placed at `relative` inside `root` as the script would sit there."""
+    name, text = function(source)
+    target = root / "pkg" / "skills" / "me" / "scripts" / "script.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("import sys\nfrom pathlib import Path\n\n\n" + text)
+    spec = importlib.util.spec_from_file_location("resolver", target)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, name)
+
+
+@pytest.mark.parametrize("script", RESOLVERS)
+def test_a_resolver_in_a_checkout_does_not_return_the_checkouts_sibling(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_SKILLS_CHECKOUT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = checkout_with_skill(tmp_path)
+    resolve = load_at(root, script, REPOSITORY / script)
+    try:
+        found = resolve("omnigent-agents")
+    except SystemExit as stop:
+        assert "needs the `omnigent-agents` skill" in str(stop.code)
+    else:
+        assert found is None
+
+
+@pytest.mark.parametrize("script", RESOLVERS)
+def test_a_resolver_in_a_checkout_returns_the_installed_copy(
+    script: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_SKILLS_CHECKOUT", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    installed = home / ".claude/plugins/cache/mkt/omnigent/1.0.0/skills/omnigent-agents"
+    installed.mkdir(parents=True)
+    (installed / "SKILL.md").write_text("x")
+    resolve = load_at(checkout_with_skill(tmp_path), script, REPOSITORY / script)
+    assert resolve("omnigent-agents") == installed / "scripts"
+
+
+@pytest.mark.parametrize("layout", [".agents/skills", ".claude/skills"])
+def test_the_gatekeeper_finds_a_user_level_skill_install_from_a_checkout(
+    layout: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_SKILLS_CHECKOUT", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    installed = home / layout / "omnigent-agents"
+    installed.mkdir(parents=True)
+    (installed / "SKILL.md").write_text("x")
+    script = "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"
+    resolve = load_at(checkout_with_skill(tmp_path), script, REPOSITORY / script)
+    assert resolve("omnigent-agents") == installed / "scripts"
+
+
+def test_the_gatekeeper_prefers_the_plugin_cache_to_a_user_level_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENT_SKILLS_CHECKOUT", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    cached = home / ".claude/plugins/cache/mkt/omnigent/1.0.0/skills/omnigent-agents"
+    user = home / ".agents/skills/omnigent-agents"
+    for folder in (cached, user):
+        folder.mkdir(parents=True)
+        (folder / "SKILL.md").write_text("x")
+    script = "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"
+    resolve = load_at(checkout_with_skill(tmp_path), script, REPOSITORY / script)
+    assert resolve("omnigent-agents") == cached / "scripts"
+
+
+def test_the_pack_own_tests_may_opt_into_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_SKILLS_CHECKOUT", "1")
+    root = checkout_with_skill(tmp_path)
+    resolve = load_at(root, "x", REPOSITORY / RESOLVERS[3])
+    assert resolve("omnigent-agents") == root / "other/skills/omnigent-agents/scripts"
+
+
+def test_the_pack_own_ci_finds_its_scripts_in_the_workspace_it_runs_in(tmp_path: Path) -> None:
+    """#2560: main's push run, the nightly and the tag check run `nightly.py moved <event>` in a plain checkout of the
+    pack, with no installed plugin and no AGENT_SKILLS_CHECKOUT. It must resolve the gatekeeper skill there and exit 0
+    (the forge read, here refused at once, only means "run as usual"), on every event's path, a PR's included."""
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(tmp_path / "empty"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_WORKSPACE": str(REPOSITORY),
+        "GITHUB_REPOSITORY": "owner/pack",
+        "GITHUB_SHA": "0" * 40,
+        "GITHUB_TOKEN": "unused",
+        "GITHUB_API_URL": "http://127.0.0.1:9",
+    }
+    script = REPOSITORY / "loop/skills/engineering-loop/scripts/nightly.py"
+    for mode in ("push", "schedule", "tag"):
+        done = subprocess.run(
+            [sys.executable, str(script), "moved", mode],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert done.returncode == 0, (mode, done.stderr)
+        assert "Running:" in done.stdout, (mode, done.stdout)
+    outside = {**env, "GITHUB_WORKSPACE": str(tmp_path)}
+    refused = subprocess.run(
+        [sys.executable, str(script), "moved", "push"],
+        env=outside,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert refused.returncode != 0
+    assert "needs the `gatekeeper` skill" in refused.stderr
+
+
+def pack_checkout(tmp_path: Path) -> Path:
+    """A pack checkout laid as the real one is, holding the forwarder and a stub `omnigent-agents` script."""
+    root = tmp_path / "pack"
+    (root / ".git").mkdir(parents=True)
+    (root / ".claude-plugin").mkdir()
+    (root / ".claude-plugin" / "marketplace.json").write_text("{}")
+    forwarder = root / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+    forwarder.parent.mkdir(parents=True)
+    forwarder.write_text(
+        (
+            REPOSITORY / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+        ).read_text()
+    )
+    sibling = root / "omnigent/skills/omnigent-agents"
+    (sibling / "scripts").mkdir(parents=True)
+    (sibling / "SKILL.md").write_text("x")
+    (sibling / "scripts" / "omnigent_agent.py").write_text("print('checkout copy')\n")
+    return root
+
+
+def test_the_deprecated_forwarder_runs_the_installed_omnigent_agents_script(
+    tmp_path: Path,
+) -> None:
+    """Outside a checkout, the forwarder runs the installed script."""
+    home = tmp_path / "home"
+    installed = home / ".claude/plugins/cache/mkt/omnigent/1.0.0/skills/omnigent-agents"
+    (installed / "scripts").mkdir(parents=True)
+    (installed / "SKILL.md").write_text("x")
+    (installed / "scripts" / "omnigent_agent.py").write_text("print('installed copy')\n")
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"}
+    forwarder = tmp_path / "plugin/skills/orchestrating-agents/scripts/omnigent_agent.py"
+    forwarder.parent.mkdir(parents=True)
+    forwarder.write_text(
+        (
+            REPOSITORY / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+        ).read_text()
+    )
+    done = subprocess.run(
+        [sys.executable, str(forwarder)], env=env, capture_output=True, text=True, check=False
+    )
+    assert (done.returncode, done.stdout) == (0, "installed copy\n"), done.stderr
+    bare = {**env, "HOME": str(tmp_path / "empty")}
+    refused = subprocess.run(
+        [sys.executable, str(forwarder)], env=bare, capture_output=True, text=True, check=False
+    )
+    assert refused.returncode != 0
+    assert "needs the `omnigent-agents` skill" in refused.stderr
+
+
+def test_the_forwarder_in_a_pack_checkout_runs_its_sibling_script_with_no_env_var(
+    tmp_path: Path,
+) -> None:
+    """#2670: a supervisor unit whose ExecStart names the forwarder, run from a checkout, must not exit 1."""
+    root = pack_checkout(tmp_path)
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "empty"), "PYTHONDONTWRITEBYTECODE": "1"}
+    forwarder = root / "engineering/skills/orchestrating-agents/scripts/omnigent_agent.py"
+    done = subprocess.run(
+        [sys.executable, str(forwarder)], env=env, capture_output=True, text=True, check=False
+    )
+    assert (done.returncode, done.stdout) == (0, "checkout copy\n"), done.stderr
+
+
+def test_the_driver_in_a_pack_checkout_finds_the_checkouts_gatekeeper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2670: `supervise` run from a checkout resolves the sibling gatekeeper, as it runs that code already."""
+    monkeypatch.delenv("AGENT_SKILLS_CHECKOUT", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "pack"
+    (root / ".git").mkdir(parents=True)
+    (root / ".claude-plugin").mkdir()
+    (root / ".claude-plugin" / "marketplace.json").write_text("{}")
+    gatekeeper = root / "gatekeeper/skills/gatekeeper"
+    gatekeeper.mkdir(parents=True)
+    (gatekeeper / "SKILL.md").write_text("x")
+    source = REPOSITORY / "omnigent/skills/omnigent-agents/scripts/omnigent_agent.py"
+    name, text = function(source)
+    target = root / "omnigent/skills/omnigent-agents/scripts/omnigent_agent.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("import sys\nfrom pathlib import Path\n\n\n" + text)
+    spec = importlib.util.spec_from_file_location("driver", target)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert getattr(module, name)("gatekeeper") == gatekeeper / "scripts"
+
+
+def test_no_pack_script_names_a_developer_checkout() -> None:
+    """The grep of the proof: a path into a developer clone of the pack in a shipped script or skill file."""
+    files = subprocess.run(
+        ["git", "ls-files", "*/skills/*"],
+        cwd=REPOSITORY,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    pattern = re.compile(r"(~|\$HOME|\$\{HOME\}|/home/[a-z]+|/Users/[A-Za-z]+)/dev/agent-skills")
+    hits = [
+        f"{f}:{n}"
+        for f in files
+        if not f.startswith((".claude/", ".agents/")) and "/tests/" not in f
+        for n, line in enumerate((REPOSITORY / f).read_text(errors="ignore").splitlines(), 1)
+        if pattern.search(line)
+    ]
+    assert hits == []

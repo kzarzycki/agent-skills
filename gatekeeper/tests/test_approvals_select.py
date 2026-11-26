@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -21,8 +22,10 @@ SELECTOR = """import pathlib, sys
 """
 
 # a `checks` command: it logs its name, and exits with the code its second argument gives
-CHECK = """import pathlib, sys
+CHECK = """import pathlib, sys, time
 (pathlib.Path(__file__).parent / "ran.log").open("a").write(sys.argv[1] + "\\n")
+if sys.argv[1] == "hang":
+    time.sleep(30)
 sys.exit(int(sys.argv[2]) if len(sys.argv) > 2 else 0)
 """
 
@@ -36,6 +39,12 @@ SELECT = """select:
     - paths: [scripts/release.sh]
       command: {check} release {release_exit}
 """
+
+
+# the same policy, declaring the build inputs that select the whole test root (#2621)
+WHOLE = SELECT.replace(
+    "    - package.json\n", "    - package.json\n    - conftest.py\n    - uv.lock\n"
+) + ("  whole_suite: [conftest.py, uv.lock]\n")
 
 
 @pytest.fixture
@@ -114,6 +123,30 @@ def test_a_pack_bump_runs_only_its_check(worker: dict[str, Any]) -> None:
     assert worker["ran"]() == ["agent-sync"]
 
 
+HANGING = """select:
+  build_inputs:
+    - src/*
+  checks:
+    - paths: [apm.yml]
+      command: {check} hang
+"""
+
+
+def test_a_check_still_running_at_timeouts_run_is_stopped_and_exits_124(
+    worker: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: Any,
+) -> None:
+    """#2346: a `select.checks` command is held to `timeouts.run` like the `Affected tests:` run: killed with its
+    process group, exit 124, one line naming the budget."""
+    worker["start"](HANGING)
+    worker["commit"]("apm.yml")
+    monkeypatch.setitem(approvals.TIMEOUTS, "run", "1s")
+    assert approvals.main(["affected-tests"]) == approvals.TIMED_OUT == 124
+    lines = [line for line in capsys.readouterr().err.splitlines() if "timed out" in line]
+    assert len(lines) == 1 and "`timeouts.run` (1 second)" in lines[0] and "hang" in lines[0]
+
+
 def test_a_failing_check_fails_the_run(worker: dict[str, Any]) -> None:
     worker["start"](SELECT, release_exit=3)
     worker["commit"]("scripts/release.sh", "apm.yml")
@@ -139,6 +172,79 @@ def test_a_build_input_or_an_unclear_path_runs_the_selector(
     worker["commit"]("docs/guide.md", path)
     assert approvals.main(["affected-tests"]) == 0
     assert worker["ran"]() == ["selector"]
+
+
+@pytest.mark.parametrize("path", ["conftest.py", "uv.lock"])
+def test_a_whole_suite_selection_under_ci_runs_nothing_and_says_so(
+    worker: dict[str, Any], capsys: Any, path: str
+) -> None:
+    """#2621: a declared `whole_suite` input selects the whole suite, which CI runs."""
+    worker["start"](WHOLE)
+    worker["commit"]("docs/guide.md", path)
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == []
+    assert "whole suite selected; CI runs it" in capsys.readouterr().err
+
+
+def test_a_source_build_input_still_runs_the_selector_under_ci(worker: dict[str, Any]) -> None:
+    """A `build_inputs` source dir the selector narrows is not a whole-suite input (#2621 review)."""
+    worker["start"](WHOLE)
+    worker["commit"]("src/app.py")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_local_runs_a_whole_suite_selection_here(worker: dict[str, Any]) -> None:
+    worker["start"](WHOLE)
+    worker["commit"]("conftest.py")
+    assert approvals.main(["affected-tests", "--local"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_without_ci_a_whole_suite_selection_runs_here_as_before(worker: dict[str, Any]) -> None:
+    worker["start"]("ci: false\n" + WHOLE)
+    worker["commit"]("conftest.py")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["selector"]
+
+
+def test_a_whole_suite_selection_still_runs_the_checks_the_rest_touches(
+    worker: dict[str, Any],
+) -> None:
+    worker["start"](WHOLE)
+    worker["commit"]("conftest.py", "apm.yml")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["agent-sync"]
+
+
+def test_the_skip_records_the_tests_pass_land_reads_and_local_keeps_its_key(
+    worker: dict[str, Any],
+) -> None:
+    """The open question of #2621: the skip is keyed `select.checks: ... ci` in the narrowed gate, the record
+    `head_recorded` (so `check merge`, `land` and the verifier start) reads; no second kind. `--record --local`
+    runs the suite but records under that same key, so the reader finds it."""
+    worker["start"](WHOLE)
+    worker["commit"]("conftest.py", "apm.yml")
+    base = base_of_work()
+    with approvals.narrowed_to(base):
+        command = approvals.narrowed_gate()[0]
+    assert "agent-sync' ci" in command and command.endswith("(narrowed)")
+    assert approvals.main(["affected-tests", "--record", "--base", base]) == 0
+    assert worker["ran"]() == ["agent-sync"]
+    head = git_in(Path.cwd(), "rev-parse", "HEAD").strip()
+    assert approvals.gate_record(head, shlex.split(command)) == 0
+
+
+def test_record_local_runs_the_suite_and_records_the_same_key(worker: dict[str, Any]) -> None:
+    worker["start"](WHOLE)
+    worker["commit"]("conftest.py")
+    base = base_of_work()
+    with approvals.narrowed_to(base):
+        command = approvals.narrowed_gate()[0]
+    assert approvals.main(["affected-tests", "--record", "--local", "--base", base]) == 0
+    assert worker["ran"]() == ["selector"]
+    head = git_in(Path.cwd(), "rev-parse", "HEAD").strip()
+    assert approvals.gate_record(head, shlex.split(command)) == 0
 
 
 def test_a_build_input_under_a_non_product_glob_still_tests(worker: dict[str, Any]) -> None:
@@ -570,3 +676,60 @@ def test_a_base_git_cant_resolve_cuts_the_change_since_the_merge_base(
     assert worker["ran"]() == []
     said = capsys.readouterr().err
     assert "it selects against the merge base" in said and "0 selected: non-product" in said
+
+
+# --- select.non_product: config no build or test reads (#2511)
+
+DOCKER_SELECT = """select:
+  build_inputs:
+    - src/*
+    - Dockerfile
+  non_product:
+    - .editorconfig
+    - .gitignore
+  checks:
+    - paths: [docker/*, Dockerfile.check]
+      command: {check} docker
+"""
+
+
+def test_markdown_plus_an_unrelated_config_file_selects_neither_docker_nor_the_suite(
+    worker: dict[str, Any], capsys: Any
+) -> None:
+    """#2511: a docs and config diff with a config the project lists `non_product` runs no suite and no check."""
+    worker["start"](DOCKER_SELECT)
+    worker["commit"]("docs/guide.md", "README.md", ".editorconfig")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == []
+    assert "affected-tests: 0 selected: non-product" in capsys.readouterr().err
+    assert approvals.classify(
+        ["docs/a.md", ".editorconfig"],
+        {"build_inputs": ["src/*"], "non_product": [".editorconfig"], "checks": []},
+    ) == ([], [])
+
+
+def test_without_non_product_an_unrelated_config_file_still_tests() -> None:
+    """The default is unchanged: a path whose effect is unclear tests."""
+    assert approvals.classify(["docs/a.md", ".editorconfig"], {"build_inputs": ["src/*"]}) == (
+        [".editorconfig"],
+        [],
+    )
+
+
+def test_a_diff_touching_a_checks_own_config_still_selects_that_check(
+    worker: dict[str, Any],
+) -> None:
+    """A check's `paths` win over `non_product`, and a build input wins over both."""
+    select = {"build_inputs": ["src/*", "Dockerfile"], "non_product": ["docker/*", "Dockerfile"]}
+    checks = [{"paths": ["docker/*"], "command": "docker"}]
+    assert approvals.classify(
+        ["docs/a.md", "docker/compose.yml"], {**select, "checks": checks}
+    ) == (
+        [],
+        ["docker"],
+    )
+    assert approvals.classify(["Dockerfile"], {**select, "checks": checks}) == (["Dockerfile"], [])
+    worker["start"](DOCKER_SELECT)
+    worker["commit"]("docs/guide.md", ".gitignore", "docker/compose.yml")
+    assert approvals.main(["affected-tests"]) == 0
+    assert worker["ran"]() == ["docker"]

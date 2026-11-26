@@ -118,12 +118,16 @@ def test_the_cloud_is_the_default_and_none_opts_out() -> None:
 
 
 def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
-    """Every heavy run by any role, in one order, with a lead's own run's recipe (#1119)."""
-    rule = section_of((LOOP / "SKILL.md").read_text(), "Where heavy steps run")
+    """Every run by any role, in one order, with a lead's own run's recipe (#1119, #2469)."""
+    skill = (LOOP / "SKILL.md").read_text()
+    assert "\n## Where work runs\n" in skill
+    rule = section_of(skill, "Where work runs")
     for run in (
+        "All loop work runs in the cloud: the lead, the worker and the verifier, whatever the step.",
         (
-            "implementation, the gate, the verifier's test and mutation runs, proof runs, and a"
-            " lead's own suite, build and e2e runs"
+            "A physical host is used only when the step needs that machine: a device, an Apple"
+            " build, production or a deploy, host-held secrets or a login, or a repo not allowed"
+            " in the cloud."
         ),
         "the only place placement is stated",
     ):
@@ -146,19 +150,18 @@ def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
     assert "`omnigent_agent.py claude-cloud-run [--checkout DIR] -- <command>`" in rule
     assert "exits with the command's own code" in rule
     assert "PreToolUse hook" in rule and "`LOOP_HOST_RUN=<reason>`" in rule
-    assert "launch-dir" not in rule.split("A lead's own heavy run")[1].split("\n")[0]
+    assert "launch-dir" not in rule.split("A lead's own run")[1].split("\n")[0]
     for role in ("lead.md", "worker.md", "verifier.md", "proof-run.md"):
         text = " ".join((LOOP / role).read_text().split())
-        assert "SKILL.md, Where heavy steps run" in text, role
+        assert "SKILL.md, Where work runs" in text, role
         assert (
             "else `claude-cloud`" not in text and "under the start's capacity check" not in text
         ), role
     lead = " ".join((LOOP / "lead.md").read_text().split())
-    assert "each heavy run that did not go to the cloud with where it went and why" in lead
+    assert "each run that did not go to the cloud with where it went and why" in lead
     assert (
-        "Every other heavy run, a worker's or your own (a build, an e2e run),"
-        " goes where SKILL.md, Where heavy steps run says, which also gives your own run's recipe"
-        in lead
+        "Every other run, a worker's or your own (a build, an e2e run),"
+        " goes where SKILL.md, Where work runs says, which also gives your own run's recipe" in lead
     )
 
 
@@ -215,11 +218,12 @@ def test_owner_questions_end_the_turn_rather_than_wait_in_a_tool() -> None:
         .split()
     )
     lead = " ".join((LOOP / "lead.md").read_text().split())
-    assert "Ask as text at the end of your turn" in cos
+    # the chief of staff asks on a card where it has one, and as text otherwise
+    assert "ask as text at the end of your turn" in cos
+    assert "Never use a tool that waits for the answer" in cos
     assert "as text that ends your turn `USER NEEDED`" in lead
+    assert "through a tool that waits for the answer" in lead
     for text in (cos, lead):
-        # lead.md says "Never ask through …"
-        assert "through a tool that waits for the answer" in text
         assert "(Claude Code's AskUserQuestion, Codex's requestUserInput)" in text
 
 
@@ -255,3 +259,19 @@ def test_the_verifier_runs_tests_through_the_project_s_test_task() -> None:
     assert (
         "A selection of more than half the suite runs as the whole suite" not in verifier
     )  # #1872
+
+
+def test_no_loop_file_sorts_work_into_heavy_and_light_runs() -> None:
+    """One placement rule, no classification: no heavy or light run, no old section name (#2469)."""
+    # ponytail: the host gate slot ("heavy" step, approvals.py heavy) and heavy_run_guard.py
+    # with its LOOP_HOST_RUN escape keep their names; only the "heavy run" definition goes.
+    old_name = "Where heavy " + "steps run"
+    for path in sorted(LOOP.parents[1].rglob("*")):
+        if path.suffix not in (".md", ".py") or not path.is_file() or "CHANGELOG" in path.name:
+            continue
+        if path.name == "test_engineering_loop.py" or "changelog.d" in path.parts:
+            continue
+        text = " ".join(path.read_text().split())
+        assert old_name not in text, path
+        assert "A heavy run is any of these" not in text, path
+        assert "The light work stays where the lead is" not in text, path

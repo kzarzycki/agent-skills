@@ -127,9 +127,12 @@ def test_apm_and_claude_code_declare_the_same_dependencies(name: str) -> None:
         item["git"].startswith(f"{SLUG}/") and item["ref"].startswith("^")
         for item in apm["dependencies"]["apm"]
     )
-    assert [item["git"].removeprefix(f"{SLUG}/") for item in apm["dependencies"]["apm"]] == (
-        plugin.get("dependencies", [])
-    )
+    assert [
+        item["git"].removeprefix(f"{SLUG}/")
+        for item in apm["dependencies"]["apm"]
+        if item["git"]
+        != f"{SLUG}/engineering-hooks"  # APM only: Claude Code never loaded these hooks
+    ] == plugin.get("dependencies", [])
     assert set(plugin.get("dependencies", [])) <= set(PACKAGES)
 
 

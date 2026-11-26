@@ -12,6 +12,10 @@ future coding-agent adapters.
   gatekeeper, the GitHub tracker, the chief of staff and the Omnigent skills are their own
   packages (`../loop`, `../gatekeeper`, `../github`, `../chief-of-staff`, `../omnigent`), which
   this package depends on for one release line.
+- The pack's Claude Code hooks are `../engineering-hooks`, an APM-only package with `target: claude` that this
+  package depends on: apm 0.36+ sends every hook file in a package to every target it serves and refuses to
+  install hooks that would newly reach Codex, so a hook file here would break two-target consumers (#2683).
+  `engineering/tests/test_two_target_install.py` installs the pack on apm 0.30.0, 0.33.0 and the newest.
 - Owned overlays, canonical under `overlays/skills/<name>/` and reproduced into
   `skills/<name>/`: every tuned imported skill (listed under `owned_overlays` in
   `upstream.yml`).

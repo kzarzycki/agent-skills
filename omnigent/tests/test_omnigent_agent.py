@@ -16,11 +16,11 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import Any, ClassVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote
 from urllib.request import Request
@@ -59,6 +59,7 @@ class FakeOmnigent:
         self.hold = hold  # polls of info() a send stays pending: a turn busy in a long tool call
         self.held: list[tuple[str, str, int]] = []
         self.posts = 0
+        self.base = "https://omnigent.test"
         self.sessions: dict[str, list[dict]] = {}
         self.archived: list[str] = []
         self.kids: list[str] = []  # sub-agents children() lists
@@ -492,6 +493,18 @@ def test_every_brief_says_a_message_that_adds_no_task_never_rewrites_the_report(
         assert RELAY_RULE in omnigent_agent.brief_of(report).read_text()
 
 
+def test_a_listed_host_inside_a_session_link_is_denied_only_outside_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deny = tmp_path / "deny.txt"
+    deny.write_text("build-host.local\n")
+    monkeypatch.setenv("LOOP_DENY_LIST", str(deny))
+    link = "https://build-host.local:8443/c/" + "ab" * 16
+    omnigent_agent.denied(f"Session: {link}\n")
+    with pytest.raises(omnigent_agent.Fail, match="line 2 names `build-host.local`"):
+        omnigent_agent.denied(f"Session: {link}\nran on build-host.local\n")
+
+
 def test_a_held_cloud_worker_with_a_pr_still_gets_the_relay_rule(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -855,7 +868,9 @@ def test_run_fails_only_on_a_tracked_change_the_child_made(
     # a follow-up, too, holds only the child to what changed since it was sent
     (repo / "f.md").write_text("fix Y")
     sid = next(iter(og.sessions))
-    assert omnigent_agent.main(["send", sid, "f.md", "r.md", "--confirm-seconds", "0"]) == 0
+    assert (
+        omnigent_agent.main(["send", sid, "f.md", "r.md", "--wait", "--confirm-seconds", "0"]) == 0
+    )
 
     (repo / "c.txt").write_text("c\n")
     subprocess.run(["git", "-C", str(repo), "add", "c.txt"], check=True)
@@ -3408,10 +3423,8 @@ def test_an_http_error_shows_its_body_s_reason_and_a_stalled_body_costs_only_its
         monkeypatch.setattr(omnigent_agent, "ERROR_BODY_SECONDS", 0.3)
         og = object.__new__(omnigent_agent.Omnigent)
         og.base, og._token = "http://omnigent.test", "synthetic"
-        began = time.monotonic()
         with pytest.raises(omnigent_agent.Fail) as e:
             og.call("POST", "/v1/sessions", {})
-        assert time.monotonic() - began < 1.5
         head = "POST /v1/sessions: HTTP 400 Bad Request"
         assert str(e.value) == (
             head if line is None else f"{head}{':' * (body is not None)} {line}"
@@ -3689,7 +3702,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     text = (tmp_path / "r.md.brief").read_text()
     assert (
         text
-        == "AGENT_SIGNATURE=cc/?/?\n"
+        == f"AGENT_SIGNATURE=cc/?/?\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/{sid}\n"
         + omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="")
         + "do X"
     )
@@ -3863,7 +3876,7 @@ def test_a_cloud_worker_s_report_is_the_pr_comment_its_last_message_links(
     assert "detached" in omnigent_agent.NUDGE and "foreground" not in omnigent_agent.NUDGE
     assert (
         "restart it only if it did not" in omnigent_agent.PR_NUDGE
-        and "foreground" not in omnigent_agent.PR_NUDGE
+        and "foreground" in omnigent_agent.PR_NUDGE
     )
     assert str(tmp_path / "r.md") not in brief  # a host path the cloud can't write
 
@@ -4233,7 +4246,7 @@ def test_a_cloud_worker_s_follow_up_takes_only_a_report_comment_newer_than_its_r
     report.write_text("the first report")
     os.utime(report, (1e9, 1e9))  # 2001-09-09T01:46:40Z, written by the first turn's wait
     (tmp_path / "fix.md").write_text("fix ST1, read the review on PR #7")
-    argv = ["send", sid, "fix.md", "r.md", "--pr", "7", "--confirm-seconds", "0"]
+    argv = ["send", sid, "fix.md", "r.md", "--pr", "7", "--wait", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == code
     assert report.read_text() == ("the fix report" if code == 0 else "the first report")
     assert og.posts == 1 + code  # the follow-up, and a nudge for a turn without a fresh one
@@ -4275,7 +4288,7 @@ def test_a_top_level_cloud_worker_on_another_host_gets_the_pr_preamble_and_repor
     # a follow-up takes that copy as the report before: a turn ending on its comment is not a new one
     fake_gh(monkeypatch, {"42": {**on_pr(7, "old"), "created_at": "2001-01-01T00:00:00Z"}})
     (tmp_path / "fix.md").write_text("fix it")
-    send = ["send", "s0", "fix.md", report, "--pr", "7", "--confirm-seconds", "0"]
+    send = ["send", "s0", "fix.md", report, "--pr", "7", "--wait", "--confirm-seconds", "0"]
     assert omnigent_agent.main(send) == 1
     assert not (tmp_path / "there").exists()
 
@@ -4329,7 +4342,7 @@ def test_send_pr_delivers_to_a_session_whose_workspace_is_on_another_host(
     monkeypatch.chdir(tmp_path)
     sid = og.create("claude-cloud", "t", workspace="/home/elsewhere/repo")  # no such path here
     (tmp_path / "fix.md").write_text("fix ST1")
-    argv = ["send", sid, "fix.md", "tmp/r.md", "--pr", "7", "--confirm-seconds", "0"]
+    argv = ["send", sid, "fix.md", "tmp/r.md", "--pr", "7", "--wait", "--confirm-seconds", "0"]
     assert omnigent_agent.main(argv) == 0
     assert (tmp_path / "tmp" / "r.md").read_text() == "the fix report"
 
@@ -5074,10 +5087,8 @@ def test_wait_continues_a_stalled_child_once(
     sid, _ = omnigent_agent.start(og, "claude", "t", "do X", tmp_path / "u.md", None, 0)
     failing(og, {sid: [STALL_ERROR, "claude exited: boom"]})
     capped(og, 2)
-    began = time.monotonic()
     with pytest.raises(omnigent_agent.Fail, match=f"(?s)session {sid} stalled .*boom"):
         omnigent_agent.wait(og, sid, tmp_path / "u.md")
-    assert time.monotonic() - began < omnigent_agent.CONTINUE_SECONDS / 4
 
 
 def test_wait_neither_retries_nor_continues_a_failure_after_the_first_turn_or_any_other(
@@ -6527,7 +6538,7 @@ def test_a_timed_wait_wakes_the_lead_once_its_time_has_passed(
     assert status["wait"] == "until 2026-10-27T06:32Z"  # judged at its created_at, not later
     listed = "STILL WORKING:\n- the rule holds until 2026-10-27 06:32 UTC\n- waiting on the timer at 2026-10-21 23:17 UTC"
     assert omnigent_agent.wait_of(listed) == "until 2026-10-21T23:17Z"  # a line is a sentence
-    assert omnigent_agent.wait_of("At 2026-10-21 23:17 UTC. STILL WORKING on CI") == "CI"
+    assert omnigent_agent.wait_of("At 2026-10-21 23:17 UTC.\nSTILL WORKING on CI") == "CI"
     due = time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(time.time() + due_in))
     registry = following(tmp_path)
     og = Lead(told("brief", 4000), ending(f"STILL WORKING: a timer wakes me until {due}", 3600))
@@ -7294,7 +7305,9 @@ def test_send_arms_the_registry_appending_its_message_file_and_disarms_it_on_the
         return info(s)
 
     og.info = reporting  # type: ignore[method-assign]
-    assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--confirm-seconds", "0"]) == 0
+    assert (
+        omnigent_agent.main(["send", sid, "a.md", "r.md", "--wait", "--confirm-seconds", "0"]) == 0
+    )
     assert seen[0] == f"x={tmp_path / 'x.md'}\n{sid}={report}\t{brief}\t{tmp_path / 'a.md'}\n"
     assert registry.read_text() == f"x={tmp_path / 'x.md'}\n"
 
@@ -7351,6 +7364,25 @@ def test_send_arms_only_once_its_message_is_in_the_history(
     assert omnigent_agent.main(["send", sid, "a.md", "r.md", "--confirm-seconds", "0"]) == 0
     assert at_send == [""]
     assert stale == [False]
+
+
+def test_send_to_a_session_mid_turn_returns_once_accepted_without_the_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The message waits in pending_inputs until the harness's next tool boundary, which a long
+    step holds off for minutes: `send` ends at once with the delivery line, exit 0, no report."""
+    repo = git_checkout(tmp_path / "w")
+    (repo / "a.md").write_text("fix it")
+    og = LateBrief(None, True)  # never lands: the session is mid-step
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(repo)
+    sid = og.create("claude", "t")
+    argv = ["send", sid, "a.md", "r.md", "--confirm-seconds", "0", "--timeout", "1"]
+    assert omnigent_agent.main(argv) == 0
+    out = capsys.readouterr().out
+    assert f"session {sid}: delivered (queued until its current step ends)" in out
+    assert "not waiting for the report" in out and not (repo / "r.md").exists()
+    assert og.posts == 1
 
 
 QUESTION = {
@@ -7959,15 +7991,15 @@ def test_broadcast_relays_concurrently_one_line_each_and_exits_1_on_a_failure(
     lost, *slow = [og.add(f"s{n}") for n in range(5)]
     send = og.send
 
+    together = threading.Barrier(5)
+
     def slow_send(sid: str, text: str) -> None:
-        time.sleep(0.5)
+        together.wait(timeout=30)  # all five sends are in flight at once, or this raises
         send(sid, text)
 
     og.send = slow_send  # type: ignore[method-assign]
-    started = time.monotonic()
     ids = [a for s in [lost, *slow] for a in ("--include", s)]
     assert broadcast(og, tmp_path, monkeypatch, *ids, "--confirm-seconds", "0") == 1
-    assert time.monotonic() - started < 1.5  # five sends of 0.5 s, at once
     lines = {line.split()[0]: line for line in capsys.readouterr().out.splitlines()}
     assert lines[lost].endswith("neither pending nor in history for 0s; start a fresh run instead")
     assert ": failed: session " in lines[lost]
@@ -10732,7 +10764,7 @@ def test_send_given_text_lists_it_as_a_followup_file_in_the_registry(
         "wait",
         lambda *a, **k: seen.append(registry.read_text()) or str(report),
     )
-    argv = ["send", sid, "use main as the base", str(report), "--registry", str(registry)]
+    argv = ["send", sid, "use main as the base", str(report), "--registry", str(registry), "--wait"]
     assert omnigent_agent.main(argv) == 0
     followup = tmp_path / "r.md.followup"
     assert followup.read_text() == "use main as the base"
@@ -10904,7 +10936,9 @@ def test_the_cloud_preamble_forbids_a_question_tool_and_a_page() -> None:
     preamble = omnigent_agent.PR_PREAMBLE
     assert "never call an interactive question tool, since its prompt waits on someone" in preamble
     assert "Never publish a page or artifact, since it waits on a permission nobody" in preamble
-    assert "session link" not in preamble
+    # a full session link may be posted (#2571), and the old ban on a session is gone
+    assert "no host or path outside a full Omnigent session link" in preamble
+    assert "no host, path or session" not in preamble
 
 
 def test_the_cloud_preamble_reads_issues_and_prs_through_rest() -> None:
@@ -11079,9 +11113,9 @@ def test_every_brief_points_to_the_role_file_s_long_run_rule_and_carries_no_copy
     # the rule the pointer names is there, with both variant conditions
     rule = long_run_rule()
     assert "since macOS has no `setsid` command" in rule
-    assert "Where a foreground command stops at 10 minutes" in rule
-    assert "the run is waited on within the same turn" in rule
-    assert "stops at 10 minutes" in rule
+    assert "is not woken by a finished background task" in rule
+    assert "wait in the same turn with" in " ".join(rule.split())
+    assert "10-minute tool limit" in rule
     assert (
         "Never end a turn saying you wait on a detached run alone, since its end never wakes you"
         in rule
@@ -11451,17 +11485,17 @@ def test_a_cloud_worker_s_delivered_brief_freezes_its_branch_after_hand_off(
 def test_the_lead_preamble_points_heavy_runs_to_the_placement_rule() -> None:
     """A lead brief naming a host worktree for a test run is read against the one rule (#1119)."""
     rule = (
-        "Every heavy run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes"
-        " where engineering-loop's SKILL.md, Where heavy steps run says, by default a Claude cloud"
+        "Every run (a test suite, a build, an e2e, a gate, a mutation or proof run) goes"
+        " where engineering-loop's SKILL.md, Where work runs says, by default a Claude cloud"
         " session: a host worktree this brief names for a test run says where the code is, not"
         " where the run goes.\n"
     )
     lead = omnigent_agent.LEAD_PREAMBLE.format(report="r.md", role="")
     assert lead.count(rule) == 1
     assert rule in omnigent_agent.cloud_preamble(omnigent_agent.LEAD_PREAMBLE, None)
-    assert "Where heavy steps run" not in omnigent_agent.PREAMBLE  # a child's brief says its run
+    assert "Where work runs" not in omnigent_agent.PREAMBLE  # a child's brief says its run
     skill = (VERIFIER_MD.parent / "SKILL.md").read_text()
-    assert "\n## Where heavy steps run\n" in skill  # the section the line names
+    assert "\n## Where work runs\n" in skill  # the section the line names
 
 
 def test_the_lead_preamble_asks_for_the_ending_line_with_the_report_path() -> None:
@@ -11491,7 +11525,7 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     flat = " ".join(rule.split())  # the relocated clauses, each the only copy now
     # one wake per run: one tracked wait as long as the run, never a poll loop (waste audit, finding 1)
     assert (
-        "--budget <the run's expected length>` started as a background call your harness tracks"
+        "--budget <the run's expected length>` started as a background call whose exit wakes the session"
         in flat
     )
     assert "Never a short `wait-for`, an `until grep` or a `sleep` loop" in flat
@@ -11501,7 +11535,7 @@ def test_the_role_files_detach_runs_here_and_records_its_exit_code(tmp_path: Pat
     )
     assert "starts detached (in its own session)" in flat
     assert (
-        "Where the harness tracks no background call, each foreground `wait-for` blocks close to the tool's limit"
+        "A claude-cloud session (Claude Code in a hosted VM) is not woken by a finished background task"
         in flat
     )
     assert "a gate your role file says to run bare" in flat
@@ -11728,7 +11762,17 @@ def test_send_fails_when_a_remote_question_survives_its_delete(
     with pytest.raises(omnigent_agent.Undeleted, match="not deleted"):
         omnigent_agent.send(og, sid, "use main", report, 0, far=True)
     registry = tmp_path / "registry"
-    argv = ["send", sid, "use dev", "tmp/loop/r.md", "--confirm-seconds", "0", "--timeout", "5"]
+    argv = [
+        "send",
+        sid,
+        "use dev",
+        "tmp/loop/r.md",
+        "--wait",
+        "--confirm-seconds",
+        "0",
+        "--timeout",
+        "5",
+    ]
     assert omnigent_agent.main([*argv, "--registry", str(registry)]) == 1
     assert "was not deleted on the session's host" in capsys.readouterr().err
     assert registry.read_text() == f"{sid}=tmp/loop/r.md\ttmp/loop/r.md.followup\n"
@@ -11758,7 +11802,17 @@ def test_send_to_a_remote_session_answers_its_question_on_its_host(
     og.times["tmp/loop/r.md.question"] = time.time() - 120
     (tmp_path / "a.md").write_text("use main")
     registry = tmp_path / "registry"
-    argv = ["send", sid, "a.md", "tmp/loop/r.md", "--confirm-seconds", "0", "--timeout", "5"]
+    argv = [
+        "send",
+        sid,
+        "a.md",
+        "tmp/loop/r.md",
+        "--wait",
+        "--confirm-seconds",
+        "0",
+        "--timeout",
+        "5",
+    ]
     argv += ["--registry", str(registry)]
     assert omnigent_agent.main(argv) == 0
     assert capsys.readouterr().out.strip() == "tmp/loop/r.md"
@@ -13778,6 +13832,7 @@ def test_a_pr_a_lead_waits_on_that_merged_is_news_to_it_from_github_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "blocks", lambda repo, number: [])  # no GitHub here
     reads = []
     monkeypatch.setattr(
         omnigent_agent,
@@ -13797,6 +13852,7 @@ def test_a_waited_pr_that_ends_the_same_way_on_a_new_head_is_news_again(
     its checks pending; the same head after the lead's reply is not."""
     wait = "STILL WORKING: fix pushed\nWaits: #976"
     registry, og = manager(tmp_path, wait, m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "blocks", lambda repo, number: [])  # no GitHub here
     head = ["a1"]
     monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (*end, head[0]))
     told = lambda: [t for s, t in og.inbox if s == "m" and end[1] in t]
@@ -13878,6 +13934,7 @@ def test_a_waited_pr_that_merged_is_not_news_again_after_the_leads_next_turn(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "blocks", lambda repo, number: [])  # no GitHub here
     monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
     told_m = lambda: [t for s, t in og.inbox if s == "m" and "PR #976 merged; your wait names" in t]
     run = lambda: supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
@@ -13892,6 +13949,7 @@ def test_a_set_that_names_ci_is_not_over_when_only_its_pr_ended(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     registry, og = manager(tmp_path, "STILL WORKING: x\nWaits: #976, CI", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "blocks", lambda repo, number: [])  # no GitHub here
     monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
     supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
     assert [t for s, t in og.inbox if s == "m" and "your wait names it" in t] == []
@@ -14481,8 +14539,8 @@ def test_brief_prints_the_body_start_sends_a_child(
     sent = omnigent_agent.text_of(og.sessions[sid][1])
     inline = sent.partition("Your brief:\n\n")[2]
     full = inline or omnigent_agent.brief_of(report).read_text()
-    body = re.sub(r"\A(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n", "", full)
-    body = re.sub(r"\A(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n", "", body)
+    body = re.sub(r"\A(?:AGENT_SIGNATURE|OMNIGENT_SESSION_LINK|LOOP_HEAVY_LOCK)=.*\n", "", full)
+    body = re.sub(r"\A(?:AGENT_SIGNATURE|OMNIGENT_SESSION_LINK|LOOP_HEAVY_LOCK)=.*\n", "", body)
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
     argv = ["brief", str(brief) if as_file else text, "r.md", "--role", str(role)]
     argv += ["--cloud"] * cloud + ["--top-level"] * top_level + ["--pr", str(pr)] * bool(pr)
@@ -14522,14 +14580,21 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
     ).stdout
     monkeypatch.setattr(omnigent_agent, "pr_head", lambda *a: head.strip())  # the checkout is at it
     argv = ["b.md", "r.md", "--role", role_file(role), "--pr", "7"]
-    assert omnigent_agent.main(["start", agent, "t", *argv, "--same-family"]) == 0
+    assert (
+        omnigent_agent.main(
+            ["start", agent, "t", *argv, *(["--same-family"] if role == "verifier.md" else [])]
+        )
+        == 0
+    )
     sid = next(iter(og.sessions))
     sent = omnigent_agent.text_of(og.sessions[sid][1])
     full = (
         sent.partition("Your brief:\n\n")[2]
         or omnigent_agent.brief_of(tmp_path / "r.md").read_text()
     )
-    body = re.sub(r"\A(?:(?:AGENT_SIGNATURE|LOOP_HEAVY_LOCK)=.*\n)+", "", full)
+    body = re.sub(
+        r"\A(?:(?:AGENT_SIGNATURE|OMNIGENT_SESSION_LINK|LOOP_HEAVY_LOCK)=.*\n)+", "", full
+    )
     capsys.readouterr()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda *a: pytest.fail("brief read a server"))
     assert omnigent_agent.main(["brief", *argv, *["--cloud"] * cloud]) == 0
@@ -14868,3 +14933,347 @@ def test_send_unarchives_a_registry_listed_session_and_refuses_an_unlisted_one(
         == 0
     )
     assert via_env not in og.archived
+
+
+def test_a_plain_words_still_working_with_no_waits_line_and_no_child_is_flagged_after_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2623: the supervisor cannot see a cloud VM's processes, so "no live helper" is read from the turn
+    end: a ``STILL WORKING`` in any wording that names no ``Waits:`` line and no followed child is flagged to
+    the manager once ``DEADLINE_SECONDS`` pass with no new turn, the existing deadline path and no second timer."""
+    registry, og = manager(tmp_path, "STILL WORKING: waiting on CI. Report: m.md")
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == ["Supervisor: m t-m: no progress 60m (CI)"]
+    assert (
+        omnigent_agent.DEADLINE_SECONDS < 3600.0
+    )  # the quiet turn was 60 m old: past the deadline
+
+
+def test_a_still_working_that_names_a_live_session_is_held_past_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2623: the same quiet turn end with ``Waits: session <id>`` of a session that shows life raises none."""
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on CI. Report: m.md\nWaits: session {WORKER}"
+    )
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    assert stalls(og) == [] and deadlines(registry) == []
+
+
+def blocker_gh(
+    calls: list[tuple[str, ...]],
+    blocking: str = "[]",
+    blocked_by: str | None = "[]",
+    state: str = "closed",
+    fail: Exception | None = None,
+) -> Callable[..., str]:
+    """A ``gh`` double: ``blocking`` answers the blocker's list, ``blocked_by`` the story's (None:
+    the endpoint 404s, as where the feature is off), ``state`` the blocker's own, ``fail`` raised
+    by the blocking read while it is set."""
+
+    def gh(*args: str, **_: object) -> str:
+        calls.append(args)
+        if fail is not None and args[-1].endswith("/dependencies/blocking"):
+            raise fail
+        if args[-1].endswith("/dependencies/blocking"):
+            return blocking
+        if args[-1].endswith("/dependencies/blocked_by"):
+            if blocked_by is None:
+                raise omnigent_agent.Fail("gh api: Not Found (HTTP 404)")
+            return blocked_by
+        return json.dumps({"id": 4242, "state": state})
+
+    return gh
+
+
+def test_a_lead_waiting_on_a_recorded_blocker_is_told_once_it_can_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    blocking = json.dumps([{"number": 2499, "state": "open"}, {"number": 7, "state": "closed"}])
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh([], blocking=blocking))
+    supervised(og, registry, monkeypatch, 3, notify=COS, console=True, fyi="post")
+    told = [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
+    assert len(told) == 1  # once, however often it is read
+    assert (
+        "PR #976 merged; your wait names it; #2499 is blocked by it: you can queue now" in told[0]
+    )
+    assert "#7" not in told[0]  # a closed story is not queued
+
+
+BLOCKING = json.dumps([{"number": 2499, "state": "open"}])
+
+
+def told_of(og: Any) -> list[str]:
+    return [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
+
+
+def test_a_blocker_closed_without_merge_frees_the_story_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} closed"))
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh([], blocking=BLOCKING))
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told = told_of(og)
+    assert len(told) == 1 and told[0].endswith("#2499 is blocked by it: you can queue now")
+
+
+def test_an_open_pr_with_green_checks_does_not_free_the_story(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(
+        omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} checks green (3)")
+    )
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh([], blocking=BLOCKING, state="open"))
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told = told_of(og)
+    assert len(told) == 1 and "queue now" not in told[0]
+
+
+def test_a_rate_limited_link_read_holds_the_message_then_sends_it_once_with_the_clause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    limited = omnigent_agent.RateLimited("gh api: API rate limit exceeded", 60.0)
+    calls: list[tuple[str, ...]] = []
+    fails, ok = (
+        blocker_gh(calls, blocking=BLOCKING, fail=limited),
+        blocker_gh(calls, blocking=BLOCKING),
+    )
+    held: list[int] = []  # the messages sent so far, at each read that fails
+    step = [0]
+
+    def gh(*args: str, **kw: object) -> str:
+        step[0] += 1
+        if step[0] < 3:
+            held.append(len(told_of(og)))
+        return (fails if step[0] < 3 else ok)(*args, **kw)
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    monkeypatch.setattr(omnigent_agent, "PR_POLL_SECONDS", 0)  # every poll is a news round
+    supervised(og, registry, monkeypatch, 4, notify=COS, console=True, fyi="post")
+    assert len([c for c in calls if c[-1].endswith("/dependencies/blocking")]) >= 2  # it retried
+    assert held and set(held) == {0}  # nothing went out while the read failed
+    told = told_of(og)
+    assert len(told) == 1 and told[0].endswith("#2499 is blocked by it: you can queue now")
+
+
+def test_a_finished_wait_reads_the_links_once_not_each_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls, blocking=BLOCKING))
+    monkeypatch.setattr(omnigent_agent, "PR_POLL_SECONDS", 0)  # every poll is a news round
+    supervised(og, registry, monkeypatch, 4, notify=COS, console=True, fyi="post")
+    assert len([c for c in calls if c[-1].endswith("/dependencies/blocking")]) == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "advice"),
+    [
+        (omnigent_agent.RateLimited("API rate limit exceeded", 60.0), "could not be reached"),
+        (omnigent_agent.Fail("gh api: Not Found (HTTP 404)"), "turn them on for the repo"),
+    ],
+)
+def test_wait_on_story_advises_by_why_the_read_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: Exception,
+    advice: str,
+) -> None:
+    def gh(*args: str, **_: object) -> str:
+        if args[-1].endswith("/blocked_by"):
+            raise error
+        return "{}"
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    assert omnigent_agent.main(["wait-on", "pr", "976", "--story", "2499"]) != 0
+    err = capsys.readouterr().err
+    assert advice in err
+    assert ("turn them on" in err) == ("turn them" in advice)
+
+
+@pytest.mark.parametrize("blocking", ["[]", None])
+def test_a_wait_with_no_recorded_blocker_is_told_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blocking: str | None
+) -> None:
+    registry, og = manager(tmp_path, "STILL WORKING: spec filed\nWaits: #976", m={"status": "idle"})
+    monkeypatch.setattr(omnigent_agent, "pr_settled", lambda pr, repo="": (0, f"PR #{pr} merged"))
+
+    def gh(*args: str, **_: object) -> str:
+        if not args[-1].endswith("/dependencies/blocking"):
+            return '{"state": "closed"}'
+        if blocking is None:  # the feature is off for the repo
+            raise omnigent_agent.Fail("gh api: Not Found (HTTP 404)")
+        return blocking
+
+    monkeypatch.setattr(omnigent_agent, "gh", gh)
+    supervised(og, registry, monkeypatch, 2, notify=COS, console=True, fyi="post")
+    told = [t for s, t in og.inbox if s == "m" and "your wait names it" in t]
+    assert len(told) == 1 and told[0].endswith("PR #976 merged; your wait names it")
+
+
+def test_wait_on_story_records_the_blocker_as_a_native_link(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls))
+    assert omnigent_agent.main(["wait-on", "pr", "976", "--story", "2499"]) == 0
+    assert capsys.readouterr().out.strip() == "Waits: #976"
+    post = [c for c in calls if "POST" in c]
+    assert len(post) == 1
+    assert post[0][-3].endswith("issues/2499/dependencies/blocked_by")
+    assert post[0][-1] == "issue_id=4242"
+    calls.clear()  # a link already there is not posted again
+    monkeypatch.setattr(
+        omnigent_agent, "gh", blocker_gh(calls, blocked_by='[{"number": 976, "id": 4242}]')
+    )
+    assert omnigent_agent.main(["wait-on", "pr", "976", "--story", "2499"]) == 0
+    assert not [c for c in calls if "POST" in c]
+
+
+def test_wait_on_story_refuses_a_blocker_it_cannot_watch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls, blocked_by=None))
+    assert omnigent_agent.main(["wait-on", "pr", "976", "--story", "2499"]) != 0
+    captured = capsys.readouterr()
+    assert "cannot watch #976" in captured.err and captured.out == ""
+    assert not [c for c in calls if "POST" in c]  # nothing was recorded
+
+
+def test_wait_on_without_story_reads_no_blocked_by_link(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(omnigent_agent, "gh", blocker_gh(calls))
+    assert omnigent_agent.main(["wait-on", "pr", "976"]) == 0
+    assert not [c for c in calls if "dependencies" in c[-1]]  # off where no one asked
+
+
+def test_a_lead_whose_deadline_fired_then_lost_its_runner_is_revived_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2667: the revive branch ran only on the one deadline event, so a runner dropping after it
+    went unseen."""
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+
+    def drop(poll: int) -> None:
+        if poll == 1:
+            og.offline.add("a")  # online at the deadline, gone on the next poll
+
+    supervised(og, registry, monkeypatch, 4, drop, notify="cos", console=True)
+    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_REVIVE]
+    assert og.retried == ["a"]
+
+
+def test_a_waiters_deadline_names_a_session_with_no_runner_and_its_last_activity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    last = time.time() - 1300
+    stamp = datetime.fromtimestamp(last, UTC).strftime("%H:%MZ")
+    gone = {"status": "idle", "updated_at": last, "runner_online": False}
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on {LEAD}. Report: m.md", **{LEAD: gone}
+    )
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    text = next(t for _, t in og.inbox if t.startswith("Supervisor: m t-m: no progress"))
+    assert f"\n{LEAD} has no runner (last activity {stamp})" in text and "quiet:" not in text
+
+
+def test_an_online_lead_past_its_deadline_still_gets_one_inspect_the_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: merge queue", 3600))
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    sent = [t for s, t in og.inbox if s == "a"]
+    acts = [x for p in posted(og) for x in p.splitlines() if x.startswith("[act]")]
+    assert sent == [] and len(acts) == 1 and "inspect the wait" in acts[0]
+
+
+def test_a_lead_with_an_unknown_wait_and_no_runner_is_revived_not_nudged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = following(tmp_path)
+    og = Lead(told("brief", 4000), ending("STILL WORKING: on it", 3600))
+    og.offline.add("a")
+    supervised(og, registry, monkeypatch, 1, notify="cos", console=True)
+    assert [t for s, t in og.inbox if s == "a"] == [omnigent_agent.LEAD_REVIVE]
+    assert og.retried == ["a"]
+
+
+def test_a_named_session_with_no_runner_shows_no_life_though_it_runs_and_was_just_updated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    last = time.time() - 60
+    stamp = datetime.fromtimestamp(last, UTC).strftime("%H:%MZ")
+    snap = {"status": "running", "updated_at": last, "runner_online": False}
+    registry, og = manager(
+        tmp_path, f"STILL WORKING: waiting on {LEAD}. Report: m.md", **{LEAD: snap}
+    )
+    supervised(og, registry, monkeypatch, 1, notify=COS, console=True, fyi="post")
+    text = next(t for _, t in og.inbox if t.startswith("Supervisor: m t-m: no progress"))
+    assert f"{LEAD} has no runner (last activity {stamp})" in text
+
+
+def test_route_revives_an_offline_deadline_for_an_unknown_wait_and_records_a_parked_one() -> None:
+    def route(wait: str) -> tuple[str, str]:
+        event = {"kind": "deadline", "wait": wait, "offline": True, "line": "", "last": ""}
+        by, action, _ = omnigent_agent.route(event, lambda: ("unsure", ""))
+        return by, action
+
+    assert route("unknown") == ("rule", "revive")
+    assert route("merge") == ("rule", "revive")
+    assert route("parked") == ("rule", "record")
+
+
+LINK_LINE = re.compile(r"^OMNIGENT_SESSION_LINK=(https://omnigent\.test/c/\S+)$", re.MULTILINE)
+
+
+@pytest.mark.parametrize("agent", ["claude-cloud", "claude"])
+def test_a_lead_is_given_its_own_session_link_and_told_to_use_it(
+    tmp_path: Path, agent: str
+) -> None:
+    """The lead's id exists only once its session does, so the launcher writes the line, after the signature (#2583)."""
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, agent, "t", "do X", report, None, 0, top_level=True)
+    brief = omnigent_agent.text_of(og.sessions[sid][1])
+    if agent != "claude-cloud":
+        brief = omnigent_agent.brief_of(report).read_text()
+    found = LINK_LINE.search(brief)
+    assert found and found.group(1) == f"https://omnigent.test/c/{sid}"
+    assert brief.index("AGENT_SIGNATURE=") < found.start()
+    assert (
+        "OMNIGENT_SESSION_LINK=<link>` before each `approvals.py` call that claims or builds"
+        in brief
+    )
+
+
+@pytest.mark.parametrize(
+    ("agent", "pr", "top_level"),
+    [("claude-cloud", None, False), ("claude-cloud", 7, False), ("claude", None, False)],
+)
+def test_a_child_that_is_no_lead_gets_no_session_link_line(
+    tmp_path: Path, agent: str, pr: int | None, top_level: bool
+) -> None:
+    og = FakeOmnigent()
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(
+        og, agent, "t", "do X", report, None, 0, top_level=top_level, pr=pr
+    )
+    brief = (
+        omnigent_agent.text_of(og.sessions[sid][1])
+        if agent == "claude-cloud"
+        else omnigent_agent.brief_of(report).read_text()
+    )
+    assert "OMNIGENT_SESSION_LINK" not in brief

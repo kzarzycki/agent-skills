@@ -15,18 +15,34 @@ if __name__ != "__main__":
 
 def installed(skill: str) -> Path:
     """The scripts folder of `skill`, which another package ships, found by the host's install layout: a sibling
-    skill folder (APM's one skills directory), a sibling plugin's (this repo, or a marketplace Claude Code loads in
-    place), a native plugin APM deployed to the project's `.agents/plugins/`, else the newest version of a plugin in
-    Claude Code's cache (`<marketplace>/<plugin>/<version>/`) that no update has orphaned. Exits naming the skill to
-    install when none holds it."""
+    skill folder (APM's one skills directory), a sibling plugin's (a marketplace Claude Code loads in place), a
+    native plugin APM deployed to the project's `.agents/plugins/`, else the newest version of a plugin in Claude
+    Code's cache (`<marketplace>/<plugin>/<version>/`, beside the script or in `~/.claude/plugins/cache`) that no
+    update has orphaned. A developer checkout of the pack (a git tree holding the marketplace file) is never
+    searched, since it can sit on any branch: it counts only where AGENT_SKILLS_CHECKOUT is set, as the pack's own
+    tests set it, or the checkout is the GITHUB_WORKSPACE of the CI job running there. Exits naming the skill to install when none holds it."""
     # ponytail: four layouts, the ones APM and Claude Code use; a host with another adds its glob here.
+    import os
+
     own = Path(__file__).resolve().parents[1]
     plugin = own.parent.parent
-    cached = plugin.parent.parent.glob(f"[!.]*/[!.]*/skills/{skill}")
+    root = plugin.parent
+    checkout = (root / ".git").exists() and (root / ".claude-plugin" / "marketplace.json").is_file()
+    # the pack's own CI runs in the workspace its job checked out: that checkout is the repo it runs in, not a stale clone
+    workspace = os.environ.get("GITHUB_WORKSPACE")
+    laid = (
+        not checkout
+        or bool(os.environ.get("AGENT_SKILLS_CHECKOUT"))
+        or bool(workspace and Path(workspace).resolve() == root)
+    )
+    cached = [
+        *(root.parent.glob(f"[!.]*/[!.]*/skills/{skill}") if laid else []),
+        *(Path.home() / ".claude" / "plugins" / "cache").glob(f"[!.]*/[!.]*/[!.]*/skills/{skill}"),
+    ]
     for folder in [
-        own.parent / skill,
-        *sorted(plugin.parent.glob(f"[!.]*/skills/{skill}")),
-        *sorted(plugin.parent.glob(f".agents/plugins/*/skills/{skill}")),
+        *([own.parent / skill] if laid else []),
+        *(sorted(root.glob(f"[!.]*/skills/{skill}")) if laid else []),
+        *(sorted(root.glob(f".agents/plugins/*/skills/{skill}")) if laid else []),
         *sorted(cached, key=lambda path: path.stat().st_mtime, reverse=True),
     ]:
         if (folder / "SKILL.md").is_file() and not (folder.parents[1] / ".orphaned_at").exists():
@@ -37,7 +53,18 @@ def installed(skill: str) -> Path:
 
 
 skill = "omnigent-agents"
-target = installed(skill) / "omnigent_agent.py"
+# run from a pack checkout (#2670), the sibling skill is the code of the checkout this runs in: installed() skips a
+# checkout it merely finds, so the one this forwarder sits in is taken here, outside the resolver copies kept identical
+root = Path(__file__).resolve().parents[4]
+beside = root / "omnigent" / "skills" / skill
+if (
+    (root / ".git").exists()
+    and (root / ".claude-plugin" / "marketplace.json").is_file()
+    and (beside / "SKILL.md").is_file()
+):
+    target = beside / "scripts" / "omnigent_agent.py"
+else:
+    target = installed(skill) / "omnigent_agent.py"
 print(
     f"orchestrating-agents/scripts/omnigent_agent.py is deprecated: run the `{skill}` skill's scripts/{target.name}",
     file=sys.stderr,

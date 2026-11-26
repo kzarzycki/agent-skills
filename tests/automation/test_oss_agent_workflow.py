@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -15,7 +17,7 @@ FILES = ("oss-agent.yml", "oss-agent-selftest.yml")
 MODEL_KEY = "NVIDIA_NIM_API_KEY"
 # the steps that may hold the job token: the push probe and the draft PR
 TOKEN_STEPS = {"The job token cannot push", "Open the draft PR"}
-PUBLISH_COMMANDS = {"git"}
+PUBLISH_COMMANDS = {"git", "if", "then", "fi", "exit"}
 PUBLISH_SUBSTITUTIONS = {"gh", "git", "head", "printf"}
 
 
@@ -196,9 +198,151 @@ def test_publish_job_runs_nothing_from_the_patch() -> None:
     assert publish_command_violations(WORKFLOW) == []
     runs = _runs(PUBLISH)
     patch_lines = [line.strip() for line in runs.splitlines() if "patch" in line]
-    assert patch_lines == ['git am "$RUNNER_TEMP/patch/agent.patch"']
+    assert patch_lines == ['git am "$RUNNER_TEMP/agent/agent.patch"']
     # nothing executes from the checkout: no interpreter, build tool or path
     assert not re.search(r"\b(bash|sh|source|make|npm|npx|uv|python3?|node)\b|\./", runs)
+
+
+def _run_push_step(tmp_path: Path, push_output: str) -> subprocess.CompletedProcess:
+    """Run the `Apply and push` script with a git whose push fails with `push_output`."""
+    step = next(s for s in PUBLISH["steps"] if s.get("name") == "Apply and push")
+    fake = tmp_path / "bin" / "git"
+    fake.parent.mkdir()
+    fake.write_text(f'#!/bin/bash\n[ "$1" = push ] || exit 0\necho "{push_output}" >&2\nexit 1\n')
+    fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake.parent}:{os.environ['PATH']}",
+        "BRANCH": "oss-agent/run-1-1",
+    }
+    env["RUNNER_TEMP"] = str(tmp_path)
+    return subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_header_names_the_branch_creation_requirement() -> None:
+    header = _text("oss-agent.yml").split("name: OSS agent")[0]
+    assert "refs/heads/oss-agent/**" in header
+    assert "restricts branch creation" in header
+
+
+def test_a_gh013_push_names_the_ruleset_requirement(tmp_path: Path) -> None:
+    out = _run_push_step(
+        tmp_path, "remote: error: GH013: Cannot create ref due to creations being restricted."
+    )
+    assert out.returncode != 0
+    assert "GH013: Cannot create ref" in out.stdout  # the raw push output stays
+    assert "refs/heads/oss-agent/**" in out.stdout
+    assert "oss-agent/run-1-1" in out.stdout
+
+
+def test_another_push_failure_keeps_its_own_output(tmp_path: Path) -> None:
+    out = _run_push_step(tmp_path, "fatal: unable to access: 403")
+    assert out.returncode != 0
+    assert "fatal: unable to access: 403" in out.stdout
+    assert "GH013" not in out.stdout
+
+
+def _run_pr_step(tmp_path: Path, tests: str, issue: str, tail: str | None) -> str:
+    """Run the `Open the draft PR` script with a fake gh and return the body it wrote for the PR."""
+    step = next(s for s in PUBLISH["steps"] if s.get("name") == "Open the draft PR")
+    fake = tmp_path / "bin" / "gh"
+    fake.parent.mkdir()
+    fake.write_text(
+        '#!/bin/bash\ncp "${@: -1}" "$RUNNER_TEMP/seen-body.md"\necho https://example.test/pr/1\n'
+    )
+    fake.chmod(0o755)
+    (tmp_path / "agent").mkdir()
+    if tail is not None:
+        (tmp_path / "agent" / "tests.txt").write_text(tail)
+    env = {
+        **os.environ,
+        "PATH": f"{fake.parent}:{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_OUTPUT": str(tmp_path / "out"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        "BRANCH": "oss-agent/run-1-1",
+        "BASE_BRANCH": "main",
+        "TASK": "fix the thing",
+        "MODEL": "m",
+        "TESTS": tests,
+        "ISSUE": issue,
+        "RUN_URL": "https://example.test/run",
+    }
+    done = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return (tmp_path / "seen-body.md").read_text()
+
+
+def test_pr_body_closes_the_issue_and_holds_evidence_for_the_gate(tmp_path: Path) -> None:
+    body = _run_pr_step(tmp_path, "passed", "2626", None)
+    assert "\nCloses #2626\n" in body
+    evidence = re.search(r"^## Evidence\n(.*?)(?=^## |\Z)", body, re.DOTALL | re.MULTILINE)
+    assert evidence and "passed" in evidence.group(1)
+    assert "The tail of its output" not in body
+
+
+def test_pr_body_without_an_issue_or_with_a_junk_one_has_no_closes_line(tmp_path: Path) -> None:
+    assert "Closes" not in _run_pr_step(tmp_path, "not run", "", None)
+    other = tmp_path / "second"
+    other.mkdir()
+    assert "Closes" not in _run_pr_step(other, "not run", "1; rm -rf /", None)
+
+
+def test_pr_body_of_a_failed_test_command_carries_the_output_tail(tmp_path: Path) -> None:
+    body = _run_pr_step(tmp_path, "failed", "7", "FAILED test_x - assert 1 == 2\n")
+    evidence = re.search(r"^## Evidence\n(.*?)(?=^## |\Z)", body, re.DOTALL | re.MULTILINE)
+    assert evidence
+    assert "failed" in evidence.group(1)
+    assert "FAILED test_x - assert 1 == 2" in evidence.group(1)
+
+
+def test_tests_step_keeps_only_the_tail_of_a_failure(tmp_path: Path) -> None:
+    step = next(s for s in AGENT["steps"] if s.get("id") == "tests")
+    env = {
+        **os.environ,
+        "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_OUTPUT": str(tmp_path / "gh-out"),
+        "TEST_COMMAND": "seq 1 500; exit 3",
+    }
+    subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]], env=env, capture_output=True, check=True
+    )
+    assert "result=failed" in (tmp_path / "gh-out").read_text()
+    tail = (tmp_path / "out" / "tests.txt").read_text()
+    assert tail.splitlines()[-1] == "500"
+    assert len(tail.splitlines()) <= 60
+    passing = tmp_path / "ok"
+    passing.mkdir()
+    env |= {
+        "RUNNER_TEMP": str(passing),
+        "GITHUB_OUTPUT": str(passing / "gh-out"),
+        "TEST_COMMAND": "true",
+    }
+    subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", step["run"]], env=env, capture_output=True, check=True
+    )
+    assert "result=passed" in (passing / "gh-out").read_text()
+    assert not (passing / "out" / "tests.txt").exists()
+
+
+def test_header_documents_the_push_permission_and_the_pr_form() -> None:
+    header = _text("oss-agent.yml").split("name: OSS agent")[0]
+    assert "contents: write" in header
+    assert "Bypass list" in header
+    assert "Closes #<issue>" in header
+    assert "## Evidence" in header
 
 
 def test_selftest_runs_the_dry_run_only() -> None:

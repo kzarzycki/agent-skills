@@ -261,3 +261,15 @@ def test_a_callers_base_never_narrows_a_plain_pass_recorded_under_the_full_gate(
     assert "MY_BASE" not in approvals.gate_env({"sets": {}})
     _, _, with_proof = approvals.gate(["GATE_BASE"])
     assert approvals.gate_env({"sets": with_proof})["GATE_BASE"] == "abc"
+
+
+def test_a_record_run_with_no_affected_tests_line_records_nothing(worker: dict[str, Any]) -> None:
+    """`affected_tests`' docstring: a run with no `Affected tests:` line records nothing (#2361). The project's full
+    check runs, but no record branch is pushed and `gate-record` finds none for the head."""
+    worker["set_loop"]("# Loop\n\n")
+    worker["commit"]("app.py", "value = 2\n")
+    assert approvals.main(["affected-tests", "--record"]) == 0
+    repo = worker["repo"]
+    assert git_in(repo, "ls-remote", "--heads", "origin", "refs/heads/loop-gate/*").strip() == ""
+    head = git_in(repo, "rev-parse", "HEAD").strip()
+    assert approvals.main(["gate-record", head]) == 1

@@ -19,7 +19,7 @@ it (the `gatekeeper` skill's policy.md, Opting out); no step runs for their chan
 | **Intent.** File the request as an issue; read it and the code it touches; ask the owner only at a fork, or park the issue for them. | building the wrong thing |
 | **Spec.** Written into the intent's issue for the owner, then approved (`approved:spec`, the ready state); the PR closes it, or implements it where the owner signs it off. | a decision the owner never saw |
 | **Build.** Workers, or the lead when delegating costs more than it saves, always under the worker's rules. | nothing: the one step that scales |
-| **Gates.** On each head, the worker runs only the tests the PR affects: loop.md's `Affected tests:` selection (`approvals.py affected-tests`; lint ran in the commit hook), else `mise run test:changed` (worker.md, Gates and push), behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot). No full suite runs on the PR, and no gate of record but the worker's one `local-ci --record` on its final head, which the PR's CI and the verifier read instead of running that command again (A check runs only if it can fail because of the change, R1): without a merge queue the verifier's e2e proof is the last run before the merge; with one, the queue's batch check runs after it, on the merged tree, and only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change). The nightly runs the full suite (Merge model). | a broken change |
+| **Gates.** On each head, the worker runs only the tests the PR affects: loop.md's `Affected tests:` selection (`approvals.py affected-tests`; lint is the CI `lint` job's, on every push, since a cloud session ran no commit hook), else `mise run test:changed` (worker.md, Gates and push), behind a host gate slot that exports `GATE_JOBS` (Rules, One heavy gate per host slot). No full suite runs on the PR, and no gate of record but the worker's one `local-ci --record` on its final head, which the PR's CI and the verifier read instead of running that command again (A check runs only if it can fail because of the change, R1): without a merge queue the verifier's e2e proof is the last run before the merge; with one, the queue's batch check runs after it, on the merged tree, and only what R6 selects, the unkeyed checks and the cross-change tests with the floor (A check runs only if it can fail because of the change). The nightly runs the full suite (Merge model). | a broken change |
 | **Proof.** The spec's Before merge list on the PR branch before review, then its After merge list (checks that need the merged default branch or a deployed environment) after landing: each new result against a reference the code did not produce. | works in tests, not in use |
 | **Verify.** A fresh verifier, of the other model family where one is available, up to the cap (The cap). | the author's blind spots |
 | **Land**, clean up everything the run created, then report. | a disk full of finished runs |
@@ -122,7 +122,7 @@ repo's `project_type` into a scratch directory with `copier copy` and copy the r
   when a token runs out.
 
 Hooks are git hooks, installed by `mise run setup:dev`; no check runs from a coding agent's
-harness hook. A commit runs the `lint:` tasks on the staged files, and a push runs
+harness hook. A commit runs the `lint:` tasks on the staged files (a cloud session skips it, so the CI's `lint` job on every PR push is the lint that always runs: R1), and a push runs
 `check:secrets` and the worker's one affected-test run (`approvals.py affected-tests`, else `test:changed`: worker.md, Gates and push), which the worker doesn't run a second time. The proofs stay off the push, because a push is
 reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, and
 `loop:approvals merge` on ready PRs in CI.
@@ -131,6 +131,58 @@ A PR stays a draft until no core finding is open, bar the cap's majors (Review t
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) runs have no draft.
+
+#### Moving a repo onto the rule set
+
+A repo keeps only what really differs per repo: its loop configuration, the `docs/agents/gatekeeper.md`
+block (step 2) and the `Affected tests:`, `Acceptance tests:` and `Acceptance budget:` lines in `loop.md`.
+Anything else repo-local that implements a loop rule is a copy to delete (step 3), since a rule fix in the
+pack reaches a copy only by hand and each copy drifts on its own. A repo's migration story is then the
+release tag, the config block and one row per deleted file with its kind from step 3, and links here.
+
+1. **Install the pack at a release tag.**
+   - `apm.yml` pins `kzarzycki/agent-skills/engineering` to an `engineering-v*` tag; `apm install` writes
+     `.claude/` and `.agents/`. Renovate or a scheduled `apm update` moves the pin.
+   - Delete what reads the pack another way: a host checkout path, a vendored copy of a pack directory, a
+     script that copies skill files in.
+   - `apm audit` shows no local edit to a deployed skill. A needed change goes upstream as an agent-skills
+     issue.
+2. **State the project's facts in `docs/agents/gatekeeper.md`.** The rules are the pack's; the repo supplies
+   only its facts:
+
+   | Key | What the repo says | Rule |
+   |---|---|---|
+   | `land.queue` | `mergify`, `github`, or none | R6 |
+   | `land` batch keys | batch size and wait, or per-PR | R6 |
+   | `select.layers` | which paths are docs, agent config, CI config, infra; which checks each reaches | R2 |
+   | `select.build_inputs` | lock files, toolchain pins, test-runner config, and the affected-test selector's own code and map: a change to the selector can't be judged by the selector it changes, so it runs the whole suite | R3 |
+   | `select.unkeyed` | checks every PR head runs | R1 |
+   | `select.shards` | optional, only where runners allow | R3 |
+   | `timeouts` | `test` and `run` | every run's limit |
+
+   `docs/agents/loop.md` names the selector, `Affected tests: <command>` (R3), and, where the project has
+   acceptance checks, `Acceptance tests: <command>` and `Acceptance budget: <spec minutes>, <nightly minutes>`.
+3. **Delete the local copies, by kind.**
+
+   | Kind | What it looks like | Replaced by |
+   |---|---|---|
+   | Selector | a script that maps changed paths to tests, or a path-filter file read by repo code | the pack's `affected-tests` with its fallback to the narrowest set it can name; paths move to `select` |
+   | Red rerun | a script or workflow step that reruns failed tests or a failed job | R5 |
+   | Queue selection | a queue job that reruns each PR's own tests or the whole suite | the cross-change set with the floor (R6) |
+   | Push run | a run on main for a tree the queue tested | R7 |
+   | Nightly | an unconditional cron, or a repo-local "main moved" guard | the pack's nightly (R7) |
+   | Release or tag run | a full-suite run on a tagged tree the queue or nightly already tested | a read of the record (R1) |
+   | Hook | a pre-push hook that runs product tests | the recorded head run (R1) |
+   | Limits | per-test timeouts, job `timeout-minutes`, queue timeouts set by hand | `timeouts` |
+   | Carry rule | prose in `loop.md` saying when a result carries to a new tree | R1 |
+   | Duplicate skill text | a second copy of a pack skill under another path | one path |
+
+   Keep only the loop configuration from step 2, plus the project's own check commands (`check:*` tasks and
+   the like), which are the product's checks, not loop rules. A file that decides when, where or how often a
+   check runs is a loop rule: if it isn't step 2's configuration, it's a copy to delete.
+
+After a migration, the repo's loop-specific content is the `gatekeeper.md` block and the `Affected tests:`,
+`Acceptance tests:` and `Acceptance budget:` lines, and nothing else.
 
 #### A check runs only if it can fail because of the change
 
@@ -148,11 +200,11 @@ A check can fail again on inputs that look identical when it reads something out
 
 The rule is stated in inputs and results only, so it needs no language or tool. What a project knows about its own checks goes in gatekeeper.md: which files are build inputs (`select.build_inputs` and `checks`), which environment names a check reads (`local_ci_env`), and which checks are unkeyed (`select.unkeyed`).
 
-When the loop can't tell whether a check's inputs changed, it treats them as changed. An affected-test selector that can't tell exactly which tests a change touches runs the narrowest set it can still name, never nothing: a precise selector that can't run (no per-test map, no testmon data, a base git can't resolve) falls back to the next coarser selection, a base to the merge base with the default branch; a test-setup file (a `conftest.py`) runs the tests under its directory; a file a test reads by path runs that test; a file no test names runs its package's or directory's tests; a build input (`select.build_inputs`) runs the whole suite. It selects zero only when `select` puts every changed path in a layer whose checks reach no product test, and says so in one line: `0 selected: <layer>`.
+When the loop can't tell whether a check's inputs changed, it treats them as changed. An affected-test selector that can't tell exactly which tests a change touches runs the narrowest set it can still name, never nothing: a precise selector that can't run (no per-test map, no testmon data, a base git can't resolve) falls back to the next coarser selection, a base to the merge base with the default branch; a test-setup file (a `conftest.py`) runs the tests under its directory; a file a test reads by path runs that test; a file no test names runs its package's or directory's tests; a build input (`select.build_inputs`) runs the whole suite. It selects zero only when `select` puts every changed path in a layer whose checks reach no product test, and says so in one line: `0 selected: <layer>`. A selection over half the suite runs as picked (#1872), and the run's record says `0 selected: <layer>`, the narrowed record still keyed `select.checks: none`.
 
 Each derived rule follows from the one above.
 
-- **R1. Once per tree.** No test set runs again on a tree it passed on, or on a tree whose difference from it the test set can't read. A pass is a gatekeeper record keyed by tree and command, run in the environment `local_ci_env` fixes (`local-ci --record`, `gate-record`), never a log or status someone wrote. Where: worker (push hook and affected-test run are one run), PR CI on ready, a merge of the base or a reword that changes nothing the tests read, the queue, the verifier, the push run on main after the queue tested that tree.
+- **R1. Once per tree.** Lint is no test set: a PR head always runs lint and format checks on its changed files, with no tests and no build (a lint-only task, a required check that reports on every push, drafts included), and a gate record skips it only when the record shows lint ran on that tree: a record of the tests alone proves no lint, since a cloud session ran no commit hook. About 1 minute of Actions time a push. No test set runs again on a tree it passed on, or on a tree whose difference from it the test set can't read. A pass is a gatekeeper record keyed by tree and command, run in the environment `local_ci_env` fixes (`local-ci --record`, `gate-record`), never a log or status someone wrote. Where: worker (push hook and affected-test run are one run), PR CI on ready, a merge of the base or a reword that changes nothing the tests read, the queue, the verifier, the push run on main after the queue tested that tree.
 - **R2. Scope by what the change touches.** A diff that cannot reach the product (agentic layer, skills, docs, CI config outside the gating job) runs no product suite; it runs the checks of the layer it touches (the `checks` entries of `select`). A file `select` doesn't classify counts as a build input, so the product's affected tests run for it. Where: worker, PR CI, queue, the verifier's pass on an instructions change.
 - **R3. Affected tests only, selected by what a test executes.** The selector picks tests whose executed files or functions changed, from a per-test map the nightly builds; name matching is the fallback where there is no map. It diffs against the right base (the merge commit's first parent on a PR run). Where: worker, queue, nightly-built map.
 - **R4. A fix round runs only what the round's diff reaches.** A test or proof that passed on the previous head and whose inputs the round didn't change is known. The selection for a fix round diffs against the last head its run passed on, not the PR's base. Where: worker fix rounds, the lead's stale-proof check before a pass, the verifier's later passes (acceptance checks and repros the delta reaches, plus every repro still `NOT FIXED`).
@@ -160,7 +212,7 @@ Each derived rule follows from the one above.
 - **R6. The merge queue runs only the cross-change check.** A test that only the PR's diff reaches passed on the PR's head with the same inputs; a test only the base's new commits reach is the base's, not this PR's. The queue runs the `select.unkeyed` checks and the tests that the PR's diff and the rest of the merge (the base's commits since the PR's tested base, the other PRs in the entry) both reach. The floor: a PR in the entry with no record for its tree (R1) of loop.md's `Affected tests:` command, a run of its selected tests (the worker's `affected-tests --record` on its final head), adds its own affected tests (a record of the gate alone proves no test, and without that line every PR's own tests run), so an empty set passes only when every PR has a record. The refusal: a queue run that would run nothing on a PR with no record is refused, the queue merges only on a check its test step sets once it ran its selection, so a path that skips that step merges nothing and says why, and the local queue's `land`, which no queue run tests, refuses a head with no record of that same `Affected tests:` run (`gate-record <head> -- <the narrowed command>`), naming the `affected-tests --record` that makes one; a project with no narrowed run (no `Affected tests:` line, `Gate: full`, `gate_steps`) reads its gate's record (`local-ci --record`) there, since its gate is the run that tests the PR. Without a per-test map it falls back to the entry's affected tests, saying so and why. Batch size, wait time or one PR per entry are the project's, in gatekeeper.md's `land` block (`batch_size`, `batch_wait_seconds`), from which the pack renders the queue's config (`approvals.py queue-config`). Where: GitHub's and Mergify's queue batch check, which runs the commands `approvals.py queue-select [<base>]` prints for the batch checked out at HEAD, one per line, each to pass: the unkeyed checks, then the floor, so a project whose selection is a command rather than a per-test map runs R6 as shipped; it exits 1 with the reason under the refusal above. The local queue runs no test today and stays so.
 - **R7. After the merge, only a tree nobody tested runs.** The push run on main skips a commit whose tree the queue already tested; the nightly runs only when main moved since its last green, and then runs the full suite, which stays the guard against what the selector misses. Where: step 9's read of main's push run, the nightly.
 
-A head rated at a level whose gatekeeper.md `levels.<level>.rerun` is on (by default `high` and `critical`) merges only on a rerun of its selection where the worker has no control, not on the worker's record (the gatekeeper skill's policy.md, Independent rerun).
+A head rated at a level whose gatekeeper.md `levels.<level>.rerun` is on (off by default at every level) merges only on a rerun of its selection where the worker has no control, not on the worker's record (the gatekeeper skill's policy.md, Independent rerun).
 
 **Merge model.** Each role runs its tests under the rule above (A check runs only if it can fail because of the change):
 
@@ -180,13 +232,13 @@ A head rated at a level whose gatekeeper.md `levels.<level>.rerun` is on (by def
 - Owner-only merges (`risk.critical_paths`, and a project's own owner-only paths) stay as Approvals and proof
   says: the owner's go is on the head that lands.
 
-Narrowed mode is loop.md's `Affected tests: <command>` line without the opt-out line `Gate: full`. Its command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, as one task (such as `mise run check-fast`), reading the base from the `Gate base:` variable, else `GATE_BASE`. It selects from the diff against that base and from nothing else the pack provides: it runs on a clean checkout, often a fresh clone, a cloud VM or a CI runner, with only the base variable set. A selector that can't tell which tests a change touches (a stateful selector such as pytest-testmon without its local data file, or a `<rev>` git can't resolve, such as the all-zeros SHA of a new branch) runs the narrowest set it can still name, as A check runs only if it can fail because of the change says, and never nothing for a change it can't classify. A stateful selector says in the project's `docs/agents/` files how the project supplies its state (CI caching it keyed on the base commit, say). The worker runs it as `uv run <gatekeeper>/scripts/approvals.py affected-tests`, against the merge base with the branch's base (the commit hook's `lint:` tasks ran at commit); a merge queue's batch check runs `affected-tests --base <rev>` with the base tip the batch merges onto, so it selects over the batch's combined diff. The `gate` line's variable assignments do not apply to the narrowed command: a project writes any variable its checks need on the `Affected tests:` line itself. With `Gate: full`, a merge queue's batch check runs the full check instead of the selection.
+Narrowed mode is loop.md's `Affected tests: <command>` line without the opt-out line `Gate: full`. Its command is the whole narrowed check: the project's selector plus its cheap whole-repo lint and type checks, as one task (such as `mise run check-fast`), reading the base from the `Gate base:` variable, else `GATE_BASE`. It selects from the diff against that base and from nothing else the pack provides: it runs on a clean checkout, often a fresh clone, a cloud VM or a CI runner, with only the base variable set. A selector that can't tell which tests a change touches (a stateful selector such as pytest-testmon without its local data file, or a `<rev>` git can't resolve, such as the all-zeros SHA of a new branch) runs the narrowest set it can still name, as A check runs only if it can fail because of the change says, and never nothing for a change it can't classify. A stateful selector says in the project's `docs/agents/` files how the project supplies its state (CI caching it keyed on the base commit, say). The worker runs it as `uv run <gatekeeper>/scripts/approvals.py affected-tests`, against the merge base with the branch's base (the commit hook's `lint:` tasks ran at commit, where a cloud session has no hook: the CI `lint` job lints every push, R1); a merge queue's batch check runs `affected-tests --base <rev>` with the base tip the batch merges onto, so it selects over the batch's combined diff. The `gate` line's variable assignments do not apply to the narrowed command: a project writes any variable its checks need on the `Affected tests:` line itself. With `Gate: full`, a merge queue's batch check runs the full check instead of the selection. The pre-queue run is that same selection and nothing narrower: the worker's proof before `READY FOR VERIFIER` and the verifier's own run are the `Affected tests:` command (`approvals.py affected-tests`), run in the queue's environment so that a root rule test the PR did not change, and a test that reads where it runs, fail before the PR is queued, never "the changed test files" (#2455; whether `check build` or `land` refuses a head with no recorded run is left to the project's policy).
 
 The risk of this model is a main that breaks between nightlies: a test the selector misses (a data file, config, a script run as a subprocess), or two PRs each green alone that break together where no queue tests them together. Its guard is the nightly's full suite: on red, `nightly.py red` opens one issue naming the merges since the last green (Nightly), from which a lead bisects and lands a fix or a revert through the loop. Without the `Affected tests:` line, the worker runs `mise run test:changed`, and `approvals.py check build` says in one line that the line is missing (not under `Gate: full`, which chose it).
 
-`approvals.py local-ci --record` records a gate pass by tree, for the cases a project still asks one for (a configured `head_proof`, a `host` step of `gate_steps`, the deprecated `check queue`: Where heavy steps run); the loop runs it on a PR head only in those cases and for the one run a worker makes on its head (worker.md, Report), never as a gate, under `ci: false` too; a ready PR's CI reads that record by the head's tree, not the test merge commit's (the project's CI looks it up with `gate-record <head>`). It runs the merge check, gatekeeper.md's `gate`
+`approvals.py local-ci --record` records a gate pass by tree, for the cases a project still asks one for (a configured `head_proof`, a `host` step of `gate_steps`, the deprecated `check queue`: Where work runs); the loop runs it on a PR head only in those cases and for the one run a worker makes on its head (worker.md, Report), never as a gate, under `ci: false` too; a ready PR's CI reads that record by the head's tree, not the test merge commit's (the project's CI looks it up with `gate-record <head>`). It runs the merge check, gatekeeper.md's `gate`
 (default `mise run check:all`), and a clean, green run records itself by tree in the clone's git dir and pushes it
-to the base repo as the branch `loop-gate/<tree>-<key>`, named by its tree and command, so `local-ci <pr>` at landing
+to the base repo as the branch `loop-gate/<tree>-<key>` (a plain git push, so a cloud session records and publishes with no host credential; a project's own gate script never writes a record, it is `gate` and this call runs it, a red run recording nothing), named by its tree and command, so `local-ci <pr>` at landing
 posts that pass rather than running the check again (with no usable pass it refuses, naming the head, tree, record branch and what was wrong with a record found; `--run` runs the check on this host): in this clone for any commit with the same tree and gate
 command (a rebase or reworded commit keeps its tree), in any other, host or cloud session, from that branch, at every
 risk, through the same code. The branch is the one route a pass travels: the `gate` commit status the run and each
@@ -263,7 +315,7 @@ nightly runs the project's full suite, which holds every spec's acceptance check
 `acceptance/<issue>/` folders; the workflow itself (its schedule, where it runs) is the
 project's. It runs only when the default branch moved since its last green (the newest scheduled
 run that passed, read from the forge): on an unmoved branch it can fail because of no change, so it
-skips and links that run (A check runs only if it can fail because of the change): the nightly's first step calls `python3 <this skill's folder>/scripts/nightly.py moved schedule`, and a push run on the default branch calls `moved push`, which skips a tree a merge queue's batch run already tested. A tag-check job that runs the nightly's suites calls `moved tag` first, which skips them when a green nightly ran the tagged commit (any successful scheduled run of `engineering-ci.yml` on that SHA; the job needs `actions: read`); only the suites the nightly runs are guarded. Each reads the forge with the job's `GITHUB_TOKEN` (`actions: read`), writes `skip=true|false` to `GITHUB_OUTPUT`, names the run it found in the step summary, and runs the checks on any forge failure; `push` reads the batches of the policy's `land.queue` (`mergify`: `mergify/merge-queue/` `pull_request` runs; `github`: `gh-readonly-queue/` `merge_group` runs, so the workflow needs that trigger; unset: both) and says which it read. When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
+skips and links that run (A check runs only if it can fail because of the change): the nightly's first step calls `python3 <this skill's folder>/scripts/nightly.py moved schedule`, and a push run on the default branch calls `moved push`, which skips a tree a merge queue's batch run already tested. A tag-check job that runs the nightly's suites calls `moved tag` first, which skips them when a green nightly ran the tagged commit (any successful scheduled run of `engineering-ci.yml`, or of the workflow file `--nightly <file>` names, on that SHA; the job needs `actions: read`); only the suites the nightly runs are guarded. Each reads the forge with the job's `GITHUB_TOKEN` (`actions: read`), writes `skip=true|false` to `GITHUB_OUTPUT`, names the run it found in the step summary, and runs the checks on any forge failure; `push` reads the batches of the policy's `land.queue` (`mergify`: `mergify/merge-queue/` `pull_request` runs; `github`: `gh-readonly-queue/` `merge_group` runs, so the workflow needs that trigger; unset: both) and says which it read. When it ends red, it calls `uv run <this skill's folder>/scripts/nightly.py red
 --last-green <sha> --red <sha> --run <url>`, with the newest default-branch commit a nightly
 passed on, the one it failed on and the run's link, from a checkout holding the history
 between them. It lists the PRs merged on the default branch since the last green (first-parent
@@ -653,10 +705,10 @@ With `opt_out: true` in gatekeeper.md, a developer may keep their own PRs out of
 loop, by the line `Engineering loop: off` in their personal instructions and nothing on the
 PR. `check merge` then reads a PR with no loop trail (no verifier review, no
 `Approved: spec` record or `approved:spec` on an issue it links, no `Reverts #<n>` line,
-not an exempt bot PR) as outside the loop: it prints one line saying so and exits 0, so the
-`loop:approvals` status is green and the PR's author merges it their usual way, under the
-repo's own rules. `land` leaves it out of every batch and, named, prints the same line and
-exits 1, so no agent merges it. Risk rules and `risk:high` hold no PR outside the loop; the project
+not an exempt bot PR) as outside the loop: it prints one line saying so, naming the proofs it lacks, and exits 1,
+as `land` does for the same PR: `land` leaves it out of every batch and, named, prints the same
+line and exits 1, so no agent merges it and the PR's author merges it their usual way, under the
+repo's own rules. Risk rules and `risk:high` hold no PR outside the loop; the project
 accepts that by setting it. A spec a policy covers is no trail, since under
 `spec.auto: true` every issue is covered. Any trail puts the PR back under every proof. Without
 it, a PR with no trail fails the gate.
@@ -676,28 +728,28 @@ which picks the backend and holds its rules, reports
 and questions as files among them. Inside a worker or
 verifier, review angles run as native subagents, never as full harness sessions.
 
-## Where heavy steps run
+## Where work runs
 
-One rule, for every project, every machine and every role, and the only place placement is stated: role files and briefs point here instead of restating it. A heavy run is any of these, whoever makes it: implementation, the gate, the verifier's test and mutation runs, proof runs, and a lead's own suite, build and e2e runs (rerunning a suite on a branch to sort its failures counts). The light work stays where the lead is: spec, triage, merges, posting, `land`. A heavy run goes, in this order:
+One rule, for every project, every machine and every role, and the only place placement is stated: role files and briefs point here instead of restating it. All loop work runs in the cloud: the lead, the worker and the verifier, whatever the step. A physical host is used only when the step needs that machine: a device, an Apple build, production or a deploy, host-held secrets or a login, or a repo not allowed in the cloud. Work goes, in this order:
 
 1. To a Claude cloud session: the agent the project's `docs/agents/loop.md` names on its `Cloud worker:` line, else `claude-cloud` (Cloud worker), since a cloud session adds only a bridge process to the host. The gate and the verifier run on the same machine as the worker, which shares its checkout and build. The loop.md line `Placement:` sets where the verifier runs: `same machine` (the default when the line is absent), `hosts: <name>, <name>` or `CI`. It replaces the older `Cloud verifier:` and `Verifier hosts:` lines, which keep their meaning where a project still has one; the new line wins. For a host worker the same default means that worker's own host. A worker's machine that can't take the verifier (no Codex login, a PR that needs a Claude verifier) goes to a Codex Cloud thread, then a host.
-2. Else to a host that offers the harness the step needs, under the start's capacity check; with `Cloud worker: none` every heavy run starts here. A `start` in a cloud session without `--host` follows `Placement:`: the first online host it names, and a refusal naming `--host` where it names none, never the host the bridge runs on.
+2. Else to a host that offers the harness the step needs, under the start's capacity check; with `Cloud worker: none` every run starts here. A `start` in a cloud session without `--host` follows `Placement:`: the first online host it names, and a refusal naming `--host` where it names none, never the host the bridge runs on.
 3. A step that needs a particular machine (a production service, a device, an Apple build, a browser login) stays on that machine, and a run the VM is known not to make goes straight to a host.
 
 On a host, the verifier reviews in the worker's own worktree when lead.md step 7's shared-worktree conditions hold, else in a detached worktree of its own; in the cloud and with `Placement: same machine` it already shares the worker's VM.
 
 When a launch fails, for any reason, take the next option on this list: a cloud launch that is refused, whose setup fails twice, or that is out of quota goes to a host (option 2), and a host that refuses, has no capacity or is unreachable passes the run on to the next host. The lead's report says which run went where and why, since a run moved off the cloud loads a host the owner expects to stay free. Never fall back to running the step locally on the host that refused: what a machine accepts is its own configuration, so a refusal is the answer and not an obstacle. If no option is left, stop and report the refusal's text. Which machines may run a project's work is the host's own note (`~/.agents/host.md`), never this rule, which names no machine.
 
-A brief that names a host worktree for a test run says where the code is, not where the run goes: the run still takes the first option above that can make it. A lead's own heavy run takes the cloud route in one call, with no worker or PR needed: commit and push the branch, then orchestrating-agents' `omnigent_agent.py claude-cloud-run [--checkout DIR] -- <command>` (its Omnigent backend has the details), which runs the command in a cloud session on that HEAD, prints the report path and exits with the command's own code; when the cloud route fails it exits 125 and prints why. The engineering pack's PreToolUse hook makes this the default in a Claude Code session on a host with an Omnigent server configured (`RUNNER_SERVER_URL`): in a repo whose loop.md has no `Cloud worker: none` line, it refuses a test or check command (a pytest suite, `mise run check*`/`test*`, `make test`, `npm test`, `cargo test`, `go test`, `local-ci --run`, and the like), naming the `claude-cloud-run` call for it; without a server, which the cloud route needs, it lets the run go ahead and says on one line that it stayed on this machine. The host fallback is the prefix `LOOP_HOST_RUN=<reason>`, which the hook lets through: use it only when `claude-cloud-run` failed, or when the run needs this host (a device, a `host` gate step), and say in the report which run went to the host and why. A child the launcher placed on a host is told to use it, since its placement already chose the host.
+A brief that names a host worktree for a test run says where the code is, not where the run goes: the run still takes the first option above that can make it. A lead's own run takes the cloud route in one call, with no worker or PR needed: commit and push the branch, then orchestrating-agents' `omnigent_agent.py claude-cloud-run [--checkout DIR] -- <command>` (its Omnigent backend has the details), which runs the command in a cloud session on that HEAD, prints the report path and exits with the command's own code; when the cloud route fails it exits 125 and prints why. The engineering pack's PreToolUse hook makes this the default in a Claude Code session on a host with an Omnigent server configured (`RUNNER_SERVER_URL`): in a repo whose loop.md has no `Cloud worker: none` line, it refuses a test or check command (a pytest suite, `mise run check*`/`test*`, `make test`, `npm test`, `cargo test`, `go test`, `local-ci --run`, and the like), naming the `claude-cloud-run` call for it; without a server, which the cloud route needs, it lets the run go ahead and says on one line that it stayed on this machine. The host fallback is the prefix `LOOP_HOST_RUN=<reason>`, which the hook lets through: use it only when `claude-cloud-run` failed, or when the run needs this host (a device, a `host` gate step), and say in the report which run went to the host and why. A child the launcher placed on a host is told to use it, since its placement already chose the host.
 
-Where the orchestration backend is native (no Omnigent), a heavy run's cloud route is orchestrating-agents' `scripts/claude_cloud.py start <task file>`, which pushes the branch and starts the cloud session from any agent's Bash, since a bare `claude --cloud` needs a terminal a subagent lacks. The lead or subagent then waits on the session's results through the branch's PR (`gh pr view`, `gh pr checks`). Where the project's cloud environment is missing, `start` prints one line naming `claude-cloud:setup` and exits 2: the step then runs locally, and the report says so in one line that names `claude-cloud:setup`, since the colleague who has not run it is the one who can fix it.
+Where the orchestration backend is native (no Omnigent), a run's cloud route is orchestrating-agents' `scripts/claude_cloud.py start <task file>`, which pushes the branch and starts the cloud session from any agent's Bash, since a bare `claude --cloud` needs a terminal a subagent lacks. The lead or subagent then waits on the session's results through the branch's PR (`gh pr view`, `gh pr checks`). Where the project's cloud environment is missing, `start` prints one line naming `claude-cloud:setup` and exits 2: the step then runs locally, and the report says so in one line that names `claude-cloud:setup`, since the colleague who has not run it is the one who can fix it.
 
 With a cloud worker, a host makes no gate pass, since the worker's VM already holds the checkout and build and the host's cores run the sessions. No head gets a gate or a CI check before it merges (Merge model), `ci: false` included, so start no cloud session per head just to make a record. The worker's own session makes one on its final head, the run CI then reads instead of running its checks (worker.md, Report). Beyond that run, a head gets a record only in three cases: a configured `head_proof`, by `local-ci --record --head-proof`, since plain `--record` publishes no proof status and `land` stops at the missing proof before it reads CI; the deprecated `check queue`, which needs a reusable pass or an admitted head proof whether or not CI runs (`queueable()`); and a `host` step of `gate_steps`, which a cloud worker never runs. For the first two, when `local-ci <pr>` on a host finds no pass for the head, have the worker run the command above on that head and push its record, then run `local-ci <pr>` again; never `--run` it, or `--record` it, on the host. A `host` step has its own follow-up, since the worker's retry can't make its pass: `local-ci --record` in the VM leaves it unrun and exits 0 with no pass on the whole gate, so pass the step on a host on that head. A `head_proof` in a project with a host step needs both: `local-ci --record --head-proof` returns with the host step left, before it publishes the proof, and `land` stops at the missing proof before it builds a batch, so neither recovers it. Get the host pass on the PR head first, then publish the proof by running `local-ci --record --head-proof` on that head from a host that can run the steps, since only then does it see no step left. One step stays on the host because no cloud pass can cover it: a `host` step of `gate_steps`. A lead that reaches a host step over SSH runs it through orchestrating-agents' `omnigent_agent.py ssh <host> --why <purpose> -- <command>` and posts the card it prints when the host's SSH check asks the owner to approve (its Omnigent backend, Host steps over SSH).
 
 ## Cloud worker
 
 With the loop.md line `Cloud worker: <agent>, gate <task>`, the lead runs on
-the host and the workers run in the cloud, with the verifier in the worker's VM unless `Placement:` says otherwise (Where heavy steps run), as sessions of `<agent>`, a registered
+the host and the workers run in the cloud, with the verifier in the worker's VM unless `Placement:` says otherwise (Where work runs), as sessions of `<agent>`, a registered
 Omnigent agent whose tools run in a cloud VM, which the lead starts. Without the line the
 same holds with `claude-cloud` as the agent and the policy's `gate` as the gate, so a project
 needs no setup before its heavy runs leave the host. The cloud worker's test run is one rule, which overrides that default where loop.md has an `Affected tests:` line: `affected-tests` when loop.md has an `Affected tests:` line, else the `Cloud worker:` line's gate task, else the policy's `gate`. A line that opens `Cloud worker: none`,
@@ -719,7 +771,7 @@ or the owner's private network.
   triage, the fetch and merge (or fast-forward) of each worker's reported branch into the
   PR branch, the instance, the verdict's post, thread
   resolution, `land` and acceptance. The worker's affected-test run (worker.md, Gates and push; on a fix round too)
-  runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; a `local-ci --record` pass it makes (its one run on its final head, worker.md, Report, and where Where heavy steps run needs one: a `head_proof`, `check queue`, a `host` step) is reused by the host's
+  runs in the worker's VM, on its checkout and build; `Placement:` never moves it, since that line places the verifier only; a `local-ci --record` pass it makes (its one run on its final head, worker.md, Report, and where Where work runs needs one: a `head_proof`, `check queue`, a `host` step) is reused by the host's
   `local-ci <pr>`, `check merge` and `land`, while `affected-tests` records nothing. The worker codes and compiles, runs `mise run <task>`,
   its affected tests (what the VM can run: compile, unit tests, headless web tests on its
   Chromium), before each push, and pushes to the `claude/…` branch its session was given,
@@ -727,7 +779,7 @@ or the owner's private network.
   peer's brief is not that; no brief names another push target. A worker's `local-ci --record`
   pass is pushed as its record branch as a host's is, and the host's `local-ci <pr>`,
   `check merge` and `land` reuse it from there, so nobody pastes or copies the record. Its brief names the role
-  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs in the worker's VM by default (Where heavy steps run), else on a host in a detached worktree at the head, or on another host loop.md's `Placement: hosts:` line lists, as lead.md step 7 says.
+  file by its path in the repo, since the host's worktrees and paths don't exist in the VM. The verifier runs in the worker's VM by default (Where work runs), else on a host in a detached worktree at the head, or on another host loop.md's `Placement: hosts:` line lists, as lead.md step 7 says.
 - **The PR is the interface for content.** The code is the worker's pushed branch; reports, logs and verifier output are never pushed, only posted as comments (a file too large for one goes in a follow-up comment, or is trimmed with its path named). Its
   report is one comment on the PR: its branch and head SHA, each light-gate command with its
   exit code, what it left out and why. If the post fails, since the session's proxy-injected
@@ -745,12 +797,12 @@ or the owner's private network.
 - **Control flow is the lead's own.** It starts the worker with `run --pr` (from a
   host without the worker's harness, `start --top-level --host <host> --pr`, then
   `wait --pr`), which keeps the session, and `--no-keep` where it won't be sent to again, follows its turn end, and sends a fix list or a failing log, naming the
-  review or comment to read, to that kept worker with `send --pr` while it is still there,
+  review or comment to read, to that kept worker with `send --pr --wait` while it is still there,
   since a fresh session is a fresh VM, clone and build and a kept one revives with its clone;
   else as a fresh `run --pr`. Nothing in
   the cloud calls the host, through MCP or otherwise, since such a tool can drop mid-run and
   stall the work, and nothing new watches the PR.
-- **Wait on the signal, not the turn.** A cloud worker's gate (its one run on its final head, and where Where heavy steps run needs a record) and verifier post their own
+- **Wait on the signal, not the turn.** A cloud worker's gate (its one run on its final head, and where Where work runs needs a record) and verifier post their own
   end on the PR, so wait on that rather than on the worker's turn, which may end before its run
   does: orchestrating-agents' `omnigent_agent.py wait-for --pr <n> --until gate` settles when
   the PR's current head has a pass (the record branch `local-ci --record` pushes, or a green
@@ -771,8 +823,11 @@ or the owner's private network.
   instance build together, plus at most one compile for the verifier's mutation check, since
   taking builds off the host is the split's point; a worker's iterations compile only in the
   cloud.
-- **Nothing on GitHub names a host or a path**: not the report, the verdict, the evidence or
-  a brief's text quoted there, since a public repo publishes them.
+- **Nothing on GitHub names a host or a path, except an Omnigent session link**: not the report,
+  the verdict, the evidence or a brief's text quoted there, since a public repo publishes them. A
+  session link (`<scheme>://<host>[:port]/c/<32 hex id>`) may go in issues, PRs and comments, and the
+  deny-list check lets a term inside one through; the same host name outside a link, and any
+  filesystem path, still stay off GitHub.
 - **Verifier in the worker's VM.** With `Placement: same machine` (or the old `Cloud verifier: worker session`), the verifier of a
   Claude-written PR is Codex run in the kept worker's VM, in its checkout, so a pass reuses the clone, the
   installed tools, the build and the running containers instead of paying for them again on a host; the sharing a
@@ -789,7 +844,7 @@ or the owner's private network.
   keeping the run (`sys_session_keep`) when it exits non-zero. The script never prints a secret's value, in its own output, a
   traceback or the verifier's, and a refused seed is described by its length, hash and days left, which is how to check one. In the VM, `verify --pr <n> --brief <file>` refuses a tree with uncommitted changes outside the report's folder, checks out the
   PR's head, runs Codex on the brief and posts the report as a PR comment. The worker's session only carries
-  the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr`, asking it to save the
+  the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr --wait`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
@@ -945,6 +1000,7 @@ or the owner's private network.
   for the fix ([#1482](https://github.com/kzarzycki/agent-skills/issues/1482)). Neither the rerun nor that fix adds a
   sleep, a wait loop or a retry to the test itself (R5). A test red on both tries is a real failure: run it on main before blaming
   the PR.
+  A test that fails only under load usually asserts on wall-clock time: the fix is an injected clock (`now`/`sleep` parameter or fake clock) asserted on its own time, and a real-time wait is bounded only by `timeouts.test` (the `tdd` skill, Tests worth keeping).
 - **Known-red tests.** A test red for a reason the PR's diff doesn't explain (it fails the same
   on main, or in a file the change doesn't touch) is skipped, not waived and not listed as an
   expected failure: a list keeps the test running and its cost on every PR, and a waived
@@ -1036,7 +1092,7 @@ or the owner's private network.
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded (`omnigent_agent.py start` refuses a Codex model when the host lists a newer generation). A lead that can't read the
   family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
-  capacity takes the next placement option (Where heavy steps run); with none left it is retried
+  capacity takes the next placement option (Where work runs); with none left it is retried
   later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
   notes, the spec and the PR, never a fork of the old session, since every turn of a fork

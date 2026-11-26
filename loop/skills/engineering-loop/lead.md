@@ -4,13 +4,14 @@ You take the owner's request to merged PRs: one PR per story (an epic's sub-issu
 request itself when it has none), each on its own branch in a worktree of your own
 (loop.md § Worktree), and stories nothing blocks run at the same time. You lead the
 design, wireframes included for a UI, and delegate the rest. You run no test suite: the worker's affected-test run and the
-verifier's e2e proof are the only runs on a head, so read their logs to sort a failure, since a rerun of yours
-doubles the run. Every other heavy run, a worker's or your own (a build, an e2e run), goes where SKILL.md, Where heavy
-steps run says, which also gives your own run's recipe.
+verifier's e2e proof are the only runs on a head (the affected-test run is the pre-queue run: SKILL.md, Narrowed mode), so read their logs to sort a failure, since a rerun of yours
+doubles the run. Every other run, a worker's or your own (a build, an e2e run), goes where SKILL.md, Where work
+runs says, which also gives your own run's recipe.
 Your own check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a pushed head; a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
 Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent, not a helper, and starts as `brief` describes.
+A cloud lead starts its worker through the Omnigent session tools the bridge serves in the VM: `sys_session_create` with an explicit `model` (it fails without one), `sys_session_get_history` for a child's reply and `sys_session_close` to end it. It starts no verifier: it ends its turn with `READY FOR VERIFIER: PR #<n> head <sha>`, and the manager that started it runs the verifier and sends back the verdict, which the lead posts (step 7). `omnigent_agent.py start` needs a server URL and a login the VM lacks, so a cloud lead never calls it.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
 edits and commits of a size M or larger change go to a Sonnet worker (an XS or S change stays with you, step 4): your context is re-read on every call (about 150k
@@ -153,7 +154,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    The brief also names how the worker tests (worker.md, Gates and push): the narrowest check that covers the
    change first, then the tests the PR affects on each head it pushes, never the whole suite and never a gate of
    record, and the e2e tests it writes for the verifier to prove the change with (SKILL.md, Merge model).
-   Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where heavy steps run):
+   Unless loop.md's `Cloud worker:` line says `none`, workers run in the cloud (SKILL.md, Cloud worker, which you wait on through what their runs post on the PR; placement is SKILL.md, Where work runs):
    each pushes its own `claude/…` branch, which you fetch from its report and merge, so its
    brief names no worktree or branch (a branch it names anyway is ignored: the worker pushes to its own `claude/…` branch and reports it).
 5. **After each merge into the PR branch** (resolve conflicts by each side's intent, never
@@ -176,9 +177,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    proof the spec's acceptance needs whose inputs the round changed, since the verifier
    counts it as missing and the pass is spent on it; a proof is stale by its inputs, not
    because its log names another commit (SKILL.md, A check runs only if it can fail because of the change, R4).
-   `git diff --name-only <the head the proof ran on> HEAD` lists what the round changed, to compare with the proof's inputs. Where the verifier runs in the worker's VM (the default, SKILL.md, Where heavy steps run), the pass runs there
+   `git diff --name-only <the head the proof ran on> HEAD` lists what the round changed, to compare with the proof's inputs. Where the verifier runs in the worker's VM (the default, SKILL.md, Where work runs), the pass runs there
    instead of in a host worktree (SKILL.md, Verifier in the worker's VM), with the proof logs named in its
-   brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where heavy steps run.
+   brief and the priorities file already in that checkout (copied there like the logs). Where else it runs is SKILL.md, Where work runs.
    A verifier on a host starts on that pushed
    head (SKILL.md, Independent verification) in a worktree of its own at that head,
    `git worktree add --detach <path> <head>`, listed in your notes, so you keep working in
@@ -224,7 +225,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    labelled `Verifier (<family>), pass <n>`, and a summary carrying its `VERDICT:`,
    `SATISFIED:` and `Risk:` lines. That review is what the merge gate reads. A mixed PR's second
    verifier, running at the same time, gets its own detached worktree the same way. A verifier
-   may instead run on another host loop.md's `Placement: hosts:` line lists (SKILL.md, Where heavy steps run), so its tests and
+   may instead run on another host loop.md's `Placement: hosts:` line lists (SKILL.md, Where work runs), so its tests and
    mutation runs load that host: a top-level session there (orchestrating-agents' Omnigent
    backend, Verifiers on another host) whose `--workspace` holds a clone of the repo, briefed by
    `loop.py brief <pr> --far <that clone>`, which tells it to fetch the head and make its own
@@ -234,7 +235,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    **Verifier route.** Codex is the default verifier whenever it has quota. When it refuses (the quota error
    text goes to the owner at once), `--verifier-route gemini|claude` on the same verifier start, or
    `$OMNIGENT_VERIFIER_ROUTE`, picks the fallback, with the same brief, report format and `verdict` post:
-   `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode, with a model
+   `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode (a lead in a cloud VM can't start it, since the VM has no Omnigent server route: it asks its coordinator to start the Gemini verifier, and `start` refuses at once from the cloud), with a model
    from that host's `agy models` (`gemini-4-hydrogen-medium`; verifier.md's `Verifier:` line names it as
    `agy/<model>/<effort>`), and the PR body's review line says "verifier ran on Gemini (experimental
    fallback)"; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
@@ -263,7 +264,13 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    (step 8) merges only a head the newest verifier review covers. A fix that changes nothing an
    agent or tool reads (prose for people: a README, the changelog, a code comment), a note
    fixed after a satisfied verdict among them, gets a short delta pass: the verifier reviews
-   only the change since the last verdict's head. Instructions are code: a skill, a role
+   only the change since the last verdict's head.
+   A change that cannot alter the product (R2: docs for people, CI config outside the gating
+   job) skips the verifier's proof runs, its builds, e2e and mutation runs, and its review and
+   verdict stay, since `land` merges only on a verdict. The skip never covers instructions,
+   anything a tool parses, the gate's policy, a gating CI job, or a change rated `high` or
+   `critical`, and the PR body says it was used.
+   <!-- ponytail: skipping the review too would need a policy key the gate reads; none exists, so only the proof runs are skipped. --> Instructions are code: a skill, a role
    file or brief, `AGENTS.md` and `CLAUDE.md`, the project's `docs/agents/` files, a prompt,
    and anything a tool parses each need the full verifier pass, still reviewing only the change
    since the last verdict's head. Its "tests" are the checks that change's layer reaches
@@ -276,6 +283,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    waits for the landing rule (SKILL.md):
    - You land your own PRs and never merge `origin/main` into one, stacked or not, unless the gate forces it
      (the next point): a merge of main changes the head, which voids the verifier's verdict and costs another pass.
+   - The pack's push hook refuses a `git push` of a merge of the base into a PR that merges cleanly; when `land` reported a conflict, prefix the push with `LOOP_MERGE_MAIN=<why>`.
    - Update a PR branch by merging its base in (`git merge origin/<base>`, plain push); never rebase or force-push it, and never open a replacement PR.
    - Merge `origin/main` into the PR only when `land` comments that it conflicts with main
      (`Conflicts in the landing batch`): `land` merges each head onto main itself, and a merge
@@ -457,8 +465,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    examples as checked (with a screenshot when there is something to see), ledger lines
    added, findings rejected, issues filed, each issue waiting for their sign-off, each
    agent's model, `verifier: same family`
-   when it was, each heavy run that did not go to the cloud with where it went and why
-   (SKILL.md, Where heavy steps run), and the main instance's link. When your brief names a report path, write
+   when it was, each run that did not go to the cloud with where it went and why
+   (SKILL.md, Where work runs), and the main instance's link. When your brief names a report path, write
    this report there once, at the end: whoever started you takes that file as your final
    report, so keep progress notes in another file.
 
@@ -481,14 +489,14 @@ timeout, a failure) (orchestrating-agents' backends/omnigent.md, One wake per ch
 Your own long runs (a build, a test, a gate, a land, a live check) end in something that wakes you, since a harness
 re-invokes a session only for its own tracked background tasks and a detached pid is none
 (orchestrating-agents, A wait wakes you, or you stay in the turn): a harness-tracked background task, a
-detached run with `LOOP_NOTIFY` set, or one tracked background `wait-for --budget <its expected length>`; never a turn ended on "waiting on pid N",
+detached run with `LOOP_NOTIFY` set, or one tracked background `wait-for --budget <its expected length>` (not in a claude-cloud session, which is not woken when a detached run ends, though a tracked background task has woken one (#2611): it waits in the foreground, each call under 10 minutes, and ends its turn only once the run has ended); never a turn ended on "waiting on pid N",
 a log or, in a cloud session, a subagent of yours, which the supervisor nudges. Detached, they start the same way (verifier.md, A long or locked run is detached)
 with the log, pid and exit code in files, since Claude Code's low-memory reaper stops
 in-session background shells. Start each with `LOOP_NOTIFY` naming your session (omnigent-agents'
 SKILL.md, Waiting on a run or a PR), so its wrapper's `wait-for --notify` step tells you
 how it ended and you end your turn meanwhile; else wait on one with one wake, never a loop of short calls:
 `omnigent_agent.py wait-for --log <log> --pid <pid> --budget <its expected length>`, or `wait-for --pr <n>` for a PR's checks,
-as a background call your harness tracks. Start each with `exec`, or in its own process group under
+as a background call whose exit wakes the session (in a claude-cloud session, a foreground call in the same turn, each under 10 minutes). Start each with `exec`, or in its own process group under
 `trap 'kill 0' EXIT`, since stopping a wrapper shell leaves its command running, gating a target
 you have moved past; count runs with a pattern anchored at the interpreter
 (`pgrep -f '^python3 <script> run'`), since one the wrapper's own command line holds never drops.
@@ -507,7 +515,7 @@ alive before saying so, since a restart kills your background runs. A child stil
 no turn item a few minutes after its start never got its brief: treat it as dead.
 A child that ends its turn saying it waits (for a build, a gate, CI) rather than reporting
 has left no report and will not wake itself: arm such a wait on its process or log, and when it
-fires, ask the child for its report. A worker's recorded gate (where one is needed: SKILL.md, Where heavy steps run) or a verifier run is waited on by what
+fires, ask the child for its report. A worker's recorded gate (where one is needed: SKILL.md, Where work runs) or a verifier run is waited on by what
 it posts on the PR, `wait-for --pr <n> --until gate` or `--until verdict` (orchestrating-agents'
 backends/omnigent.md, Waiting on a run or a PR), never by the worker's turn ending, since the run
 can outlast the turn or die with its machine; one that settles on nothing by the run's usual

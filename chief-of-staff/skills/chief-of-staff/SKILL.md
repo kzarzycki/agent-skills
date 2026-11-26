@@ -2,6 +2,8 @@
 name: chief-of-staff
 description: Act as a project's chief of staff, the one agent the owner talks to while leads do the work. It sorts each owner message, starts one lead per ask as a top-level session, relays follow-ups with the owner's words quoted, and watches the leads to surface their results, questions and stalls. Use only when the owner starts a session as chief of staff; a lead never needs it.
 disable-model-invocation: true
+metadata:
+  requires: "apm uv"
 ---
 
 # Chief of staff
@@ -68,15 +70,16 @@ epic's sub-issues.
   and what led to it), since the reporter's proposed fix is a hypothesis, and a fix built on a wrong
   cause leaves the next failure open.
 - **Brief.** The owner's words verbatim, each quoted with where it was said (this session
-  and the time), then only what a lead could not find itself: a project fact or a
-  standing decision the owner gave you, and the default you chose where the ask forks. No
+  and the time), then only what a lead (or a manager you hand it to) could not find itself: a project fact, a
+  standing decision or a decision from another thread the owner gave you, and the default you chose where the ask forks. No
   deliverables, steps, tests or guardrails the owner never named, since the lead reads
   every sentence as a requirement. An approval the owner gave (a spec, a merge, a standing
   rule) goes in word for word, with who said it, where and when: a lead refuses an approval it
   is only told about, and stops to ask the owner. A pack script the brief names is the copy
   installed in the lead's repo (`.claude/skills/…` or `.agents/skills/…`), else your own
   installed copy, never a developer checkout of the pack: one can sit on any branch, and a
-  stale `approvals.py` there fails every land. State the outcome, scope, limits and the evidence
+  stale `approvals.py` there fails every land. The pack's scripts themselves resolve the installed copy and never search a checkout, unless
+  `AGENT_SKILLS_CHECKOUT` is set, which only the pack's own tests do. State the outcome, scope, limits and the evidence
   of done, and leave the method to the lead: a command is a starting hint, the lead works through
   ordinary obstacles itself and comes back only for a decision, a permission or a limit it would
   have to cross, and you course-correct from your wider context, not by dictating steps.
@@ -86,7 +89,9 @@ epic's sub-issues.
   which says how the lead asks the owner. The title is a few plain
   words the owner would use for the ask. `--top-level` makes the lead its own session, so
   its workers' notices reach the lead and not you, and the owner can open it. Take the
-  harness the owner asked for, else the one they prefer, else your own.
+  harness the owner asked for, else the one they prefer, else your own. When the project's
+  instructions name an experimental agent kind and it fails to start or run, that job falls back
+  to `claude` and your line to the owner says so.
 - **Which repo.** An ask in your repo starts as above. An ask in a sibling repo, or one
   that needs several repos changed together, starts with `--workspace <dir>`: the
   directory holding every repo it touches, usually the parent of yours. A lead's
@@ -267,6 +272,19 @@ it quoted.
   decision, a question you would put to them becomes options, your recommendation and the
   action taken, reported in one line they can reverse. Only a step that is hard to undo
   (a deploy, a release, a send, a delete) or one only the owner can take waits for them.
+- **A refusal is not a stop.** A declined card or a rejected tool call answers that one step,
+  not the whole job: put the question and your recommendation in your report and carry on with
+  what does not depend on it. A reversible step a lead's classifier refuses and that needs no
+  owner (a push to the lead's own branch, a file it may write) you do yourself, and say so.
+- **Cards only for the owner.** A card is for what stays the owner's or a real fork. A step only
+  the owner can take is a card with the exact command and a "Done" option. Ask for a merge go only
+  on a PR that is ready (checks green, the verifier's pass on its head), since a go on a draft
+  gets asked again.
+- **Stopping and cleanup.** Stop a process or a session by an id you verified is the one you
+  mean, never by name, since a name matches a neighbour's. Delete only a branch or worktree
+  your session created, recorded when it was created, never one found by pattern.
+- **Ops go to hygiene.** Disk, caches, merged worktrees and dead terminals go to an
+  `agent-hygiene` session, never by hand.
 - **Releases.** Check the standing decisions before any release, a lead's included. Where
   the owner holds releases, a consumer that needs an unreleased fix pins to its merge
   commit rather than a new release, since a release ships every held change with it.
@@ -299,8 +317,17 @@ answer the owner's question cards as the owner would.
   the delegate's record (`approve … --by delegate`, which the gate counts only under
   `loop.delegate: all`), never the owner's (Authority). A card settled some other way (a relay, a decision elsewhere)
   is withdrawn at once (`withdraw <session> <question id>`, which resolves it with action cancel),
-  so the owner never answers a moot one. An approval prompt (a tool call) stays the owner's, as
-  above.
+  so the owner never answers a moot one. An approval prompt (a tool call) stays the owner's
+  unless steward mode is on.
+- **Steward mode.** The owner switches it on (for the night, say) with a standing decision on the
+  root board that names its scope (all operations, or a listed set); it lasts until they record
+  it off there. While it is on you approve in the owner's name, and say so in each answer: cards,
+  and permission prompts from any session, including one that assumes the owner is at the
+  keyboard. A lead with delegate records still approves its own steps with them; steward mode
+  covers what still reaches the owner. Where a repo's policy lacks `loop.delegate: all`, fix
+  that root once instead of answering a card per PR. It never covers what stays on the card
+  above, nor a critical-risk change, a deploy, a publish, a send, a delete, the policy change
+  itself or anything in `owner_only`, whatever the scope: those wait for the owner.
 - **What stays on the card.** Leave the card open for the owner when it touches money,
   secrets, tokens or 2FA, sudo, a send outside the project, an irreversible delete, a production
   order or trading path, merging a long-lived feature branch into the default branch, a path on
@@ -333,9 +360,16 @@ manager per project, each a node.
   other directly about a bug that crosses their projects.
 - **Leads.** Each manager's leads are in its own registry, followed by its own supervisor
   (Follow).
+- **The manager's role file.** Read `roles/pm.md` when you start a project manager or run as one:
+  the shared role, its hard limits with their reasons, and where a project's own numbers go.
+  A project with one registry needs no manager, so the file is optional reading.
 - **Decision log.** While the owner is away, each decision taken for them goes in the node's
   decision log with how to undo it. A morning digest is drafted from it and the board's
-  `## Needs the owner`, and sent by hand, never by a scheduled send.
+  `## Needs the owner`, and sent by hand, never by a scheduled send. `scripts/decisions.py`
+  does the writing: `log --what --why --undo` appends an entry and refuses one with no undo,
+  `digest` prints the draft and sends nothing, and `sent --via <where>` records, after you sent
+  it, that the log is delivered up to there. Read it when logging a decision or drafting the
+  digest.
 
 ## Speaking to the owner
 
@@ -351,16 +385,26 @@ manager per project, each a node.
   as inferred.
 - A question offers a few options, one line each, with your recommendation first. Under a
   delegating standing decision it also says what you did (Authority).
-- Ask as text at the end of your turn, numbered when there are several, never through a tool
-  that waits for the answer (Claude Code's AskUserQuestion, Codex's requestUserInput): it holds
-  your turn open, and Omnigent delivers new input only when a turn ends, so every relay,
-  supervisor event and idle compaction waits behind the question until the owner replies,
-  often hours later. Their reply arrives as your next message. Omnigent's
-  `sys_ask_user_question` is the way to ask without stopping: it posts a card and returns at
-  once, so keep working, and act on the answer when it arrives as a message
-  (`[answer to <question id>]`). Withdraw a card whose question you settle (orchestrating-agents' backends/omnigent.md, Settle it).
+- Ask on a card where the session has a card tool (Omnigent's `sys_ask_user_question`): it posts
+  a card and returns at once, so keep working, and act on the answer when it arrives as a message
+  (`[answer to <question id>]`). Withdraw a card whose question you settle (orchestrating-agents'
+  backends/omnigent.md, Settle it). With no card tool, ask as text at the end of your turn,
+  numbered when there are several. Never use a tool that waits for the answer (Claude Code's
+  AskUserQuestion, Codex's requestUserInput): it holds your turn open, and Omnigent delivers new
+  input only when a turn ends, so every relay, supervisor event and idle compaction waits behind
+  it until the owner replies, often hours later.
 - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge go on a head): a question
   alone holds nothing, since `land` batches every PR that is ready.
+
+## Another setup on the same project
+
+Setups and teams align on the issue or the PR the matter is about, never through a private
+channel: status and requests go there, each comment opening with a fixed banner line that names
+the setup that wrote it and whether it is a status or a request, so the other side finds it by its
+first line. <!-- ponytail: the banner's exact text follows #2458's records once they merge. -->
+Say what you did or need and link what the other side must read. Never decide for the other
+setup's owner, and never relay its owner's words as yours. A send waits for the owner; drafts
+go where the project's instructions keep them.
 
 ## Handover
 
@@ -440,6 +484,37 @@ buys nothing, but a lead missing from the board is one a successor never finds:
   lacks. Carry on without greeting the owner again. Read no transcript or report to rebuild
   state, since that is what the file saves; read one only when a lead's notice or the
   owner's question needs it.
+
+## Hygiene scan
+
+`scripts/hygiene.py` is the nightly scan, run as the account that owns the setup and reading `hygiene.repos`, the registries and the board through the values file. It reports the board when it is over 4 KB (never rewriting it, since the board is the owner's), archives a report older than 14 days that no registry or state file names (a live lead's report is never moved), names a `budget`, `parked` or `models.tiers` entry past its end date or with none, names each host whose installed package is behind the pack's latest release, and names a setup file that copies a pack sentence. It ends with the hosts and repos it did not reach, because a skipped one looks the same as a clean one. Read it when setting up or reading the nightly run; its header holds the options.
+
+## Values file
+
+A setup's own settings (server, sessions, hosts, delegation, models, budgets, hygiene) live in one YAML file, `cos-values.yml`, in the setup's home folder: never in a
+project repo, which holds no coordinator instructions. It holds only what differs from the pack's
+defaults, and a setup with no file runs on them. `scripts/cos_values.py` is the one loader every
+pack script imports (`load()`, then `get(key)` or `require(key)`); `check` validates a file and
+names each unknown or mistyped key, `keys` lists every key with its default and meaning. The file is found by
+`--file`, else `$COS_VALUES`, else `cos-values.yml` in the home folder. Read
+`references/values-first-setup.yml` (a home of its own with project managers) or
+`references/values-second-setup.yml` (delegation, a decision log and nightly jobs) when writing a
+setup's file; both hold placeholder values only. A key the loader does not list is an error, never
+a default, so a typo is caught; a value that is a secret goes in the harness's credential store,
+never in this file.
+
+## Pin updater
+
+`scripts/pin_update.py --repo <consumer repo>` moves the repo's pack pin in `apm.yml` to the newest
+`pin.tag_prefix` release tag, runs `apm install`, prints the compare link and relays an
+`ACTION NEEDED:` line to `cos_session`. It commits nothing. It skips, changing nothing, when
+`apm.yml`, the lock or a deployed file has uncommitted edits, rolls back a failed install, and
+refuses the pack's own checkout. `--dry-run` only reports. How often it runs is the scheduler's
+business. Read it when setting up or debugging a repo's pin updates.
+
+## Start gate
+
+Before starting a lead, run `python3 <this skill's folder>/scripts/start_gate.py check --repo <repo> --host <host> [--owner-requested] [--registry <name>]`; exit 0 allows the start and exit 1 refuses it, printing each reason. It reads `hosts.table`, `hosts.owner_requested_only` and `managers` and refuses a host the table does not list for the repo, an owner-requested-only host when the owner did not ask, and a managed repo started outside its manager's registry. With no table it allows any host; the capacity check (`omnigent_agent.py capacity`) still judges memory and CPU.
 
 ## Memory
 

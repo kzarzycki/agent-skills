@@ -26,14 +26,21 @@ def test_a_skill_prose_change_no_test_reads_runs_only_the_repo_wide_checks(
     assert a.targets(["content/skills/x/SKILL.md"]) == a.CHEAP
 
 
+def test_a_change_to_any_skill_file_runs_the_one_package_per_skill_name_sweep() -> None:
+    """#2290 landed a file that sweep rejects, because no change picked it (#2372)."""
+    assert "tests/test_one_package_per_skill_name.py" in a.CHEAP
+    picked = a.targets(["engineering/skills/engineering-loop/scripts/_installed.py"])
+    assert "tests/test_one_package_per_skill_name.py" in picked
+
+
 def test_a_loop_doc_change_runs_the_test_that_holds_its_old_path_copy() -> None:
     picked = a.targets(["loop/skills/engineering-loop/verifier.md"])
     assert {*a.CHEAP, "tests/test_old_paths.py"} <= set(picked)
 
 
 def test_a_script_change_runs_the_tests_that_name_it() -> None:
-    picked = a.targets(["gatekeeper/skills/gatekeeper/scripts/gatekeeper.py"])
-    assert "gatekeeper/tests/test_approvals.py" in picked
+    picked = a.targets(["loop/skills/engineering-loop/scripts/nightly.py"])
+    assert "loop/tests/test_nightly.py" in picked
     assert set(a.CHEAP) <= set(picked)
 
 
@@ -216,7 +223,7 @@ def mapped(tmp_path, monkeypatch):
 def test_a_change_to_one_function_selects_only_the_tests_that_execute_it(mapped) -> None:
     picked = a.targets(mapped("return 2", "return 22"))
     assert "tests/test_both.py::test_both" in picked
-    assert not any("test_one" in p for p in picked)
+    assert not any("tests/test_one.py" in p for p in picked)
 
 
 def test_a_change_to_a_shared_function_selects_every_test_that_executes_it(mapped) -> None:

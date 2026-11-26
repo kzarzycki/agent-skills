@@ -22,7 +22,10 @@ def test_apm_and_claude_metadata_publish_the_same_independent_package() -> None:
     # for one release line engineering pulls in the packages split out of it, so a project pinned to it keeps working
     pulled = ["gatekeeper", "loop", "github", "chief-of-staff", "omnigent"]
     assert apm_manifest["dependencies"] == {
-        "apm": [{"git": f"kzarzycki/agent-skills/{name}", "ref": "^0.1.0"} for name in pulled],
+        "apm": [
+            {"git": f"kzarzycki/agent-skills/{name}", "ref": "^0.1.0"}
+            for name in (*pulled, "engineering-hooks")  # the hooks are APM only (#2683)
+        ],
         "mcp": [],
     }
     assert plugin_manifest["name"] == "engineering"

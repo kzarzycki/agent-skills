@@ -35,6 +35,9 @@ def route(text: str, **event: object) -> tuple[str, str, str]:
         "STILL WORKING: build started.\nWaiting on its pid file before the push.",
         "STILL WORKING: waiting on gate; its pid is 4242",
         "STILL WORKING: waiting on nohup build, output in build.out",
+        # a loop of its own, naming no pid or log (#2623)
+        "STILL WORKING: waiting for the gate to print EXIT, polling every 30 s",
+        "STILL WORKING: waiting on the gate, a sleep loop checks for its last line",
     ],
 )
 def test_a_wait_on_a_pid_or_a_log_is_nudged_once_then_escalated(text: str) -> None:
@@ -149,3 +152,61 @@ def test_the_supervisor_reports_a_hand_back_to_the_session_it_notifies(
     assert [t for s, t in og.inbox if s == "a"] == []  # the lead is not nudged
     assert base.events_of(registry)[-1]["action"] == "act"
     assert any("#1755 READY" in t for t in base.posted(og))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "STILL WORKING: gate started; polling every 30 s\nWaits: until 2026-11-25T23:17Z",
+        "STILL WORKING: waiting on the gate (wait-for --notify), not polling it",
+        "STILL WORKING: waiting on the verifier, no polling\nWaits: session 0123456789abcdef0123456789abcdef",
+    ],
+)
+def test_a_wait_that_names_a_live_helper_or_a_followed_wait_is_held(text: str) -> None:
+    """#2623: the supervisor cannot see a cloud VM's processes, so a live wait is the one the turn end names:
+    a ``Waits:`` line it follows, or a helper that notifies; the first nudge, then the act, are the
+    deadline chain that reaches the manager within ``NUDGED_SECONDS`` of a quiet lead, not the PR sweep's hour."""
+    assert not omnigent_agent.untracked_wait(text, cloud=True)
+    assert omnigent_agent.NUDGED_SECONDS < omnigent_agent.PR_STALL_SECONDS
+
+
+QUOTED = (
+    'Report: a test case is a `STILL WORKING` in plain words ("STILL WORKING: waiting on CI, pid 4242").\n'
+    "> STILL WORKING: waiting on tmp/loop/gate.log\n"
+    "READY FOR VERIFIER: PR #2625 head abc1234"
+)
+
+
+def test_quoted_still_working_is_no_state_2629():
+    """A report that quotes the phrase, ending on a verifier hand-back, is a hand-back: no wait, no nudge."""
+    assert omnigent_agent.still_start(QUOTED) < 0
+    assert omnigent_agent.wait_of(QUOTED) == "unknown"
+    assert not omnigent_agent.untracked_wait(QUOTED)
+    assert route(QUOTED)[:2] == ("rule", "act")
+    assert "hands back" in route(QUOTED)[2]
+
+
+def test_handback_line_routes_whatever_the_body_quotes_2629():
+    text = "He said `STILL WORKING` once.\nHandback: #7 gate record is yours"
+    assert route(text)[2] == "hands back to its manager: Handback: #7 gate record is yours"
+
+
+def test_line_start_still_working_is_found_2629():
+    assert omnigent_agent.still_start("x\nSTILL WORKING: waiting on CI") == 2
+    assert omnigent_agent.still_start("```\nSTILL WORKING: a\n```") < 0
+
+
+def test_a_quote_before_the_real_still_working_decides_nothing_2629():
+    quote = "> STILL WORKING: waiting on CI\n"
+    assert (
+        omnigent_agent.wait_of(
+            'Note: "STILL WORKING: waiting on CI"\nSTILL WORKING: waiting on deployment'
+        )
+        != "CI"
+    )
+    assert omnigent_agent.wait_of(quote + "STILL WORKING: waiting on pid 4242") != "CI"
+    assert omnigent_agent.untracked_wait(quote + "STILL WORKING: waiting on pid 4242")
+    assert not omnigent_agent.own_run_only(
+        "> STILL WORKING: waiting on my background run\nSTILL WORKING: waiting on verifier"
+    )
+    assert omnigent_agent.ending_of("> STILL WORKING: waiting on CI\nDONE: fixed") == "DONE"
