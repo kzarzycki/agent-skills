@@ -446,6 +446,40 @@ def test_start_passes_a_model_the_host_has_no_list_for(
     assert "passing it unchecked" in capsys.readouterr().err
 
 
+def test_start_passes_a_model_when_the_host_answers_501(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A current host answers an ACP harness's model options with HTTP 501 and new text (#2797)."""
+    og = FakeOmnigent()
+
+    def not_implemented(*args: object, **kwargs: object) -> list[str]:
+        failure = omnigent_agent.Fail(
+            "GET model-options: HTTP 501 Not Implemented: no configured model for harness 'acp'"
+        )
+        failure.status = 501
+        raise failure
+
+    monkeypatch.setattr(og, "models", not_implemented)
+    omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model="sonnet")
+    assert og.sessions
+    assert "passing it unchecked" in capsys.readouterr().err
+
+
+def test_the_http_client_puts_the_status_on_the_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    from urllib.error import HTTPError
+
+    def refuse(req: object, timeout: object = None) -> None:
+        raise HTTPError("u", 501, "Not Implemented", {}, io.BytesIO(b"no configured model"))  # type: ignore[arg-type]
+
+    og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
+    og.base, og._token = "http://h", "t"
+    monkeypatch.setattr(omnigent_agent, "urlopen", refuse)
+    with pytest.raises(omnigent_agent.Fail) as raised:
+        og.call("GET", "/x")
+    assert raised.value.status == 501
+
+
 def test_the_brief_signs_with_the_model_the_session_took_not_the_one_asked(tmp_path: Path) -> None:
     class Dropping(FakeOmnigent):  # the server kept no override: the harness default runs
         def create(self, agent: str, title: str, model: str | None = None, *rest: object) -> str:
