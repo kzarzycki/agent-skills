@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.23 - 2026-11-26
+
+- omnigent-agents: `start` passes a model unchecked when the host answers its model-options call with HTTP 501 (a current Omnigent host on an ACP harness such as `claude-cloud`), as it did for the older "unsupported for harness" text (#2797).
+
 ## 0.1.22 - 2026-11-26
 
 - omnigent-telemetry: `--split-tool` / `--split-label` (or `--values`) compare two sides of sessions by the same metrics, overall and by role; cloud sessions get their own table with their children's usage; Gemini sessions with tokens and no cost show "no price" instead of $0 (#2775).
