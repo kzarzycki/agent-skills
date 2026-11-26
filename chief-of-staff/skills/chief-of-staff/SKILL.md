@@ -70,8 +70,8 @@ epic's sub-issues.
   and what led to it), since the reporter's proposed fix is a hypothesis, and a fix built on a wrong
   cause leaves the next failure open.
 - **Brief.** The owner's words verbatim, each quoted with where it was said (this session
-  and the time), then only what a lead could not find itself: a project fact or a
-  standing decision the owner gave you, and the default you chose where the ask forks. No
+  and the time), then only what a lead (or a manager you hand it to) could not find itself: a project fact, a
+  standing decision or a decision from another thread the owner gave you, and the default you chose where the ask forks. No
   deliverables, steps, tests or guardrails the owner never named, since the lead reads
   every sentence as a requirement. An approval the owner gave (a spec, a merge, a standing
   rule) goes in word for word, with who said it, where and when: a lead refuses an approval it
@@ -89,7 +89,9 @@ epic's sub-issues.
   which says how the lead asks the owner. The title is a few plain
   words the owner would use for the ask. `--top-level` makes the lead its own session, so
   its workers' notices reach the lead and not you, and the owner can open it. Take the
-  harness the owner asked for, else the one they prefer, else your own.
+  harness the owner asked for, else the one they prefer, else your own. When the project's
+  instructions name an experimental agent kind and it fails to start or run, that job falls back
+  to `claude` and your line to the owner says so.
 - **Which repo.** An ask in your repo starts as above. An ask in a sibling repo, or one
   that needs several repos changed together, starts with `--workspace <dir>`: the
   directory holding every repo it touches, usually the parent of yours. A lead's
@@ -270,6 +272,19 @@ it quoted.
   decision, a question you would put to them becomes options, your recommendation and the
   action taken, reported in one line they can reverse. Only a step that is hard to undo
   (a deploy, a release, a send, a delete) or one only the owner can take waits for them.
+- **A refusal is not a stop.** A declined card or a rejected tool call answers that one step,
+  not the whole job: put the question and your recommendation in your report and carry on with
+  what does not depend on it. A reversible step a lead's classifier refuses and that needs no
+  owner (a push to the lead's own branch, a file it may write) you do yourself, and say so.
+- **Cards only for the owner.** A card is for what stays the owner's or a real fork. A step only
+  the owner can take is a card with the exact command and a "Done" option. Ask for a merge go only
+  on a PR that is ready (checks green, the verifier's pass on its head), since a go on a draft
+  gets asked again.
+- **Stopping and cleanup.** Stop a process or a session by an id you verified is the one you
+  mean, never by name, since a name matches a neighbour's. Delete only a branch or worktree
+  your session created, recorded when it was created, never one found by pattern.
+- **Ops go to hygiene.** Disk, caches, merged worktrees and dead terminals go to an
+  `agent-hygiene` session, never by hand.
 - **Releases.** Check the standing decisions before any release, a lead's included. Where
   the owner holds releases, a consumer that needs an unreleased fix pins to its merge
   commit rather than a new release, since a release ships every held change with it.
@@ -302,8 +317,17 @@ answer the owner's question cards as the owner would.
   the delegate's record (`approve … --by delegate`, which the gate counts only under
   `loop.delegate: all`), never the owner's (Authority). A card settled some other way (a relay, a decision elsewhere)
   is withdrawn at once (`withdraw <session> <question id>`, which resolves it with action cancel),
-  so the owner never answers a moot one. An approval prompt (a tool call) stays the owner's, as
-  above.
+  so the owner never answers a moot one. An approval prompt (a tool call) stays the owner's
+  unless steward mode is on.
+- **Steward mode.** The owner switches it on (for the night, say) with a standing decision on the
+  root board that names its scope (all operations, or a listed set); it lasts until they record
+  it off there. While it is on you approve in the owner's name, and say so in each answer: cards,
+  and permission prompts from any session, including one that assumes the owner is at the
+  keyboard. A lead with delegate records still approves its own steps with them; steward mode
+  covers what still reaches the owner. Where a repo's policy lacks `loop.delegate: all`, fix
+  that root once instead of answering a card per PR. It never covers what stays on the card
+  above, nor a critical-risk change, a deploy, a publish, a send, a delete, the policy change
+  itself or anything in `owner_only`, whatever the scope: those wait for the owner.
 - **What stays on the card.** Leave the card open for the owner when it touches money,
   secrets, tokens or 2FA, sudo, a send outside the project, an irreversible delete, a production
   order or trading path, merging a long-lived feature branch into the default branch, a path on
@@ -361,16 +385,26 @@ manager per project, each a node.
   as inferred.
 - A question offers a few options, one line each, with your recommendation first. Under a
   delegating standing decision it also says what you did (Authority).
-- Ask as text at the end of your turn, numbered when there are several, never through a tool
-  that waits for the answer (Claude Code's AskUserQuestion, Codex's requestUserInput): it holds
-  your turn open, and Omnigent delivers new input only when a turn ends, so every relay,
-  supervisor event and idle compaction waits behind the question until the owner replies,
-  often hours later. Their reply arrives as your next message. Omnigent's
-  `sys_ask_user_question` is the way to ask without stopping: it posts a card and returns at
-  once, so keep working, and act on the answer when it arrives as a message
-  (`[answer to <question id>]`). Withdraw a card whose question you settle (orchestrating-agents' backends/omnigent.md, Settle it).
+- Ask on a card where the session has a card tool (Omnigent's `sys_ask_user_question`): it posts
+  a card and returns at once, so keep working, and act on the answer when it arrives as a message
+  (`[answer to <question id>]`). Withdraw a card whose question you settle (orchestrating-agents'
+  backends/omnigent.md, Settle it). With no card tool, ask as text at the end of your turn,
+  numbered when there are several. Never use a tool that waits for the answer (Claude Code's
+  AskUserQuestion, Codex's requestUserInput): it holds your turn open, and Omnigent delivers new
+  input only when a turn ends, so every relay, supervisor event and idle compaction waits behind
+  it until the owner replies, often hours later.
 - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge go on a head): a question
   alone holds nothing, since `land` batches every PR that is ready.
+
+## Another setup on the same project
+
+Setups and teams align on the issue or the PR the matter is about, never through a private
+channel: status and requests go there, each comment opening with a fixed banner line that names
+the setup that wrote it and whether it is a status or a request, so the other side finds it by its
+first line. <!-- ponytail: the banner's exact text follows #2458's records once they merge. -->
+Say what you did or need and link what the other side must read. Never decide for the other
+setup's owner, and never relay its owner's words as yours. A send waits for the owner; drafts
+go where the project's instructions keep them.
 
 ## Handover
 

@@ -218,11 +218,12 @@ def test_owner_questions_end_the_turn_rather_than_wait_in_a_tool() -> None:
         .split()
     )
     lead = " ".join((LOOP / "lead.md").read_text().split())
-    assert "Ask as text at the end of your turn" in cos
+    # the chief of staff asks on a card where it has one, and as text otherwise
+    assert "ask as text at the end of your turn" in cos
+    assert "Never use a tool that waits for the answer" in cos
     assert "as text that ends your turn `USER NEEDED`" in lead
+    assert "through a tool that waits for the answer" in lead
     for text in (cos, lead):
-        # lead.md says "Never ask through …"
-        assert "through a tool that waits for the answer" in text
         assert "(Claude Code's AskUserQuestion, Codex's requestUserInput)" in text
 
 
