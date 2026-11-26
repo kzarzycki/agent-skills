@@ -17,6 +17,8 @@ from test_approvals_github_queue import (  # noqa: F401
     queue,
     red_group,
 )
+from test_approvals_mergify_queue import mergify, run  # noqa: F401
+from test_approvals_mergify_solo import labels_of
 
 
 def cut(monkeypatch: pytest.MonkeyPatch, inputs: list[str], commands: list[str]) -> None:
@@ -96,3 +98,62 @@ def test_a_ci_only_diff_selects_no_product_test() -> None:
     files = [".github/workflows/ci.yml", "docs/agents/roles.md", "tools/ci/run.py"]
     assert approvals.classify(files, select) == ([], ["pytest tools/ci"])
     assert approvals.classify([*files, "src/app.py"], select)[0] == ["src/app.py"]
+
+
+def dequeued(mergify: dict[str, Any], head: str) -> tuple[int, list[str]]:
+    mergify["pulls"][7]["labels"]["nodes"].append({"name": "loop:dequeued"})
+    failed = run("Mergify Merge Queue", "failure", 551)
+    failed["output"] = {"title": "The pull request has been removed from the queue `default`"}
+    mergify["checks"][head] = [run("qualify", "success", 550), failed]
+    return mergify["land"]("7")
+
+
+def test_a_mergify_dequeue_on_a_diff_no_test_reaches_is_queued_again_not_evicted(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    cut(monkeypatch, [], [])
+    code, lines = dequeued(mergify, head)
+    assert code == 0, lines
+    assert any("no path it changes can reach a test: queued again" in line for line in lines)
+    assert not mergify["pulls"][7]["isDraft"]
+    assert approvals.REQUEUE in [body.strip() for _, body in mergify["raw"]]
+    [record] = notes_on(mergify, 7, approvals.UNREACHABLE_RED)
+    assert f"Head: {head}" in record
+    assert "loop:dequeued" not in labels_of(mergify, 7)
+
+
+def test_a_mergify_dequeue_on_a_diff_that_reaches_a_test_is_evicted(
+    mergify: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = mergify["opened"](7)
+    assert mergify["land"]("7")[0] == 0
+    cut(monkeypatch, ["src/app.py"], [])
+    code, lines = dequeued(mergify, head)
+    assert code == 1, lines
+    assert mergify["pulls"][7]["isDraft"]
+
+
+def test_a_mergify_unreachable_retry_count_starts_anew_when_the_pr_is_ready_again() -> None:
+    head = "h"
+    body = f"{approvals.UNREACHABLE_RED}\n\nHead: {head}"
+    pull = {
+        "headRefOid": head,
+        "baseRefName": "main",
+        "comments": {
+            "nodes": [
+                {"body": body, "createdAt": f"2026-10-02T0{i}:00:00Z", "author": {"login": "x"}}
+                for i in range(approvals.UNREACHABLE_RETRIES)
+            ]
+        },
+        "timelineItems": {"nodes": []},
+    }
+    with pytest.MonkeyPatch.context() as patch:
+        cut(patch, [], [])
+        patch.setattr(approvals, "fetched", lambda sha: True)
+        assert not approvals.unreachable_dequeue(pull)
+        pull["timelineItems"]["nodes"].append(
+            {"__typename": "ReadyForReviewEvent", "createdAt": "2026-10-02T09:00:00Z"}
+        )
+        assert approvals.unreachable_dequeue(pull)

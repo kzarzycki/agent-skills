@@ -9401,8 +9401,19 @@ def unreachable_dequeue(pull: dict[str, Any]) -> bool:
     """Whether a Mergify dequeue at the head is retried, not counted: unreachable, and fewer than UNREACHABLE_RETRIES
     earlier retries at this head (their UNREACHABLE_RED records)."""
     head = pull["headRefOid"]
+    # since it last went ready, so a ready-again starts the count anew, as the GitHub queue's removals do
+    ready = max(
+        (
+            event.get("createdAt") or ""
+            for event in (pull.get("timelineItems") or {}).get("nodes") or []
+            if event.get("__typename") == "ReadyForReviewEvent"
+        ),
+        default="",
+    )
     tried = sum(
-        note["body"].startswith(UNREACHABLE_RED) and f"Head: {head}" in note["body"]
+        note["body"].startswith(UNREACHABLE_RED)
+        and f"Head: {head}" in note["body"]
+        and (note.get("createdAt") or "") > ready
         for note in notes(pull)
     )
     return tried < UNREACHABLE_RETRIES and unreachable(pull)
