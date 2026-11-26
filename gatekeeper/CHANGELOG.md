@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.19 - 2026-11-26
+
+- The first claim from a cloud session now sets the issue `Session` field where no issue holds a value yet: `check setup` reads the field's id over GraphQL (else REST) and records it as `loop.session_field_id` in `docs/agents/gatekeeper.md` (commit it), and a claim where GraphQL is refused reads it first. A repo with no recorded id behaves as before (#2690).
+
 ## 0.1.18 - 2026-11-26
 
 - gatekeeper: the forge's remote is the current branch's upstream's remote, else `forge_remote` in the policy's `loop` section, else `origin`, one helper (`events.forge_remote`) every fetch, push and policy read of `approvals.py` and the loop events goes through, so a worktree whose branch tracks a fork judges and lands against the fork's repo and base (#2710).

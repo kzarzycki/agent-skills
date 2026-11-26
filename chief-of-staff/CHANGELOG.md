@@ -5,6 +5,11 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.7 - 2026-11-26
+
+- `pin_update.py` also runs `apm update` (transitive packages too) and `apm audit`, rolls back an install that removes a skill, and commits with a compare link per moved pin; hygiene's pack-lag check reads every package of a lock (#2706).
+- `pin_update.py` also runs when only a sibling package has a newer release (#2706).
+
 ## 0.1.6 - 2026-11-26
 
 - chief-of-staff: the pin updater reads the new release's `bump-from.yml` and, for a pin older than its `oldest`, refuses the jump and names the release to bump to and land first (#2709).
