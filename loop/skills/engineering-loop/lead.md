@@ -283,6 +283,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    waits for the landing rule (SKILL.md):
    - You land your own PRs and never merge `origin/main` into one, stacked or not, unless the gate forces it
      (the next point): a merge of main changes the head, which voids the verifier's verdict and costs another pass.
+   - The pack's push hook refuses a `git push` of a merge of the base into a PR that merges cleanly; when `land` reported a conflict, prefix the push with `LOOP_MERGE_MAIN=<why>`.
    - Update a PR branch by merging its base in (`git merge origin/<base>`, plain push); never rebase or force-push it, and never open a replacement PR.
    - Merge `origin/main` into the PR only when `land` comments that it conflicts with main
      (`Conflicts in the landing batch`): `land` merges each head onto main itself, and a merge
