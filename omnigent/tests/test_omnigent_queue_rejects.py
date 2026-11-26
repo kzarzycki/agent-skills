@@ -854,3 +854,46 @@ def test_queue_comment_reads_queued_at_and_the_head() -> None:
     assert entry["head"] == "1ae8cad"
     assert entry["queued_at"] == pytest.approx(time.time() - 3600, abs=5)
     assert omnigent_agent.queue_comment(comment(1, 12))["head"] == ""
+
+
+def test_a_conflict_dequeue_is_dropped_once_the_pr_reads_mergeable_and_kept_while_it_conflicts(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """A ``CONFLICT_WITH_BASE_BRANCH`` dequeue raises nothing once the PR reads ``MERGEABLE``; while it still
+    conflicts it is raised as before (#2646)."""
+    for i, (mergeable, want) in enumerate([(True, False), (False, True)]):
+        (tmp_path / str(i)).mkdir()
+        registry, og = fleet(tmp_path / str(i))
+        gh = GitHub(monkeypatch)
+        gh.pulls = [{"number": 12, "draft": False, "head": {"sha": "a" * 40}, "updated_at": iso(0)}]
+        gh.comments.append(comment(100, 12, code="CONFLICT_WITH_BASE_BRANCH", queued_ago=3600))
+        pull = {"mergeable": mergeable, "mergeable_state": "clean" if mergeable else "dirty"}
+        monkeypatch.setattr(omnigent_agent, "loop_cards", lambda *a, **k: {})
+        monkeypatch.setattr(omnigent_agent, "pr_facts", lambda *a, pull=pull, **k: {"pr": pull})
+        monkeypatch.setattr(omnigent_agent, "pr_stall", lambda *a, **k: (time.time(), ""))
+
+        run(og, registry, monkeypatch, 4)
+        assert ("o/r#12 left the merge queue: CONFLICT" in capsys.readouterr().out) is want
+
+
+@pytest.mark.parametrize("pushed", [True, False])
+def test_a_dequeue_with_no_queued_time_is_dropped_only_by_a_head_pushed_after_it(
+    tmp_path, monkeypatch, capsys, pushed
+) -> None:
+    """The comment carries no ``queued_at``: a head first seen after its ``left_at`` drops it; with no push it is
+    raised as before (#2646)."""
+    registry, og = fleet(tmp_path)
+    gh = GitHub(monkeypatch)
+    gh.pulls = [{"number": 12, "draft": False, "head": {"sha": "a" * 40}, "updated_at": iso(0)}]
+    monkeypatch.setattr(omnigent_agent, "loop_cards", lambda *a, **k: {})
+    monkeypatch.setattr(omnigent_agent, "pr_facts", lambda *a, **k: {})
+    monkeypatch.setattr(omnigent_agent, "pr_stall", lambda *a, **k: (time.time(), ""))
+
+    def push_then_dequeue(p: int) -> None:
+        if p == 1:
+            if pushed:
+                gh.pulls[0] = {**gh.pulls[0], "head": {"sha": "b" * 40}, "updated_at": iso(0)}
+            gh.comments.append(comment(100, 12, jobs=(7,)))
+
+    run(og, registry, monkeypatch, 4, push_then_dequeue)
+    assert ("o/r#12 left the merge queue: CHECKS_FAILED" in capsys.readouterr().out) is not pushed

@@ -6483,6 +6483,7 @@ def pr_stalls(
                 "seen_at": seen.get("seen_at", 0.0)
                 if seen.get("head") == row["head"]["sha"]
                 else last,
+                "clean": seen.get("clean", False),
                 "due": 0,
             }
             continue
@@ -6503,6 +6504,9 @@ def pr_stalls(
             "updated": row.get("updated_at"),
             "said": seen.get("said"),
             "seen_at": seen_at,
+            # GitHub reads the head as mergeable: a dequeue for a conflict is then already settled (#2646)
+            "clean": (facts.get("pr") or {}).get("mergeable") is True
+            and (facts.get("pr") or {}).get("mergeable_state") != "dirty",
         }
         # moving: due a threshold after its last move; stalled and told: read again a threshold on, for its blocker
         entry["due"] = (now if line else moved) + threshold
@@ -10783,7 +10787,8 @@ def supervise_registry(
             if (
                 pushed.get("head") and not pushed["head"].startswith(entry["head"])
                 if entry.get("head")
-                else entry.get("queued_at") and pushed.get("seen_at", 0.0) > entry["queued_at"]
+                else (entry.get("queued_at") or entry.get("left_at"))
+                and pushed.get("seen_at", 0.0) > (entry.get("queued_at") or entry["left_at"])
             ):
                 # the comment names the head it queued (else seen_at, a lower bound on the head's push, is
                 # compared with queued_at): a later head replaced the run that failed, so there is nothing to fix
@@ -10791,6 +10796,14 @@ def supervise_registry(
                 entry["told"] = True
                 print(
                     stamp(f"{repo}#{entry['pr']} left the merge queue: its head has since changed"),
+                    flush=True,
+                )
+                continue
+            if "CONFLICT" in str(entry.get("code")) and pushed.get("clean"):
+                # a conflict dequeue, and the PR now reads mergeable: the base was merged in, nothing is left to act on
+                entry["told"] = True
+                print(
+                    stamp(f"{repo}#{entry['pr']} left the merge queue: its conflict is gone"),
                     flush=True,
                 )
                 continue
