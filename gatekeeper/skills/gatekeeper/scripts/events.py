@@ -41,12 +41,13 @@ TIMEOUT, SILENT = 3, 4
 NAMESPACE = "refs/loop"
 # where `read` and `wait` keep the last fetch of a remote event, so it never overwrites the ref a local producer wrote
 MIRROR = "refs/loop-remote"
-# the variable Claude Code sets to `true` in a cloud session's VM: the gatekeeper's own cloud test (`in_cloud`)
+# the variable Claude Code sets to `true` in a cloud session's VM; `in_cloud` below is the twin of gatekeeper.py's
+# `in_cloud()`, repeated here since this script imports nothing
 CLOUD = "CLAUDE_CODE_REMOTE"
 # the branch form of an event, `refs/heads/<prefix>/<kind>/<branch>`, which a cloud session's proxy lets a VM push where
-# it refuses `refs/loop/` (events.md, Cloud sessions). `emit` writes the first prefix, the one the session's branch grant
-# allows; `read` and `clear` take both, since a bare `loop-event/` branch is accepted by the proxy too
-BRANCH_PREFIXES = ("claude/loop-event", "loop-event")
+# it refuses `refs/loop/` (events.md, Cloud sessions). `emit` writes the first prefix, the bare one a probe from a
+# cloud VM found the proxy accepts; `read`, `wait` and `clear` take both, so a `claude/loop-event/` branch counts too
+BRANCH_PREFIXES = ("loop-event", "claude/loop-event")
 # the seen-sha file `read` keeps, in the git dir: {ref: {"sha": ..., "changed": <epoch seconds>}}
 SEEN = "loop-events-seen.json"
 # seconds one git call that reaches origin may take before it counts as a failed push or read

@@ -19,7 +19,8 @@ events = importlib.util.module_from_spec(spec)
 sys.modules["loop_events_cloud"] = events
 spec.loader.exec_module(events)
 
-BRANCH = "refs/heads/claude/loop-event/lead/feat/x"
+BRANCH = "refs/heads/loop-event/lead/feat/x"
+CLAUDE_BRANCH = "refs/heads/claude/loop-event/lead/feat/x"
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -144,7 +145,7 @@ def test_clear_removes_the_branch_forms(
     monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
     events.emit("lead", "feat/x", "ok", cwd=a)
     sha = git(bare, "rev-parse", BRANCH).strip()
-    git(bare, "update-ref", "refs/heads/loop-event/lead/feat/x", sha)  # the bare prefix too
+    git(bare, "update-ref", CLAUDE_BRANCH, sha)  # the `claude/` prefix too
     events.clear("feat/x", cwd=a)
     assert heads(bare, "refs/heads/") == []
     assert heads(bare, "refs/loop/") == []
