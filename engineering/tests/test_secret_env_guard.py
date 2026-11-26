@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-HOOKS = Path(__file__).resolve().parents[1] / "hooks"
+HOOKS = Path(__file__).resolve().parents[2] / "engineering-hooks" / "hooks"
 SCRIPT = HOOKS / "secret_env_guard.py"
 sys.path.insert(0, str(HOOKS))
 spec = importlib.util.spec_from_file_location("secret_env_guard", SCRIPT)

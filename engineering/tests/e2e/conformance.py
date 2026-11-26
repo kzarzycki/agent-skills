@@ -79,6 +79,8 @@ def source_manifest() -> dict[str, str]:
     deployed: dict[str, dict[str, str]] = {}
     for package in (PACKAGE, *_dependencies()):
         skills = package / "skills"
+        if not skills.is_dir():  # engineering-hooks ships no skill
+            continue
         for folder in sorted(path for path in skills.iterdir() if path.is_dir()):
             deployed[folder.name] = {
                 f"{folder.name}/{path}": digest for path, digest in file_manifest(folder).items()

@@ -1,0 +1,10 @@
+name: engineering-hooks
+version: 0.1.0
+description: The engineering pack's Claude Code hooks, as a package of their own that APM deploys to Claude only
+author: Krzysztof Zarzycki
+target: claude
+dependencies:
+  apm: []
+  mcp: []
+includes: auto
+scripts: {}
