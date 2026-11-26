@@ -46,11 +46,10 @@ TOP_TREES = 15  # trees in the text and HTML tables; --json has all
 
 # Enum codes from Omnigent's omnigent/db/enum_codecs.py.
 COMPACTION = 6  # conversation_items.type
-USER_TURN, TOOL_CALL = (
-    1,
-    4,
-)  # ponytail: codes read off a server's enum_codecs.py, not checked against one
-CALL_CODES = str(TOOL_CALL)
+# conversation_items.type, ITEM_TYPE in the server's enum_codecs.py (as its reviewer read it: not
+# checked here against a server): message 1, function_call 2, reasoning 4, native_tool 7.
+MESSAGE, FUNCTION_CALL, NATIVE_TOOL = 1, 2, 7
+CALL_CODES = f"{FUNCTION_CALL}, {NATIVE_TOOL}"
 FAILED_SESSION = 4  # omnigent_conversation_metadata.live_status
 RUN_SUCCEEDED, RUN_FAILED, RUN_SKIPPED = 3, 4, 5  # scheduled_task_runs.status
 LIVE = {1: "idle", 2: "running", 3: "waiting", 4: "failed"}
@@ -124,13 +123,16 @@ def fetch_db(container: str, since: int) -> dict:
             f"""SELECT encode(c.id, 'hex') AS id, encode(c.parent_conversation_id, 'hex') AS parent_id,
               encode(c.root_conversation_id, 'hex') AS root_id, c.title, c.created_at, c.updated_at,
               c.archived, c.next_position AS items, a.name AS agent, h.name AS host,
-              m.workspace, m.live_status, m.sub_agent_name, m.labels,
+              m.workspace, m.live_status, m.sub_agent_name,
+              (SELECT coalesce(json_object_agg(l.key, l.value), '{{}}') FROM conversation_labels l
+                 WHERE l.conversation_id = c.id AND l.workspace_id = c.workspace_id) AS labels,
               (SELECT coalesce(json_object_agg(n, k), '{{}}') FROM (
-                 SELECT i.tool_name AS n, count(*) AS k FROM conversation_items i
+                 SELECT i.data::json->>'name' AS n, count(*) AS k FROM conversation_items i
                  WHERE i.conversation_id = c.id AND i.workspace_id = c.workspace_id
-                   AND i.type IN ({CALL_CODES}) GROUP BY i.tool_name) q) AS tool_calls,
+                   AND i.type IN ({CALL_CODES}) GROUP BY 1) q) AS tool_calls,
               (SELECT count(*) FROM conversation_items i WHERE i.conversation_id = c.id
-                 AND i.workspace_id = c.workspace_id AND i.type = {USER_TURN}) AS turns,
+                 AND i.workspace_id = c.workspace_id AND i.type = {MESSAGE}
+                 AND i.data::json->>'role' = 'user') AS turns,
               encode(m.session_usage, 'hex') AS usage,
               (SELECT count(*) FROM conversation_items i WHERE i.conversation_id = c.id
                  AND i.workspace_id = c.workspace_id AND i.type = {COMPACTION}) AS compactions,
@@ -778,7 +780,8 @@ def page(r: dict) -> str:
         body.append(f"<p class=muted>{e(SPLIT_NOTE)}</p>")
     if r.get("cloud") and r["cloud"]["sessions"]:
         table(
-            f"Cloud sessions: {r['cloud']['sessions']}, {usd(r['cloud']['cost_usd'])}",
+            f"Cloud sessions: {r['cloud']['sessions']}, {usd(r['cloud']['cost_usd'])}"
+            f" (child CLIs {usd(r['cloud']['child_cost_usd'])})",
             CLOUD_HEAD,
             cloud_rows(r),
         )

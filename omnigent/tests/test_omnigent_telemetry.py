@@ -314,3 +314,23 @@ def test_a_gemini_session_shows_its_tokens_not_a_bare_zero() -> None:
     r = telemetry.build(None, db(sessions=rows), None, 7, NOW)
     assert r["unpriced"][0]["note"] == "7,000 tokens, no price"
     assert "7,000 tokens, no price" in telemetry.text(r)
+
+
+def test_the_sql_reads_the_servers_label_table_item_codes_and_user_messages(monkeypatch) -> None:
+    """Names as the server's models have them: labels in `conversation_labels`, a tool's name inside
+    `conversation_items.data`, item types message 1, function_call 2, native_tool 7."""
+    seen: list[str] = []
+
+    def record(container: str, sql: str) -> list:
+        seen.append(sql)
+        return [{"unarchived": 0, "from_tasks": 0}] if "unarchived" in sql else []
+
+    monkeypatch.setattr(telemetry, "psql", record)
+    telemetry.fetch_db("c", SINCE)
+    sessions = seen[0]
+    assert "m.labels" not in sessions and "tool_name" not in sessions
+    assert (
+        "FROM conversation_labels l" in sessions and "l.key" in sessions and "l.value" in sessions
+    )
+    assert "i.type IN (2, 7)" in sessions and "i.data::json->>'name'" in sessions
+    assert "i.type = 1 AND i.data::json->>'role' = 'user'" in " ".join(sessions.split())

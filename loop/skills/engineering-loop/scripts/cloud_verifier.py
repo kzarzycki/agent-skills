@@ -733,6 +733,30 @@ def child_usage(harness: str, model: str | None, output: str) -> dict | None:
     return got
 
 
+def agy_result(raw: str) -> tuple[str, dict | None]:
+    """`agy -p --output-format json`'s stdout as (final message, usage). Not JSON, or JSON without a message, the
+    raw text is the message, so a plain-text run still reads as before. The key names are an `agy` reviewer's
+    reading of its structured output (`usage.total_tokens`), not checked against a run."""
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return raw, None
+    if not isinstance(doc, dict):
+        return raw, None
+    message = next(
+        (doc[k] for k in ("result", "response", "text", "output") if isinstance(doc.get(k), str)),
+        raw,
+    )
+    use = doc.get("usage") if isinstance(doc.get("usage"), dict) else doc
+    total = use.get("total_tokens") or use.get("totalTokens")
+    if not isinstance(total, int):
+        return message, None
+    got = {"total_tokens": total}
+    if isinstance(use.get("cost_usd"), (int, float)):
+        got["cost_usd"] = float(use["cost_usd"])
+    return message, got
+
+
 def post_child_usage(usage: dict | None, parent: str | None = None) -> bool:
     """Post a child's usage to Omnigent under its parent session (`$OMNIGENT_SESSION_ID`). Needs the deployment's
     `$OMNIGENT_CHILD_USAGE_URL` (a `{session}` template) and never fails the pass."""
@@ -740,7 +764,13 @@ def post_child_usage(usage: dict | None, parent: str | None = None) -> bool:
     if not (usage and url and parent):
         return False
     try:
-        post_json(url.format(session=parent), usage, {})
+        # Opt-in and a guess at the contract until the server's child-usage endpoint (omnigent#980) is settled: the
+        # runner token as a bearer when the deployment sets one, and a key so a retry never counts the child twice.
+        key = uuid.uuid5(uuid.NAMESPACE_URL, f"{parent}/{json.dumps(usage, sort_keys=True)}")
+        headers = {"Idempotency-Key": str(key)}
+        if token := os.environ.get("OMNIGENT_RUNNER_TOKEN"):
+            headers["Authorization"] = f"Bearer {token}"
+        post_json(url.format(session=parent), usage, headers)
     except (OSError, ValueError) as e:
         print(f"cloud_verifier: child usage not posted: {e}", file=sys.stderr)
         return False
@@ -1039,6 +1069,8 @@ def review(
             "--dangerously-skip-permissions",
             "--print-timeout",
             AGY_PRINT_TIMEOUT,
+            "--output-format",
+            "json",
         ]
         cmd += ["--model", model] if model else []
         cmd += ["--effort", effort] if effort else []
@@ -1057,7 +1089,14 @@ def review(
             else codex_exec([*cmd, "-"], brief)
         )
         ended = time.time()
-        post_child_usage(child_usage(harness, model, RELAYED[0]))
+        if (
+            harness == "gemini"
+        ):  # JSON on stdout: the final message back into `final`, its usage posted
+            message, found = agy_result(text(final))
+            final.write_text(message)
+            post_child_usage(found and {"harness": harness, "model": model or "?", **found})
+        else:
+            post_child_usage(child_usage(harness, model, RELAYED[0]))
         print(f"{harness} exited {code} after {ended - started:.0f} s", flush=True)
         # read before the checkout back, which rewrites a report path that both commits track
         wrote = {

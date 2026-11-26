@@ -18,6 +18,17 @@ def test_codex_usage_is_read_and_posted_under_the_parent_session(monkeypatch) ->
     json.dumps(sent)
 
 
+def test_the_post_carries_a_bearer_token_and_a_key_that_repeats_for_a_retry(monkeypatch) -> None:
+    sent: list = []
+    monkeypatch.setenv(cv.CHILD_USAGE_URL, "https://omni.example/{session}")
+    monkeypatch.setenv("OMNIGENT_RUNNER_TOKEN", "tok")
+    monkeypatch.setattr(cv, "post_json", lambda url, body, headers: sent.append(headers) or {})
+    usage = {"harness": "codex", "model": "m", "total_tokens": 5}
+    assert cv.post_child_usage(usage, "p1") and cv.post_child_usage(usage, "p1")
+    assert sent[0]["Authorization"] == "Bearer tok"
+    assert sent[0]["Idempotency-Key"] == sent[1]["Idempotency-Key"]
+
+
 def test_agy_usage_carries_its_cost_and_nothing_posts_unless_the_deployment_opts_in(
     monkeypatch,
 ) -> None:
@@ -26,3 +37,10 @@ def test_agy_usage_carries_its_cost_and_nothing_posts_unless_the_deployment_opts
     monkeypatch.delenv(cv.CHILD_USAGE_URL, raising=False)
     assert not cv.post_child_usage(got, "parent1")
     assert cv.child_usage("codex", None, "no usage printed") is None
+
+
+def test_the_usage_of_an_agy_json_run_is_read_and_a_plain_run_is_left_alone() -> None:
+    from_json = '{"result": "SATISFIED: yes", "usage": {"total_tokens": 321}}'
+    assert cv.agy_result(from_json) == ("SATISFIED: yes", {"total_tokens": 321})
+    assert cv.agy_result("SATISFIED: yes\n") == ("SATISFIED: yes\n", None)
+    assert cv.agy_result('{"result": "x"}') == ("x", None)
