@@ -523,8 +523,8 @@ def ensure_gemini() -> None:
             creds = base64.b64decode(seeded, validate=True)
             tokens = json.loads(creds)
             if not isinstance(tokens, dict):
-                raise ValueError("not an object")
-        except ValueError:
+                raise TypeError("not an object")
+        except (ValueError, TypeError):
             raise Refused(
                 f"${GEMINI_VAR} is not a base64 Gemini login ({describe(GEMINI_VAR, seeded)}): put it in again"
             ) from None
