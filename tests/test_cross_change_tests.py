@@ -173,6 +173,26 @@ def test_a_fallback_that_selects_nothing_is_refused_too(mapped) -> None:
         c.select(tip, records(), list)
 
 
+def test_a_pr_head_that_reaches_no_test_passes_where_a_queue_batch_is_refused(
+    mapped, capsys
+) -> None:
+    git("init", "-q", "-b", "main")
+    commit("seed.py")
+    tip = git("rev-parse", "HEAD")
+    commit("other.py")
+    assert c.select(tip, records(), list, pr_head=True) == ([], [])
+    assert "a PR head that reaches no test" in capsys.readouterr().err
+    assert c.main(["--pr-head", tip]) == 0
+    with pytest.raises(c.Refused, match="no PR's record can be read"):
+        c.select(tip, records(), list)  # the queue's run, with no flag, still refuses
+
+
+def test_a_split_batch_with_an_unrecorded_pr_is_still_refused_when_the_flag_is_set(mapped) -> None:
+    tip, _ = draft((1, "a.txt"), (2, "b.txt"))
+    with pytest.raises(c.Refused, match="has no record for its head's tree"):
+        c.select(tip, records(), list, pr_head=True)
+
+
 def test_the_command_writes_the_unkeyed_checks_and_prints_the_targets(
     mapped, monkeypatch, capsys
 ) -> None:
