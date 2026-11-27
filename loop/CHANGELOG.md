@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.17 - 2026-11-27
+
+- `lead.md`'s merge-queue rerun line no longer names #1400 and #1794 as pending, and says a project's queue rerun is narrow only where its own CI calls `rerun-tests` (#2832).
+
 ## 0.1.16 - 2026-11-27
 
 - `lead.md`'s Verifier route points to the setup's `verifier:` setting instead of naming Codex as the default and a fixed Gemini model; the fallback rules read in the configured order (#2840).
