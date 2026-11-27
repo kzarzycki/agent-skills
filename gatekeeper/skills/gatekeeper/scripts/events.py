@@ -148,7 +148,8 @@ def forge_remote(cwd: Path | str | None = None, git: Callable[..., str] | None =
         remotes = ask("remote").split()
     except (OSError, subprocess.SubprocessError):
         return "origin"
-    if set(remotes) <= {"origin"}:  # the one remote there is, or none: every rule below ends in `origin`, so skip its git calls (#1400)
+    # the one remote there is, or none: every rule below ends in `origin`, so skip its git calls (#1400)
+    if set(remotes) <= {"origin"}:
         return "origin"
     try:
         upstream = ask("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").strip()
