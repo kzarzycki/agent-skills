@@ -62,7 +62,9 @@ def test_a_banner_only_in_the_pane_fails_a_silent_agy_session(
     monkeypatch.setattr(
         og, "info", lambda s: {"id": s, "status": "running", "harness": "antigravity-native"}
     )
-    monkeypatch.setattr(omnigent_agent, "agy_pane", lambda s: PANE)
+    reads = iter(["", PANE])  # empty when the wait attaches, the banner after
+    monkeypatch.setenv("OMNIGENT_AGY_PANE_CMD", "unused")
+    monkeypatch.setattr(omnigent_agent, "agy_pane", lambda s: next(reads, PANE))
     before = time.time()
     with pytest.raises(omnigent_agent.Fail) as e:
         omnigent_agent.wait(og, sid, tmp_path / "r.md", timeout=5)
@@ -136,12 +138,7 @@ def test_an_old_banner_in_the_own_pane_is_no_new_hold(quota_file: Path) -> None:
     assert omnigent_agent.agy_banner(PANE.split("Error ID")[0], now, need_id=True) is None
 
 
-def test_the_configured_pane_command_reaches_wait(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pane = tmp_path / "pane.txt"
-    pane.write_text(PANE)
-    monkeypatch.setenv("OMNIGENT_AGY_PANE_CMD", f"cat {pane} # {{sid}}")
+def silent_agy(tmp_path: Path) -> tuple[FakeOmnigent, str]:
     og = FakeOmnigent()
     sid = og.create("antigravity-native-ui", "t")
     og.sessions[sid].append(
@@ -153,18 +150,59 @@ def test_the_configured_pane_command_reaches_wait(
         }
     )
     og.info = lambda s: {"id": s, "status": "running", "harness": "antigravity-native"}  # type: ignore[method-assign]
+    return og, sid
+
+
+def test_the_configured_pane_command_reaches_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pane, flag = tmp_path / "pane.txt", tmp_path / "flag"
+    pane.write_text(PANE)
+    # the pane is empty when the wait attaches (the first read), and shows the banner after
+    monkeypatch.setenv(
+        "OMNIGENT_AGY_PANE_CMD",
+        f"if [ -e {flag} ]; then cat {pane}; else touch {flag}; fi # {{sid}}",
+    )
+    og, sid = silent_agy(tmp_path)
     with pytest.raises(omnigent_agent.Fail, match="129h5m17s"):
         omnigent_agent.wait(og, sid, tmp_path / "r.md", timeout=5)
-    pane.write_text(PANE)  # the same banner, left behind after a later reset, fails nothing new
-    omnigent_agent.record_agy_quota(time.time() - 1, "5b0e1c9e-6f3a-4d8e-9a53-0c1f2b7d4e11-1")
+
+
+def test_a_banner_already_in_the_pane_when_the_wait_attaches_is_no_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pane holds no timestamp: an old banner, its reset long past, is the same at every read (#2922 F1)."""
+    pane = tmp_path / "pane.txt"
+    pane.write_text(PANE)
+    monkeypatch.setenv("OMNIGENT_AGY_PANE_CMD", f"cat {pane} # {{sid}}")
+    og, sid = silent_agy(tmp_path)
     with pytest.raises(omnigent_agent.Fail, match="gave no report"):
         omnigent_agent.wait(og, sid, tmp_path / "r.md", timeout=1)
+    assert omnigent_agent.agy_quota_until(time.time()) is None
 
 
-def test_the_pane_is_read_only_through_the_sessions_own_command(
-    monkeypatch: pytest.MonkeyPatch,
+def test_an_expired_banner_does_not_hide_a_fresh_one_in_the_same_capture() -> None:
+    now = time.time()
+    old = "Individual quota reached. Resets in 1h\nError ID: aaaaaaaa-1111-1\n"
+    new = "Individual quota reached. Resets in 2h\nError ID: bbbbbbbb-2222-1\n"
+    omnigent_agent.record_agy_quota(now - 60, "aaaaaaaa-1111-1")  # recorded, and past its reset
+    found = omnigent_agent.agy_banner(old + "output\n" + new, now, need_id=True)
+    assert found is not None and found[2] == "bbbbbbbb-2222-1"
+    assert abs(found[0] - (now + 7200)) < 5
+    # a banner among the IDs the wait attached to is not fresh
+    assert omnigent_agent.agy_banner(new, now, need_id=True, baseline={"bbbbbbbb-2222-1"}) is None
+
+
+def test_with_no_pane_command_nothing_is_read_and_the_silence_is_said(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.delenv("OMNIGENT_AGY_PANE_CMD", raising=False)
-    assert omnigent_agent.agy_pane("s0") == ""  # no scan of every pane
-    monkeypatch.setenv("OMNIGENT_AGY_PANE_CMD", "echo pane-of-{sid}")
-    assert omnigent_agent.agy_pane("s7").strip() == "pane-of-s7"
+    monkeypatch.setattr(omnigent_agent, "AGY_NOTED", set())
+
+    def no_scan(*args: object, **kw: object) -> None:
+        raise AssertionError("a pane was read with no command set")
+
+    monkeypatch.setattr(omnigent_agent.subprocess, "run", no_scan)
+    og, sid = silent_agy(tmp_path)
+    assert omnigent_agent.agy_silent_banner(sid, og.info(sid), og.items(sid), set()) is None
+    assert "OMNIGENT_AGY_PANE_CMD" in capsys.readouterr().err

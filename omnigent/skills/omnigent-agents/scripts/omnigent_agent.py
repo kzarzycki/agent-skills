@@ -592,27 +592,37 @@ def agy_quota_until(now: float) -> float | None:
 
 
 def agy_banner(
-    text: str, now: float, need_id: bool = False
+    text: str, now: float, need_id: bool = False, baseline: frozenset[str] | set[str] = frozenset()
 ) -> tuple[float, str, str | None] | None:
-    """The fresh Antigravity quota banner in ``text`` as (reset instant, printed duration, Error ID), else None. A
-    banner whose Error ID was seen before is the same one: it keeps its first reset, and is none once that has
-    passed (an old banner left in scrollback). With ``need_id`` (a pane, which may hold anything an agent quoted) a
-    banner with no Error ID is none."""
-    found = agy_quota_reset(text, now)
-    if not found:
-        return None
-    match = AGY_ERROR_ID.search(text)
-    key = match[1] if match else None
-    if need_id and not key:
-        return None
+    """The newest fresh Antigravity quota banner in ``text`` as (reset instant, printed duration, Error ID), else None.
+    Each banner is the text from its ``Individual quota reached`` to the next one. One whose Error ID was recorded
+    keeps its first reset and counts only while that is ahead (an old one left in scrollback is none). One whose ID is
+    in ``baseline`` (the pane's IDs when the wait attached) is older than this wait, and none: a pane holds no
+    timestamp, so only a banner that appeared after the wait attached is fresh. With ``need_id`` (a pane, which may hold
+    anything an agent quoted) a banner with no Error ID is none."""
+    starts = [m.start() for m in AGY_QUOTA.finditer(text)]
     seen = agy_quota_state().get("seen")
-    if key and isinstance(seen, dict) and key in seen:
-        try:
-            first = float(seen[key])
-        except (TypeError, ValueError):
-            return None
-        return (first, found[1], key) if first > now else None
-    return found[0], found[1], key
+    seen = seen if isinstance(seen, dict) else {}
+    for i in reversed(range(len(starts))):
+        block = text[starts[i] : starts[i + 1] if i + 1 < len(starts) else None]
+        if not (found := agy_quota_reset(block, now)):
+            continue
+        match = AGY_ERROR_ID.search(block)
+        key = match[1] if match else None
+        if need_id and not key:
+            continue
+        if key and key in seen:
+            try:
+                first = float(seen[key])
+            except (TypeError, ValueError):
+                continue
+            if first > now:
+                return first, found[1], key
+            continue
+        if key and key in baseline:
+            continue
+        return found[0], found[1], key
+    return None
 
 
 def agy_quota_banner(info: dict, items: list[dict]) -> tuple[float, str, str | None] | None:
@@ -674,11 +684,21 @@ def agy_quota_failure(sid: str, banner: tuple[float, str, str | None]) -> Fail:
     )
 
 
+def agy_pane_ids(sid: str) -> set[str]:
+    """The Error IDs the pane of ``sid`` already shows: what a wait that attaches now did not see arrive."""
+    return set(AGY_ERROR_ID.findall(agy_pane(sid)))
+
+
+AGY_NOTED: set[str] = set()
+
+
 def agy_silent_banner(
-    sid: str, info: dict, items: list[dict]
+    sid: str, info: dict, items: list[dict], baseline: set[str] | None = None
 ) -> tuple[float, str, str | None] | None:
-    """The quota banner in the pane of an agy session that has said nothing since its brief, ``AGY_SILENT_SECONDS``
-    on: the banner never reaches its history, so the history alone reads as a stall or an endless turn."""
+    """The quota banner that appeared in the pane of an agy session that has said nothing since its brief,
+    ``AGY_SILENT_SECONDS`` on: the banner never reaches its history, so the history alone reads as a stall or an
+    endless turn. Read only through ``$OMNIGENT_AGY_PANE_CMD``; with none set the session's silence is said once on
+    stderr, naming it."""
     if not agy_session(info) or any(
         i.get("type") == "message" and i.get("role") == "assistant" for i in items
     ):
@@ -686,7 +706,17 @@ def agy_silent_banner(
     sent = [float(i.get("created_at") or 0) for i in items if i.get("role") == "user"]
     if not sent or time.time() - max(sent) < AGY_SILENT_SECONDS:
         return None
-    return agy_banner(agy_pane(sid), time.time(), need_id=True)
+    if not os.environ.get("OMNIGENT_AGY_PANE_CMD"):
+        if sid not in AGY_NOTED:
+            AGY_NOTED.add(sid)
+            print(
+                f"session {sid} is Antigravity and has said nothing for {AGY_SILENT_SECONDS:.0f}s: its quota banner"
+                " shows only in its terminal pane, which this wait reads only through $OMNIGENT_AGY_PANE_CMD"
+                " (unset); check the pane if it stays silent",
+                file=sys.stderr,
+            )
+        return None
+    return agy_banner(agy_pane(sid), time.time(), need_id=True, baseline=baseline or set())
 
 
 def backoff(count: int) -> float:
@@ -5857,6 +5887,9 @@ def wait(
     recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
     continued: float | None = None  # when the stalled session was told to continue
     ended: dict[str, float] = {}
+    pane_ids: set[str] | None = (
+        None  # the Error IDs an Antigravity pane showed when this wait attached
+    )
     question = question_of(report)
     missing = (
         f"a verdict in {report}"
@@ -5910,7 +5943,9 @@ def wait(
                     file=sys.stderr,
                 )
             break
-        if not counts() and (banner := agy_silent_banner(sid, info, items)):
+        if pane_ids is None and agy_session(info):
+            pane_ids = agy_pane_ids(sid)
+        if not counts() and (banner := agy_silent_banner(sid, info, items, pane_ids)):
             raise agy_quota_failure(sid, banner)
         prompts = prompts_of(info)
         if prompts and not counts():  # a report that counts is taken once settled
