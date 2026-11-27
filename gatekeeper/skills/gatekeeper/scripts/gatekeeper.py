@@ -9418,6 +9418,26 @@ def whole_suite(pull: dict[str, Any]) -> str | None:
     return None
 
 
+# a GitHub 5xx on a hand-over call is a blip (#1226, #2405): tried again after each of these waits (seconds), then the
+# step fails and `land` exits 1
+HAND_OVER_BACKOFF = (2, 10, 30)
+SERVER_ERROR = re.compile(r"HTTP 5\d\d")
+
+
+def handing_over(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """`call(*args, **kwargs)`, tried again after each HAND_OVER_BACKOFF wait while GitHub answers it with a 5xx; any
+    other failure, and the last 5xx, raises as before, so a hand-over that GitHub never takes is never reported queued."""
+    for pause in HAND_OVER_BACKOFF:
+        try:
+            return call(*args, **kwargs)
+        except subprocess.CalledProcessError as exc:
+            if not SERVER_ERROR.search(exc.stderr or ""):
+                raise
+            print(f"hand-over: {stderr_of(exc)}: trying again in {pause} s", flush=True)
+            time.sleep(pause)
+    return call(*args, **kwargs)
+
+
 def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
     """One candidate for Mergify, and its exit: dequeued by Mergify at the head land queued (DEQUEUED, Mergify's
     `dequeued_label`, after its own retry of a red batch, or on a conflict), evicted (exit 1), unless its queue check
@@ -9537,16 +9557,18 @@ def mergify_step(pull: dict[str, Any], loop: str | None) -> int:
                 print(
                     f"{where}: its selection is the whole suite ({alone}): queued in a batch of its own"
                 )
-            refused = unwritten(head, LAND, MERGIFY_QUEUED.format(head))
+            refused = handing_over(unwritten, head, LAND, MERGIFY_QUEUED.format(head))
             if QUEUED not in labels:
-                label(number, QUEUED, add=True)
+                handing_over(label, number, QUEUED, add=True)
             if refused is not None:
-                handed_by_record(pull)
+                handing_over(handed_by_record, pull)
     except subprocess.CalledProcessError as exc:
-        print(f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}")
+        print(
+            f"{where}: GitHub refused its hand-over to Mergify at {head}: {stderr_of(exc)}; not queued, exit 1"
+        )
         return 1
     try:
-        requeue(pull)
+        handing_over(requeue, pull)
     except subprocess.CalledProcessError as exc:
         print(
             f"{where} is handed over to Mergify at {head}, but GitHub refused the `{REQUEUE}` command it needs"
