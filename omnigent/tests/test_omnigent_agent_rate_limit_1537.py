@@ -83,7 +83,9 @@ def test_unchanged_pr_hour_is_bounded(monkeypatch):
         assert oa.gate_outcome(5, oa.time.monotonic() + 30) is None
     # was 4+ calls every 30 s (480+/h); now at most 1 per poll for verdict (+ one full look), 3 for gate
     assert verdict_calls <= polls + 4
-    assert len(asked) <= 3 * polls + 1
+    assert (
+        len(asked) <= 4 * polls + 1
+    )  # the pull, the record refs, the record branches, the statuses
 
 
 def test_head_read_uses_shared_cache(monkeypatch):

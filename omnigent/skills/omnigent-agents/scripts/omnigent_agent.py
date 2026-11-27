@@ -6286,7 +6286,15 @@ def gate_outcome(pr: int, end: float, since: float | None = None) -> tuple[int, 
     head = pr_rest(f"pulls/{pr}", end)["head"]["sha"]
     tree = pr_rest(f"git/commits/{head}", end)["tree"]["sha"]
     signals: list[tuple[float, int, str]] = []
-    for record in pr_rest(f"git/matching-refs/heads/loop-gate/{tree}-", end):
+    # refs/loop/gate/ first, then the branch a cloud session pushes before the record workflow moves it (#2821)
+    records = pr_rest(f"git/matching-refs/loop/gate/{tree}-", end)
+    names = {str(r["ref"]).rsplit("/", 1)[1] for r in records}
+    records += [
+        r
+        for r in pr_rest(f"git/matching-refs/heads/loop-gate/{tree}-", end)
+        if str(r["ref"]).rsplit("/", 1)[1] not in names
+    ]  # an ETag read, free while unchanged
+    for record in records:
         at = pr_rest(f"git/commits/{record['object']['sha']}", end)["committer"]["date"]
         signals.append((stamp(at), 0, f"passed, record branch {record['ref']}"))
     for status in pr_rest(f"commits/{head}/statuses?per_page=100", end):
@@ -7458,6 +7466,36 @@ def prune_demo_branch(repo: str, pr: int) -> None:
         pass
 
 
+def prune_worker_branch(info: dict, repo: str) -> str:
+    """Delete the branch a worker session pushed (its record's `git_branch`, a `claude/…` name) once its PR is merged
+    or closed: a cloud session can push a branch but not delete one, and a worker whose commits were merged under
+    another PR's head leaves its own branch behind (#2821). Kept: a branch of a session still running (it may not have
+    opened its PR yet) and a branch that is any open PR's head. A read or delete that fails is said, never an error.
+    Returns the line to say, or an empty string when the session names no branch."""
+    branch = str(info.get("git_branch") or "")
+    if not branch.startswith("claude/"):
+        return ""
+    if str(info.get("status")) in RUNNING:
+        return f"branch {branch} kept: its worker is still running"
+    owner = repo.split("/")[0]
+    try:
+        live = json.loads(
+            gh("api", f"repos/{repo}/pulls?state=open&per_page=1&head={owner}:{branch}") or "[]"
+        )
+    except (Fail, ValueError) as e:
+        return f"branch {branch} kept: its open PRs were not read ({e})"
+    if live:
+        return f"branch {branch} kept: it is the head of an open PR"
+    try:
+        gh("api", "-X", "DELETE", f"repos/{repo}/git/refs/heads/{branch}")
+    except Fail as e:
+        text = str(e)
+        if "Reference does not exist" in text or "404" in text:
+            return ""
+        return f"branch {branch} not deleted: {' '.join(text.split())[:200]}"
+    return f"branch {branch} deleted"
+
+
 def clear_closed_pr_events(repo: str, pr: int, workspace: object) -> None:
     """Remove the loop events (refs of every kind) of the head branch of PR ``pr`` of ``repo``, here and on origin,
     from the checkout ``workspace``: a closed PR's steps are over, and a ref no producer clears (an unmerged close, a
@@ -7697,6 +7735,8 @@ def finish_delivered(
         ):
             return f"{name}: kept ({why})", False
         for each in found:
+            if said := prune_worker_branch(info, each[0]):
+                print(f"{sid}: {said}", file=sys.stderr)
             if each not in cleared and not elsewhere(og, info):
                 cleared.add(each)  # the PR is merged or closed: its steps' events are over
                 prune_demo_branch(*each)

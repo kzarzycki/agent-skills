@@ -66,6 +66,8 @@ class FakeOmnigent:
         self.tasks: list[dict] = []  # background tasks info() reports
         self.interrupted: list[str] = []
         self.labels: dict[str, dict[str, str]] = {}  # each session's labels
+        self.git_branches: dict[str, str] = {}  # the branch a cloud session's record names
+        self.statuses: dict[str, str] = {}  # a session's own status, over the default
         self.prompts: list[dict] = []
         self.fail: set[str] = set()  # method names that raise Fail
         self.titles: dict[str, str] = {}
@@ -287,6 +289,10 @@ class FakeOmnigent:
             info["background_tasks"] = self.tasks
         info["model_override"] = self.overrides.get(sid)
         info["reasoning_effort"] = self.efforts.get(sid)
+        if sid in self.git_branches:
+            info["git_branch"] = self.git_branches[sid]
+        if sid in self.statuses and not pending:
+            info["status"] = self.statuses[sid]
         if sid in self.labels:
             info["labels"] = self.labels[sid]
         if sid in self.roots:
@@ -14826,6 +14832,46 @@ def test_reap_prunes_the_demo_branch_of_a_worker_whose_pr_is_closed(
     monkeypatch.setattr(omnigent_agent, "EVENTS", None)
     omnigent_agent.reap(og, [sid])
     assert ("api", "-X", "DELETE", "repos/o/r/git/refs/heads/claude/ready-demo-7") in calls
+
+
+def test_reap_deletes_the_branches_a_merged_prs_workers_pushed_but_not_an_open_prs_head_or_a_running_workers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#2821: the reap of PR 7's workers deletes each branch their records name, keeping the one that is another
+    open PR's head and the one whose worker is still running; a refused delete is said and fails nothing."""
+    og = FakeOmnigent()
+    sids = [og.create("claude-cloud", name) for name in "abcd"]
+    branches = ["claude/a", "claude/b-open-pr", "claude/c-running", "claude/d-refused"]
+    for sid, branch in zip(sids, branches, strict=True):
+        og.labels[sid] = {omnigent_agent.PR_LABEL: "o/r#7"}
+        og.git_branches[sid] = branch
+    og.statuses[sids[2]] = "running"
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh(*args: str, **kw: object) -> str:
+        calls.append(args)
+        if args[:2] == ("pr", "view"):
+            return '{"state": "MERGED"}'
+        if args[0] == "api" and "pulls?state=open" in args[1]:
+            return '[{"number": 9}]' if "claude/b-open-pr" in args[1] else "[]"
+        if args[:3] == ("api", "-X", "DELETE") and "claude/d-refused" in args[3]:
+            raise omnigent_agent.Fail("HTTP 403")
+        return ""
+
+    monkeypatch.setattr(omnigent_agent, "gh", fake_gh)
+    monkeypatch.setattr(omnigent_agent, "EVENTS", None)
+    omnigent_agent.reap(og, sids)
+    deletes = [
+        c[3] for c in calls if c[:3] == ("api", "-X", "DELETE") and "claude/ready-demo" not in c[3]
+    ]
+    assert deletes == [
+        "repos/o/r/git/refs/heads/claude/a",
+        "repos/o/r/git/refs/heads/claude/d-refused",
+    ]
+    err = capsys.readouterr().err
+    assert "branch claude/b-open-pr kept: it is the head of an open PR" in err
+    assert "branch claude/c-running kept: its worker is still running" in err
+    assert "branch claude/d-refused not deleted" in err
 
 
 @pytest.mark.parametrize(("top_level", "pr"), [(True, None), (False, None), (True, 7), (False, 7)])

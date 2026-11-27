@@ -358,7 +358,7 @@ def test_a_pushed_pass_is_reused_by_inputs_only_when_its_own_tree_holds_them(
         "push",
         "-q",
         "origin",
-        f":{approvals.RECORD_BRANCH.format(approvals.record_name(a_tree, command))}",
+        f":{approvals.RECORD_REF.format(approvals.record_name(a_tree, command))}",
     )
     assert approvals.step_pass(b_head, b_tree, lint, show=False) is None
     # origin unreachable: no candidate, and the reason said

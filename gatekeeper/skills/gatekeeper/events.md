@@ -84,9 +84,10 @@ exits 0, so an event reports a step and is never part of it. A native lead in th
 
 ## Cloud sessions: the branch form
 
-Where `CLAUDE_CODE_REMOTE=true` (the gatekeeper's cloud test), `emit` also pushes the same commit as the branch
-`loop-event/<kind>/<branch>`, which the proxy accepts where it refuses `refs/loop/` (a probe from a cloud VM found the
-bare prefix pushes, as `claude/loop-event/` does); a host's `emit` stays the one `refs/loop/` push. `read`, `wait` and
+`emit` pushes `refs/loop/<kind>/<branch>` first and, where origin refuses it (a cloud session's proxy takes only
+branches), pushes the same commit as the branch `loop-event/<kind>/<branch>` (a probe from a cloud VM found the bare
+prefix pushes, as `claude/loop-event/` does). The `loop-refs.yml` workflow moves that branch to the `refs/loop/`
+name and deletes it within seconds (#2821), so a host's events and a cloud session's both end as refs. `read`, `wait` and
 `clear` take both prefixes, and `read` lists them in its one `ls-remote`: each maps to the same
 `refs/loop-remote/<kind>/<branch>` mirror, one event per kind and branch, the later `at` winning where both forms
-exist. The proxy refuses a branch delete too, so only a host's `clear` (run by `land` and `reap`) removes them.
+exist. The proxy refuses a branch delete too, so only a host's `clear` (run by `land` and `reap`) removes one that the workflow has not moved.

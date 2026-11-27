@@ -31,7 +31,7 @@
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
-    uv run scripts/approvals.py prune-records [--head <sha>...]  # delete origin's `loop-gate/` record branches no open PR head needs: the trees of the given (closed or merged) heads at once, any other tree over a day old with no open PR; every `land` ends with it, so a merge by Mergify or a queue, or a closed PR, leaves none (#1869); needs a token that can delete refs
+    uv run scripts/approvals.py prune-records [--head <sha>...]  # delete origin's gate records (`refs/loop/gate/` refs and `loop-gate/` branches) no open PR head needs, then run the one upgrade sweep (old `loop-gate/` and `loop-event/` branches moved to `refs/loop/`; `claude/*` branches whose PR is merged or closed deleted, #2821): the trees of the given (closed or merged) heads at once, any other tree over a day old with no open PR; every `land` ends with it, so a merge by Mergify or a queue, or a closed PR, leaves none (#1869); needs a token that can delete refs
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
     uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
     uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
@@ -424,7 +424,7 @@ first, before it starts the run, so a wait that follows it never reads the previ
 changes the exit code. The `gate` commit status stays on the PR head: `wait-for --until gate` reads it and the PR
 page shows it, and no event reader replaces it yet. `land` publishes none on main, since it runs no gate.
 Every pass this clone holds, run or reused, is published one way from every session, host or cloud: pushed to origin
-as the branch `loop-gate/<tree>-<command's key>` (a branch, since a cloud session's proxy pushes nothing else), on a
+as the ref `refs/loop/gate/<tree>-<command's key>` (the branch `loop-gate/<tree>-<key>` where origin refuses a ref outside `refs/heads/`, as a cloud session's proxy does: the `loop-refs.yml` workflow moves it and deletes the branch; every reader reads the ref first, then the branch), on a
 commit holding the tree, the commit the pass ran on as its parent, and as its message the line `Tree <tree> on
 <commit's first 12>: <command>` (the command's digest, `sha256 <key>`, when it doesn't fit GitHub's 140 characters)
 and an `Env:` line, then `Seconds: <n>` and `Slot wait seconds: <n>` (a record pushed before them still counts); `local-ci` says which branch. origin refusing the push (a commit not pushed yet) or unreachable is
@@ -758,6 +758,12 @@ PUBLISHED = "gate"
 # proxy refuses a push outside refs/heads/; land deletes it once no head needs it (drop_records), and
 # every land ends with that sweep, so a merge it only handed to a queue leaves none either (#1869)
 RECORD_BRANCH = "refs/heads/loop-gate/{}"
+# where a host publishes a pass, outside refs/heads/ so no branch list shows it (#2821); a push the proxy of a cloud
+# session refuses goes to RECORD_BRANCH instead, which the record workflow moves here. Every reader reads this name
+# first, then the branch, and `drop_records` sweeps both.
+RECORD_REF = "refs/loop/gate/{}"
+# a record's name, `<tree>-<gate key>`: refs/loop/gate/ also holds the gate's loop events, named by their branch
+RECORD_NAME = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?-[0-9a-f]{12}")
 # how old a record branch whose tree is no open PR's head must be before land deletes it: a record may be pushed
 # before its PR is opened
 RECORD_AGE = 24 * 60 * 60
@@ -2048,6 +2054,22 @@ def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -
     return None
 
 
+def record_listing(tail: str) -> list[tuple[str, str]]:
+    """Origin's records whose name matches the glob `tail` (`<tree>-*`, `*-<key>`), under refs/loop/gate/ and as
+    `loop-gate/` branches, as (commit, ref); a name held under both forms is listed once, as refs/loop/gate/. Raises
+    what `ls-remote` raises."""
+    found: dict[str, tuple[str, str]] = {}
+    out = git("ls-remote", forge(), RECORD_REF.format(tail), RECORD_BRANCH.format(tail))
+    for line in out.splitlines():
+        commit, _, ref = line.partition("\t")
+        name = ref.rsplit("/", 1)[-1]
+        if not RECORD_NAME.fullmatch(name):
+            continue
+        if name not in found or ref.startswith("refs/loop/"):
+            found[name] = (commit, ref)
+    return list(found.values())
+
+
 def reruns(held: str) -> list[tuple[str, str]]:
     """Origin's record branches on tree `held` that an independent rerun made, each as (ref, commit): a record branch
     of any command (RECORD_BRANCH, `<held>-<key>`) whose commit holds `held` as its tree, has one parent, says `Tree
@@ -2055,11 +2077,7 @@ def reruns(held: str) -> list[tuple[str, str]]:
     --rerun` writes. Who pushed it is rerun_gap's question, not this one's. origin unreadable: none."""
     found = []
     try:
-        listed = [
-            line.split("\t")
-            for line in git("ls-remote", forge(), RECORD_BRANCH.format(f"{held}-*")).splitlines()
-        ]
-        for commit, ref in listed:
+        for commit, ref in record_listing(f"{held}-*"):
             name = ref.rsplit("/", 1)[1]
             git("fetch", "-q", "--no-tags", forge(), f"+{ref}:refs/loop/records/{name}")
             header, _, message = git("cat-file", "commit", commit).partition("\n\n")
@@ -7483,7 +7501,17 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
         raise
     if not again:  # a round a wait will repeat sweeps once, at its end, not on every poll
         sweep_records()
+        sweep_upgrade()
     return code, again
+
+
+def sweep_upgrade() -> None:
+    """upgrade_sweep, at the end of a land that has settled (the first land after an upgrade does the repo's one sweep):
+    a failure is one warning line, never a failure of the land."""
+    try:
+        upgrade_sweep()
+    except Exception as exc:  # noqa: BLE001 - a sweep must never fail or mask the land
+        print(f"the upgrade sweep after land failed: {' '.join(str(exc).split())}")
 
 
 def sweep_records() -> None:
@@ -13476,7 +13504,7 @@ def gate_record(head: str, words: list[str]) -> int:
             missing += 1
             reason = (
                 "; ".join(why)
-                or f"origin holds no record branch {RECORD_BRANCH.format(record_name(held, command))}"
+                or f"origin holds no record {RECORD_REF.format(record_name(held, command))}"
             )
             print(f"no record of `{command}` on tree {held}: run it ({reason})")
         else:
@@ -13670,10 +13698,9 @@ def origin_input_pass(
 def input_candidates(command: str, key: str, why: list[str] | None = None) -> list[str]:
     """The trees of origin's record branches of `command` whose message says the inputs key `key` (record_message),
     each still to be read as record_ref reads one; origin unreachable: none, with the reason appended to `why`."""
-    pattern = RECORD_BRANCH.format(f"*-{gate_key(command)}")
     trees = []
     try:
-        listed = [line.split("\t") for line in git("ls-remote", forge(), pattern).splitlines()]
+        listed = [[commit, ref] for commit, ref in record_listing(f"*-{gate_key(command)}")]
         if not listed:
             return []
         names = {ref: ref.rsplit("/", 1)[1] for _, ref in listed}
@@ -13767,9 +13794,13 @@ def record_ref(
     naming the branch found and why it was rejected (or that origin could not be read) is appended to it, so the
     refusal says what to push."""
     name = record_name(held, command)
-    ref = RECORD_BRANCH.format(name)
+    ref = RECORD_REF.format(name)
     try:
-        listed = git("ls-remote", forge(), ref).split()
+        listed = git("ls-remote", forge(), ref, RECORD_BRANCH.format(name)).split()
+        if ref not in listed[1::2]:
+            ref = RECORD_BRANCH.format(
+                name
+            )  # a cloud session's push, before the record workflow moves it
         if ref not in listed[1::2]:
             return None
         git("fetch", "-q", "--no-tags", forge(), f"+{ref}:refs/loop/records/{name}")
@@ -13838,8 +13869,16 @@ def push_record(record: dict[str, Any]) -> str:
     """Push a pass to origin as its record branch (RECORD_BRANCH) on a commit holding its tree, its parent the commit
     it ran on, its message the status description and env (record_message), and return the ref. The commit's author,
     committer and dates are fixed, so pushing a pass again pushes the same commit. Refused: CalledProcessError."""
-    ref = RECORD_BRANCH.format(record_name(record["tree"], record["command"]))
-    git("push", "-q", "--no-verify", forge(), f"{record_commit(record)}:{ref}")
+    name = record_name(record["tree"], record["command"])
+    commit = record_commit(record)
+    ref = RECORD_REF.format(name)
+    try:
+        git("push", "-q", "--no-verify", forge(), f"{commit}:{ref}")
+    except (
+        subprocess.CalledProcessError
+    ):  # a cloud session's proxy refuses a ref outside refs/heads/ (#2821)
+        ref = RECORD_BRANCH.format(name)
+        git("push", "-q", "--no-verify", forge(), f"{commit}:{ref}")
     return ref
 
 
@@ -13875,13 +13914,136 @@ def landed_record(head: str) -> str:
     none."""
     held = tree_of(head)
     try:
-        listed = git("ls-remote", forge(), RECORD_BRANCH.format(f"{held}-*")) if held else ""
+        listed = record_listing(f"{held}-*") if held else []
     except (subprocess.CalledProcessError, OSError):
-        listed = ""
-    names = sorted(
-        line.split("\t")[1].rsplit("/", 1)[1] for line in listed.splitlines() if "\t" in line
-    )
+        listed = []
+    names = sorted(ref.rsplit("/", 1)[1] for _, ref in listed)
     return (LANDED_RECORD + ", ".join(names))[:140] if names else LANDED_NO_RECORD
+
+
+# origin's marker that the upgrade sweep (upgrade_sweep) ran in full: a host pushes it, a cloud session can't
+SWEPT = "refs/loop/swept"
+# the loop events' old branch forms, and where each belongs (events.py's BRANCH_PREFIXES)
+EVENT_BRANCHES = ("refs/heads/loop-event/", "refs/heads/claude/loop-event/")
+
+
+def upgrade_sweep(force: bool = False) -> None:
+    """The one sweep an existing repo needs after the move of records and events off `refs/heads/` (#2821), run by the
+    first `land` that finds no `SWEPT` marker on origin, and by `prune-records` at any time (`force`):
+    1. every `loop-gate/` and `loop-event/` branch moves to its `refs/loop/` name and is deleted (a branch whose name
+       is already held there is only deleted);
+    2. every `claude/*` branch that is no open PR's head and whose PR, found by its head branch, is merged or closed is
+       deleted. A branch that never had a PR may be unlanded work: it stays, and the line says how many.
+    Only a host deletes: a refusal is said and the branch stays for the next sweep, which the marker is not written
+    before. Origin or GitHub unreadable: nothing is done, silently, since a land must never fail on it."""
+    try:
+        listed = sha_by_ref_of(
+            git(
+                "ls-remote",
+                forge(),
+                SWEPT,
+                "refs/heads/loop-gate/*",
+                *(f"{p}*" for p in EVENT_BRANCHES),
+                "refs/heads/claude/*",
+                "refs/loop/*",
+            )
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return
+    if SWEPT in listed and not force:
+        return
+    moves: dict[str, str] = {}  # branch ref -> the refs/loop/ name it becomes
+    # an open PR's record branch stays a branch: the independent rerun's check asks the forge who pushed that branch
+    # (rerun_gap, pusher), which the forge's activity list answers for `refs/heads/` alone. drop_records deletes it by
+    # its own rule once the PR is closed. With the open PRs unreadable, none of them moves.
+    held_open: set[str | None] | None = None
+    if any(ref.startswith("refs/heads/loop-gate/") for ref in listed):
+        try:
+            held_open = {tree_of(head) for head in open_heads()}
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            held_open = None
+    for ref in listed:
+        if ref.startswith("refs/heads/loop-gate/"):
+            name = ref.removeprefix("refs/heads/loop-gate/")
+            if held_open is None or None in held_open or name.split("-", 1)[0] in held_open:
+                continue
+            moves[ref] = RECORD_REF.format(name)
+        for prefix in EVENT_BRANCHES:
+            if ref.startswith(prefix):
+                moves[ref] = f"refs/loop/{ref.removeprefix(prefix)}"
+    gone: list[str] = []
+    refused = False
+    for ref, dest in sorted(moves.items()):
+        try:
+            if dest not in listed:
+                git("fetch", "-q", "--no-tags", forge(), f"+{ref}:refs/loop/upgrading")
+                git("push", "-q", "--no-verify", forge(), f"refs/loop/upgrading:{dest}")
+            git("push", "-q", "--no-verify", forge(), f":{ref}")
+            gone.append(ref)
+        except subprocess.CalledProcessError as exc:
+            refused = True
+            print(f"{ref} was not moved to {dest}: {' '.join((exc.stderr or '').split())}")
+    with contextlib.suppress(subprocess.CalledProcessError):
+        git("update-ref", "-d", "refs/loop/upgrading")
+    branches = sorted(
+        ref
+        for ref in listed
+        if ref.startswith("refs/heads/claude/")
+        and not ref.startswith(EVENT_BRANCHES[1])
+        and ref not in moves
+    )
+    deleted, kept = 0, 0
+    if branches:
+        try:
+            pulls = github.rest_pages(
+                "pulls?state=all&per_page=100",
+                ".[] | select(.head.repo.full_name == .base.repo.full_name) | {state, ref: .head.ref}",
+            )
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            return  # whether a PR is open is unknown: no claude/ branch is touched
+        opened = {p["ref"] for p in pulls if p["state"] == "open"}
+        done = {p["ref"] for p in pulls if p["state"] != "open"} - opened
+        for ref in branches:
+            name = ref.removeprefix("refs/heads/")
+            if name not in done:
+                kept += name not in opened
+                continue
+            try:
+                git("push", "-q", "--no-verify", forge(), f":{ref}")
+                deleted += 1
+            except subprocess.CalledProcessError as exc:
+                refused = True
+                print(f"{ref} was not deleted: {' '.join((exc.stderr or '').split())}")
+    if gone or deleted or kept:
+        print(
+            f"upgrade sweep: {len(gone)} loop-gate/loop-event branches moved, {deleted} merged or closed claude/ "
+            f"branches deleted, {kept} claude/ branches kept (no PR of their own)"
+        )
+    if (gone or branches) and not refused and SWEPT not in listed:
+        with contextlib.suppress(subprocess.CalledProcessError, OSError):
+            marker = subprocess.run(
+                [
+                    "git",
+                    "commit-tree",
+                    git("hash-object", "-t", "tree", os.devnull).strip(),
+                    "-m",
+                    "upgrade sweep done [skip ci]",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=os.environ | RECORDER,
+            ).stdout.strip()
+            git("push", "-q", "--no-verify", forge(), f"{marker}:{SWEPT}")
+
+
+def sha_by_ref_of(listing: str) -> dict[str, str]:
+    """`ls-remote`'s lines as {ref: commit}."""
+    return {
+        ref: commit
+        for commit, _, ref in (line.partition("\t") for line in listing.splitlines())
+        if ref
+    }
 
 
 def drop_records(heads: list[str]) -> None:
@@ -13900,6 +14062,7 @@ def drop_records(heads: list[str]) -> None:
     if open_trees is not None and None in open_trees:
         open_trees = None
     try:
+        # both names, each mirrored under its own prefix: a record may be held under either (#2821)
         git(
             "fetch",
             "-q",
@@ -13907,25 +14070,32 @@ def drop_records(heads: list[str]) -> None:
             "--no-tags",
             forge(),
             f"+{RECORD_BRANCH.format('*')}:refs/loop/records/*",
+            f"+{RECORD_REF.format('*')}:refs/loop/records-ref/*",
         )
         listed = git(
             "for-each-ref",
-            "--format=%(refname:lstrip=3) %(committerdate:unix)",
+            "--format=%(refname) %(committerdate:unix)",
             "refs/loop/records/",
+            "refs/loop/records-ref/",
         )
     except (subprocess.CalledProcessError, OSError):
         return
     old = time.time() - RECORD_AGE
-    for name, when in (line.split() for line in listed.splitlines() if len(line.split()) == 2):
+    for mirror, when in (line.split() for line in listed.splitlines() if len(line.split()) == 2):
+        by_ref = mirror.startswith("refs/loop/records-ref/")
+        name = mirror.removeprefix("refs/loop/records-ref/" if by_ref else "refs/loop/records/")
+        if by_ref and not RECORD_NAME.fullmatch(name):
+            continue  # refs/loop/gate/ also holds the gate's loop events, named by their branch
+        target = (RECORD_REF if by_ref else RECORD_BRANCH).format(name)
         held = name.split("-", 1)[0]
         stale = open_trees is not None and held not in open_trees and int(when) < old
         if held not in landed and not stale:
             continue
         try:
-            git("push", "-q", "--no-verify", forge(), f":{RECORD_BRANCH.format(name)}")
+            git("push", "-q", "--no-verify", forge(), f":{target}")
         except subprocess.CalledProcessError as exc:
             print(
-                f"the record branch {RECORD_BRANCH.format(name)} was not deleted: {' '.join((exc.stderr or '').split())}"
+                f"the record branch {target} was not deleted: {' '.join((exc.stderr or '').split())}"
             )
 
 
@@ -14039,7 +14209,7 @@ def publish(
             print(f"{KEPT}{ref} {commit}")
             continue
         if one.get("published"):
-            name = one.get("ref") or RECORD_BRANCH.format(record_name(one["tree"], one["command"]))
+            name = one.get("ref") or RECORD_REF.format(record_name(one["tree"], one["command"]))
             print(f"already in origin as the record branch {name}, so it is not pushed again")
             continue
         try:
@@ -14099,7 +14269,7 @@ def no_pass(head: str, why: list[str] | tuple[str, ...] = ()) -> str:
                     f" looked in this clone's records and origin's record branches of {command}"
                 )
             continue
-        ref = RECORD_BRANCH.format(record_name(held, command))
+        ref = RECORD_REF.format(record_name(held, command))
         found = []
         try:
             record = json.loads(recorded(held, command).read_text())
@@ -14647,6 +14817,7 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return 0
     if args.command == "prune-records":
         drop_records(args.head)
+        upgrade_sweep(force=True)
         return 0
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)
