@@ -12,6 +12,10 @@ second occurrence of a mistake; a line that would not change behaviour goes.
 - A bug fix ships a regression test named after its root cause. Test names are sentences.
 - A performance fix's test counts work (queries, calls, rows, bytes), never time, which
   varies with the host.
+- A test is cheap: its budget is `timeouts.test_budget` in `docs/agents/gatekeeper.md` (and `timeouts.file_budget` for a file), checked
+  against the nightly's durations. Build a fixture repo once per session and copy it into each test, stub `git` (and any other
+  process) a test does not check, and never sleep or wait on real time: inject the clock. A test that must spawn a process or
+  wait carries `@pytest.mark.slow`, and the reason.
 - Evidence is by kind: a UI change gets one e2e test that fails if the feature breaks,
   plus a link to see it; a data change gets counts and timings from a real run in the
   commit and PR body; any other kind gets what `docs/agents/loop.md` § Proof on a branch names.

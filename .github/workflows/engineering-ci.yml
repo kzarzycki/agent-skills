@@ -181,21 +181,38 @@ jobs:
           TEST_MAP_SKIPPED: ${{ github.workspace }}/.test-map/skipped
           # each test's time, across the run's pytest runs (tools/test_map_plugin.py), for the durations step below
           TEST_DURATIONS: ${{ github.workspace }}/.test-map/durations.log
+          # the tests it fails: tools/test_map_check.py drops them from the map, so one red test leaves the rest selectable (#1400)
+          TEST_MAP_FAILED: ${{ github.workspace }}/.test-map/failed
           GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
           TEST_SHARDS: "4" # one serial pytest per runner core, each on its share of the test files: the whole suite in a quarter of the time (#2804)
-          PYTEST_ADDOPTS: -n 0 --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
+          PYTEST_ADDOPTS: -n 0 --cov --cov-context=test --cov-append --cov-report= # bare --cov: the packages are pyproject.toml's [tool.coverage.run] source, the one list tests/test_packages.py checks (#1400)
         run: mise run check
       # The nightly's per-test durations (#2445): the file `shards --durations` reads, kept beside the test map. Nothing in
       # this repo's CI reads it yet: `affected-tests`' estimate reads it from GATE_DURATIONS where that verb runs, and this
       # repo's selector (`Affected tests:`) lists no tests to estimate, so the fail-fast stays off here (#2445's open question).
-      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
-        run: python3 gatekeeper/skills/gatekeeper/scripts/gatekeeper.py durations --record .test-map/durations.log --out .test-map/durations.json
-      # Only a green run: the map names the lines every test ran, which a failed run leaves incomplete.
-      - if: github.event_name == 'schedule' && steps.tested.outputs.skip != 'true'
+      # A red suite still leaves a map (#1400): the run above went red on a failed test, which the steps below run past
+      # (`!cancelled()`), and the job stays red. The map is pruned to the tests that passed, then checked: one that measures no
+      # source file or names fewer tests than ran fails this step, so no empty map is saved and the selector's "map is empty" is never
+      # the first sign of one.
+      - id: map
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.tested.outputs.skip != 'true' }}
+        run: python3 tools/test_map_check.py .test-map
+      # Each test's time, per test and per file, for the budget check below (`durations --check`, `timeouts.file_budget` and `timeouts.test_budget`).
+      - id: durations
+        if: ${{ !cancelled() && github.event_name == 'schedule' && steps.tested.outputs.skip != 'true' }}
+        run: >-
+          python3 gatekeeper/skills/gatekeeper/scripts/gatekeeper.py durations --record .test-map/durations.log
+          --out .test-map/durations.json --tests-out .test-map/durations-tests.json
+      - if: ${{ !cancelled() && steps.map.outcome == 'success' && github.event_name == 'schedule' && steps.tested.outputs.skip != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .test-map
           key: test-map-${{ github.sha }}
+      # The slowest files and tests, and a failure naming each file and test over its budget (timeouts.file_budget, timeouts.test_budget).
+      - if: ${{ !cancelled() && steps.durations.outcome == 'success' && github.event_name == 'schedule' && steps.tested.outputs.skip != 'true' }}
+        run: >-
+          python3 gatekeeper/skills/gatekeeper/scripts/gatekeeper.py durations --check .test-map/durations.json
+          --tests .test-map/durations-tests.json
       # The tests this run ran and failed, as JSON (tools/failed_tests.py), whatever happened before: the owner's
       # break-glass proof reads them (gatekeeper's breakglass.md). No JUnit file (tests are off, or the run died)
       # writes two empty lists, which the proof reads as a failure with no test ids.

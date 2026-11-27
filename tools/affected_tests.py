@@ -269,7 +269,8 @@ def executed_by(path: str, sha: str, data) -> set[str] | None:
 
 
 def load_map():
-    """The map's commit and coverage data, or None when there is none or its commit is gone."""
+    """The map's commit and coverage data, or None when there is none or its commit is gone (the data is None for a map
+    that measures no file)."""
     try:
         from coverage import CoverageData
         from coverage.exceptions import CoverageException
@@ -282,8 +283,9 @@ def load_map():
         )
         data = CoverageData(basename=str(MAP / "coverage"))
         data.read()
-        data.measured_files()  # opens the data now: a truncated file raises here, not mid-selection
-        return (sha, data) if known.returncode == 0 else None
+        measured = data.measured_files()  # opens the data now: a truncated file raises here, not mid-selection
+        # a map that measures no file is (sha, None): targets() says it is empty, which no map at all is not (#1400)
+        return (sha, data if measured else None) if known.returncode == 0 else None
     except OSError, CoverageException:
         return None
 
@@ -373,11 +375,15 @@ def targets(
     picked: set[str] = set()
     product = False  # a changed path some test can fail on: only a change with none selects zero
     mapped = load_map()
-    say(
-        f"map of {mapped[0][:12]}"
-        if mapped
-        else f"no map at {MAP}: a script runs every test that names it"
-    )
+    if mapped and mapped[1] is None:  # a map that holds nothing decides nothing: say so, once (#1400)
+        say(f"map is empty (map of {mapped[0][:12]} measures no file): a script runs every test that names it")
+        mapped = None
+    else:
+        say(
+            f"map of {mapped[0][:12]}"
+            if mapped
+            else f"no map at {MAP}: a script runs every test that names it"
+        )
     if inputs:
         product = True
         if lock_moved:
@@ -459,7 +465,9 @@ def targets(
                 why = (
                     "changed on main since the map"
                     if f in moved
-                    else "not in the map, or an import ran its change"
+                    else "an import ran its change"
+                    if f in mapped[1].measured_files()
+                    else f"map has no entry for {f}"
                 )
                 say(f"{f}: {len(named)} test files name it ({why})")
             else:

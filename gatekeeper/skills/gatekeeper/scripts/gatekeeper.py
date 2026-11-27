@@ -28,6 +28,7 @@
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py queue-select [<base>]      # a merge queue's batch check (R6): one command per line to run on the batch, the select.unkeyed checks and `affected-tests --base <point>` for each PR with no record; exit 1 when that is nothing while a PR has no record
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
+    uv run scripts/approvals.py durations --record <log> --out <file> [--tests-out <file>] | --check <durations.json> [--tests <file>]  # the nightly's per-file and per-test times; --check lists the slowest and exits 1 for each file or test over `timeouts.file_budget` or `timeouts.test_budget`, naming file, test, time and budget
     uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1, one line each, when .mergify.yml, a marked workflow job's `timeout-minutes`, loop.md's `Wall-clock variable:`, a hand-set `land.wait` or the nightly's push paths (against `select.build_inputs`) is out of step
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
@@ -1076,7 +1077,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
         ),
     ),
     # every time limit of a run (timeouts): one test, and one selection run, the queue's check included (#2228)
-    "timeouts": Table(test=str, run=str, optional=("test", "run")),
+    # `file_budget` and `test_budget` (#1400): what the nightly's durations may take per test file and per test (`durations --check`)
+    "timeouts": Table(
+        test=str,
+        run=str,
+        file_budget=str,
+        test_budget=str,
+        optional=("test", "run", "file_budget", "test_budget"),
+    ),
     # the break-glass land's proof windows (breakglass_settings); every key is optional
     "breakglass": Table(
         max_age=str,
@@ -6951,7 +6959,8 @@ def land_wait() -> int:
 def timeouts(loop: str | None) -> dict[str, int]:
     """The policy's `timeouts` in seconds, each key's default (TIMEOUTS, today's values) where it sets none: `test`,
     one test's limit, which a project maps onto its runner's own per-test option in its `Affected tests:` command, and
-    `run`, one selection run's, the queue's check included."""
+    `run`, one selection run's, the queue's check included. `file_budget` and `test_budget`, the time one test file and
+    one test may take in the nightly's durations (`durations --check`), are there only when the policy sets them."""
     given = {**TIMEOUTS, **settings(loop).get("timeouts", {})}
     return {key: int(span(text).total_seconds()) for key, text in given.items()}  # type: ignore[union-attr]
 
@@ -7128,6 +7137,9 @@ def timeouts_verb(render: bool, check_only: bool, as_json: bool) -> int:
     print(
         f"timeouts.run: {said_span(limits['run'])} (one selection run, the queue's check included)"
     )
+    for key in ("file_budget", "test_budget"):
+        if key in limits:
+            print(f"timeouts.{key}: {said_span(limits[key])} (`durations --check`)")
     print(f"queue checks_timeout: {derived['checks_timeout']}")
     print(f"job timeout-minutes: {derived['job_timeout_minutes']}")
     overridden = "wait" in settings(loop).get("land", {})
@@ -11670,6 +11682,9 @@ FAIL_FAST_SHARE = (
 )
 DRIFT_SHARE = 0.25  # how far the actual time may be from its estimate before the nightly report flags it (a start)
 DURATION_LINE = re.compile(r"^\s*([\d.]+)s\s+(?:setup|call|teardown)\s+(\S+)", re.MULTILINE)
+# a line of the nightly's own durations log (tools/test_map_plugin.py): the node id is the rest of the line, spaces included
+TEST_LINE = re.compile(r"^\s*([\d.]+)s\s+(?:setup|call|teardown)\s+(.+?)\s*$", re.MULTILINE)
+SLOWEST = 10  # the files and tests `durations --check` lists as the slowest
 
 
 def durations_path(root: Path) -> Path:
@@ -11699,6 +11714,78 @@ def parse_durations(text: str) -> dict[str, float]:
                 continue
             found[file] = found.get(file, 0.0) + float(seconds)
     return {file: round(seconds, 3) for file, seconds in found.items()}
+
+
+def parse_test_durations(text: str) -> dict[str, float]:
+    """Seconds per test node id (its setup, call and teardown together) from `pytest --durations=0` lines or a JUnit XML:
+    `durations --record --tests-out` writes it beside the per-file file, which `durations --check` reads (#1400)."""
+    found: dict[str, float] = {}
+    if text.lstrip().startswith("<"):
+        for case in ET.fromstring(text).iter("testcase"):
+            file = case.get("file") or "/".join((case.get("classname") or "").split(".")) + ".py"
+            node = f"{file}::{case.get('name')}"
+            found[node] = found.get(node, 0.0) + float(case.get("time") or 0)
+    else:
+        for seconds, node in TEST_LINE.findall(text):
+            if node.split("::")[0] and "::" in node:
+                found[node] = found.get(node, 0.0) + float(seconds)
+    return {node: round(seconds, 3) for node, seconds in found.items()}
+
+
+def budget_problems(
+    files: dict[str, float], tests: dict[str, float], file_budget: int | None, test_budget: int | None
+) -> list[str]:
+    """One line for each test file whose total time is over `file_budget` and each test over `test_budget` (seconds; None:
+    no budget set), naming the file, the test, its time and the budget; the slowest first."""
+    out = []
+    if file_budget is not None:
+        for file, seconds in sorted(files.items(), key=lambda kv: -kv[1]):
+            if seconds > file_budget:
+                out.append(
+                    f"durations: file {file} took {seconds:.1f}s, over its budget of {file_budget}s"
+                    f" (`timeouts.file_budget`)"
+                )
+    if test_budget is not None:
+        for node, seconds in sorted(tests.items(), key=lambda kv: -kv[1]):
+            if seconds > test_budget:
+                out.append(
+                    f"durations: test {node} (file {node.split('::')[0]}) took {seconds:.1f}s, over its budget of"
+                    f" {test_budget}s (`timeouts.test_budget`)"
+                )
+    return out
+
+
+def durations_check(root: Path, files_path: str, tests_path: str | None) -> int:
+    """`durations --check <durations.json> [--tests <durations-tests.json>]`: print the slowest files and tests, then fail
+    (exit 1) with one line for each file or test over the policy's `timeouts.file_budget` or `timeouts.test_budget`."""
+    try:
+        files = {k: float(v) for k, v in json.loads(Path(files_path).read_text()).items()}
+        tests = (
+            {k: float(v) for k, v in json.loads(Path(tests_path).read_text()).items()}
+            if tests_path
+            else {}
+        )
+    except (OSError, ValueError, AttributeError, TypeError) as error:
+        print(f"durations: can't read the durations: {error}", file=sys.stderr)
+        return 1
+    limits = timeouts(tree_policy(root))
+    print(f"durations: the {SLOWEST} slowest of {len(files)} test files:")
+    for file, seconds in sorted(files.items(), key=lambda kv: -kv[1])[:SLOWEST]:
+        print(f"  {seconds:8.1f}s  {file}")
+    if tests:
+        print(f"durations: the {SLOWEST} slowest of {len(tests)} tests:")
+        for node, seconds in sorted(tests.items(), key=lambda kv: -kv[1])[:SLOWEST]:
+            print(f"  {seconds:8.1f}s  {node}")
+    budgets = (limits.get("file_budget"), limits.get("test_budget"))
+    if budgets == (None, None):
+        print("durations: no `timeouts.file_budget` or `timeouts.test_budget` is set: nothing to check")
+        return 0
+    found = budget_problems(files, tests, *budgets)
+    if found:
+        print("\n".join(found))
+        return 1
+    print("durations: every file and test is within its budget")
+    return 0
 
 
 def estimate_seconds(
@@ -11776,11 +11863,22 @@ def drift_lines(root: Path, share: float = DRIFT_SHARE) -> list[str]:
     ]
 
 
-def durations_verb(record: str | None, out: str | None, setup: float | None, report: bool) -> int:
+def durations_verb(
+    record: str | None,
+    out: str | None,
+    setup: float | None,
+    report: bool,
+    check: str | None = None,
+    tests: str | None = None,
+    tests_out: str | None = None,
+) -> int:
     """`durations --record <junit.xml | durations.txt> [--out <file>] [--setup <seconds>]` turns one run's JUnit XML or
     `--durations=0` output into the durations file `shards --durations` and `affected-tests` read; `--report` prints a
-    line for each recorded gate run whose time is far from its estimate (the nightly report)."""
+    line for each recorded gate run whose time is far from its estimate (the nightly report). `--tests-out <file>` also
+    writes each test's time (parse_test_durations); `--check <durations.json> [--tests <file>]` is durations_check (#1400)."""
     root = toplevel()
+    if check:
+        return durations_check(root, check, tests)
     if record:
         found = parse_durations(Path(record).read_text())
         if not found:
@@ -11789,6 +11887,10 @@ def durations_verb(record: str | None, out: str | None, setup: float | None, rep
         target = Path(out) if out else durations_path(root)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(found, indent=1, sort_keys=True) + "\n")
+        if tests_out:
+            per_test = parse_test_durations(Path(record).read_text())
+            Path(tests_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(tests_out).write_text(json.dumps(per_test, indent=1, sort_keys=True) + "\n")
         if setup is not None:
             (root / SETUP_FILE).parent.mkdir(parents=True, exist_ok=True)
             (root / SETUP_FILE).write_text(f"{setup}\n")
@@ -14823,6 +14925,9 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--out", metavar="FILE")
     recording.add_argument("--setup", type=float, metavar="SECONDS")
     recording.add_argument("--report", action="store_true")
+    recording.add_argument("--check", metavar="DURATIONS_JSON")
+    recording.add_argument("--tests", metavar="FILE")
+    recording.add_argument("--tests-out", metavar="FILE")
     timing = commands.add_parser("timeouts")
     timing_how = timing.add_mutually_exclusive_group()
     timing_how.add_argument("--mergify", action="store_true")
@@ -14884,7 +14989,9 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "rerun-tests":
         return rerun_tests(args.failed, args.red, args.base)
     if args.command == "durations":
-        return durations_verb(args.record, args.out, args.setup, args.report)
+        return durations_verb(
+            args.record, args.out, args.setup, args.report, args.check, args.tests, args.tests_out
+        )
     if args.command == "timeouts":  # the working tree's files only: no forge, no remote
         return timeouts_verb(args.mergify, args.check, args.json)
     if args.command == "queue-select":

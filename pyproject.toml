@@ -36,6 +36,9 @@ markers = [
 [tool.coverage.run]
 relative_files = true
 parallel = true
+# The one list of what the nightly measures (its bare `--cov` reads it; tests/test_packages.py holds it to the repo's layout): every
+# package that has tests, plus `tools` and the top-level `tests`, so a test's own lines give it a context in the map (#1400).
+source = ["engineering", "gatekeeper", "loop", "github", "chief-of-staff", "omnigent", "tools", "tests"]
 patch = ["subprocess"]
 
 [tool.ruff]

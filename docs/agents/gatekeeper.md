@@ -78,6 +78,10 @@ select:
 timeouts:
   test: 60s   # one test: tools/timeouts_plugin.py gives it to pytest-timeout (pyproject.toml sets no limit of its own)
   run: 60m    # one selection run: .mergify.yml's checks_timeout and the qualify job's timeout-minutes derive from it
+  # What the nightly's durations may take (`durations --check`, #1400): a test file's total and one test. A start from the first nightly's
+  # slowest list; tighten each toward the cheap-test rule in coding-standards.md § Tests.
+  file_budget: 5m
+  test_budget: 30s
 
 breakglass:
   max_age: 7d   # a run older than this counts for nothing in the owner's break-glass proof

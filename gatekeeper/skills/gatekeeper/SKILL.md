@@ -24,6 +24,7 @@ it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged 
 | `report [--json]` | reads a verifier report as the gatekeeper does; `--json` prints its facts |
 | `claim <issue> [--takeover\|--release]` | an early claim as a record on the issue naming this session (none for a run with no session), `check build` exits 1 naming the holder when another session holds it, `--takeover` writes a `Handover:` record, `--release` a `Released:` one |
 | `delegate` | the delegated approver's `approved:merge`, feature branch only |
+| `durations --record <log> --out <file> [--tests-out <file>]\|--check <file> [--tests <file>]` | the nightly's per-file (and per-test) durations; `--check` lists the slowest and exits 1 naming each file or test over `timeouts.file_budget` or `timeouts.test_budget` |
 | `timeouts [--json\|--mergify\|--check]` | every time limit the policy's `timeouts` derive; `--mergify` renders `.mergify.yml`, `--check` exits 1 where it is out of step |
 
 Exit codes, for every verb: `0` allowed or done; `1` refused, with one line per missing
