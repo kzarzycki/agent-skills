@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.15 - 2026-11-27
+
+- cloud_verifier: child usage posts to `POST /v1/sessions/{id}/child-usage` on the server `OMNIGENT_SERVER_URL` names (replacing `OMNIGENT_CHILD_USAGE_URL`), with `key`, `harness` and the optional model, token and cost fields, and an `X-Omnigent-Orchestration-Source` header naming the parent; the key is stable per child run, so a retry replaces its entry (#2805).
+
 ## 0.1.14 - 2026-11-26
 
 - cloud_verifier: the usage a verifier's `codex` or `agy` prints is posted under its parent session when `OMNIGENT_CHILD_USAGE_URL` is set (#2775).

@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.25 - 2026-11-27
+
+- omnigent-telemetry: the report reads `GET /v1/usage/telemetry` and `GET /v1/usage` `sessions[].child_usage[]` instead of Postgres: no SQL, no database credentials, `--db-container` is gone and `--max-sessions` is new; sections the server truncated print as gaps, not zeros, and child usage shows beside its parent session without joining any cost (#2805).
+
 ## 0.1.24 - 2026-11-27
 
 - omnigent-agents: `reap --merged --pr N` (started by `land`) spares its caller and every session whose `omni.role` is a lead or manager, and still finishes the PR's workers and role-less children (#2794).
