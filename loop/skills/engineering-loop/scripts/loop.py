@@ -68,6 +68,27 @@ FILE_LIST_CAP = 120
 NOISE = re.compile(r"^(?:Token estimate|Tokens spent):.*\n?", re.MULTILINE)
 
 
+def host_only_lines(body: str) -> list[str]:
+    """The spec's Before merge lines that start `Host:` (as `Manual:` marks a line for a person), each as written
+    without its list marker: a check only a host can run, which a cloud verifier can't, so the brief names it up front
+    instead of the verifier stopping on it (#962). A flat `## Acceptance` list reads as all Before merge."""
+    acceptance = re.search(
+        r"^## Acceptance[ \t]*\n(.*?)(?=^## |\Z)", body, re.DOTALL | re.MULTILINE
+    )
+    if not acceptance:
+        return []
+    text = acceptance[1]
+    after = re.search(r"^### After merge\b.*?(?=^### |\Z)", text, re.DOTALL | re.MULTILINE)
+    if after:
+        text = text[: after.start()] + text[after.end() :]
+    return [
+        line[1].strip()
+        for line in re.finditer(
+            r"^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*(Host:.*?)[ \t]*$", text, re.MULTILINE
+        )
+    ]
+
+
 def diff_summary(base: str, head: str) -> list[str]:
     """The brief's diff lines: `git diff --stat` between the merge-base and the head and the changed files with their
     status, so the verifier reads them from the brief instead of exploring the tree for them. The head is fetched
@@ -196,6 +217,17 @@ def brief(
         else f"uv run {runner if far else os.path.relpath(runner)}"
     )
     lines += [f"- Acceptance tests: {command} {n}" for n in issues]
+    # a check only a host can run: named up front, so a verifier in a cloud VM leaves it to the lead (#962)
+    host = [
+        line
+        for node in pull["closingIssuesReferences"]["nodes"]
+        for line in host_only_lines(node.get("body") or "")
+    ]
+    if host:
+        lines += [
+            "- Host-only lines (a host runs these, not your VM: leave them, and say so in your report):",
+            *(f"  - {line}" for line in host),
+        ]
     # a repo with no CI has no CI run to rerun a high-risk head's selection: the verifier starts it (levels' `rerun`)
     rerun = [level for level, asks in gatekeeper.levels(policy).items() if asks.get("rerun")]
     if gatekeeper.no_ci(policy) and rerun:
