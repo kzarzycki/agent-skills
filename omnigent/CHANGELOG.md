@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.26 - 2026-11-27
+
+- omnigent-agents: `reap --force` finishes a session whose runner has gone away: when the `interrupt` is not queued and the session stays running, `Omnigent.interrupt` sends the server's `stop_session` event, so `start-lead` no longer refuses a new verifier on that PR (#2808).
+
 ## 0.1.25 - 2026-11-27
 
 - omnigent-telemetry: the report reads `GET /v1/usage/telemetry` and `GET /v1/usage` `sessions[].child_usage[]` instead of Postgres: no SQL, no database credentials, `--db-container` is gone and `--max-sessions` is new; sections the server truncated print as gaps, not zeros, and child usage shows beside its parent session without joining any cost (#2805).
