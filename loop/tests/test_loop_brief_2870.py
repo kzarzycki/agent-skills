@@ -13,7 +13,9 @@ from test_loop import loop
 
 
 def git(where: Path, *args: str) -> str:
-    done = subprocess.run(["git", "-C", str(where), *args], capture_output=True, text=True, check=True)
+    done = subprocess.run(
+        ["git", "-C", str(where), *args], capture_output=True, text=True, check=True
+    )
     return done.stdout.strip()
 
 
@@ -68,7 +70,9 @@ def stand_in(monkeypatch: pytest.MonkeyPatch, base: str, head: str, body: str) -
 
 
 def test_the_brief_lists_the_changed_files_and_the_diff_stat(
-    clone: tuple[Path, str, str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    clone: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _, base, head = clone
     stand_in(monkeypatch, base, head, "Closes #2870\n")
@@ -81,10 +85,14 @@ def test_the_brief_lists_the_changed_files_and_the_diff_stat(
 
 
 def test_the_brief_carries_a_tool_call_budget_and_drops_the_pr_bodys_spend_lines(
-    clone: tuple[Path, str, str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    clone: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _, base, head = clone
-    body = "Closes #2870\nToken estimate: ~2M (two passes)\nTokens spent: 1.9M\n## Evidence\nran it\n"
+    body = (
+        "Closes #2870\nToken estimate: ~2M (two passes)\nTokens spent: 1.9M\n## Evidence\nran it\n"
+    )
     stand_in(monkeypatch, base, head, body)
     assert loop.brief(7, None, []) == 0
     out = capsys.readouterr().out

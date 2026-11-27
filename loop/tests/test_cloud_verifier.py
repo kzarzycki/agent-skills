@@ -449,7 +449,12 @@ def test_the_final_message_is_the_report_when_the_brief_names_no_file(checkout) 
     brief.write_text("Review PR #7.\n")
     assert cv.verify(7, brief, None, None) == 0
     assert posted == [cv.folded_report("final\nSATISFIED: yes\n")]
-    assert seen["cmd"][-5:-1] == ["-m", "gpt-6.1-terra", "-c", "model_reasoning_effort=medium"]  # #2870
+    assert seen["cmd"][-5:-1] == [
+        "-m",
+        "gpt-6.1-terra",
+        "-c",
+        "model_reasoning_effort=medium",
+    ]  # #2870
 
 
 def test_a_final_message_linking_the_report_file_yields_it_but_a_link_outside_the_checkout_does_not(

@@ -3677,7 +3677,9 @@ CODEX_VERIFIER_MODEL, CODEX_VERIFIER_EFFORT = "gpt-6.1-terra", "medium"
 CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
 
 
-def earlier_codex_pass(reviews: list[Any], comments: list[Any], head: str) -> tuple[str, str] | None:
+def earlier_codex_pass(
+    reviews: list[Any], comments: list[Any], head: str
+) -> tuple[str, str] | None:
     """The (family, pass) of the newest Codex verifier pass already posted on `head`, else None: a review on that
     commit headed `Verifier (codex/...), pass <n>`, or a cloud_verifier.py comment (`Head: <sha>` in view,
     `Verifier: codex/..., pass <n>` folded below). Twin of cloud_verifier.py's, which a VM runs without this file."""
@@ -3694,7 +3696,10 @@ def earlier_codex_pass(reviews: list[Any], comments: list[Any], head: str) -> tu
         and re.search(rf"^Head: {re.escape(head)}\s*$", c.get("body") or "", re.MULTILINE)
         and (m := CODEX_PASS.search(c.get("body") or ""))
     ]
-    return (lambda top: (top[1], str(top[0])))(max(found)) if found else None
+    if not found:
+        return None
+    number, family = max(found)
+    return family, str(number)
 
 
 def codex_pass_on_head(pr: int | None) -> str | None:
@@ -3703,10 +3708,13 @@ def codex_pass_on_head(pr: int | None) -> str | None:
     if not pr:
         return None
     try:
+
         def get(path: str) -> list[Any]:
             out = subprocess.run(
                 ["gh", "api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}"],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             ).stdout
             items, at, decoder = [], 0, json.JSONDecoder()
             while at < len(out):
@@ -3720,7 +3728,9 @@ def codex_pass_on_head(pr: int | None) -> str | None:
         head = json.loads(
             subprocess.run(
                 ["gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}"],
-                capture_output=True, text=True, check=True,
+                capture_output=True,
+                text=True,
+                check=True,
             ).stdout
         )["head"]["sha"]
         again = earlier_codex_pass(get(f"pulls/{pr}/reviews"), get(f"issues/{pr}/comments"), head)
@@ -3732,6 +3742,8 @@ def codex_pass_on_head(pr: int | None) -> str | None:
         f"PR #{pr} head {head[:12]} already has a Codex verifier pass ({again[0]}, pass {again[1]}): a second pass on an"
         " unchanged head repeats it. Push a fix and verify the new head, or start another route (--verifier-route)"
     )
+
+
 VALUES_FILE, VALUES_ENV = "cos-values.yml", "COS_VALUES"
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
@@ -13876,8 +13888,10 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # the model's
             if verifier and not args.model and args.verifier_route == setting.get("route"):
                 args.model = setting.get("model")
-            if verifier and args.verifier_route == "codex" and (
-                args.agent == "codex" or "codex" in og.harness(args.agent)
+            if (
+                verifier
+                and args.verifier_route == "codex"
+                and (args.agent == "codex" or "codex" in og.harness(args.agent))
             ):
                 # never Codex's own defaults: a Sol model and an unset effort resend ~100k tokens of context per
                 # tool call at the larger model's rate (#2870); a start asks for Sol or another effort itself

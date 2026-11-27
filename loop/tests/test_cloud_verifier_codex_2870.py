@@ -27,20 +27,25 @@ def test_a_start_that_names_sol_and_an_effort_keeps_them(checkout) -> None:  # n
 
 
 def test_a_second_codex_pass_on_an_unchanged_head_is_refused_naming_the_first(
-    checkout, monkeypatch
-) -> None:  # noqa: F811
+    checkout,  # noqa: F811
+    monkeypatch,
+) -> None:
     _, head, brief, posted, seen = checkout
     seen["report"] = REPORT
     first = {"commit_id": head, "body": "**Verifier (codex/terra-6.1/med), pass 1** on abc"}
     monkeypatch.setattr(cv, "pass_history", lambda pr: ([first], []))
-    with pytest.raises(cv.Refused, match=r"already has a Codex verifier pass \(codex/terra-6.1/med, pass 1\)"):
+    with pytest.raises(
+        cv.Refused, match=r"already has a Codex verifier pass \(codex/terra-6.1/med, pass 1\)"
+    ):
         cv.verify(7, brief, None, None)
     assert "cmd" not in seen and posted == []  # Codex never started
 
 
 def test_a_pass_comment_of_this_script_counts_and_another_head_or_family_does_not(checkout) -> None:  # noqa: F811
     head = checkout[1]
-    comment = {"body": f"Head: {head}\nVERDICT: 0 blocker\n\nVerifier: codex/sol-6.1/high, pass 2\n"}
+    comment = {
+        "body": f"Head: {head}\nVERDICT: 0 blocker\n\nVerifier: codex/sol-6.1/high, pass 2\n"
+    }
     assert cv.earlier_codex_pass([], [comment], head) == ("codex/sol-6.1/high", "2")
     assert cv.earlier_codex_pass([], [comment], "f" * 40) is None  # a new head: a fix was pushed
     other = {"commit_id": head, "body": "Verifier (claude, same-family), pass 1"}

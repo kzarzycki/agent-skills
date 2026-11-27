@@ -14,7 +14,15 @@ from test_omnigent_agent import FakeOmnigent, omnigent_agent
 
 def start(tmp_path: Path, role_file: Callable[[str], str], *more: str) -> list[str]:
     (tmp_path / "b.md").write_text("review")
-    argv = ["start", "codex", "t", "b.md", str(tmp_path / "r.md"), "--role", role_file("verifier.md")]
+    argv = [
+        "start",
+        "codex",
+        "t",
+        "b.md",
+        str(tmp_path / "r.md"),
+        "--role",
+        role_file("verifier.md"),
+    ]
     return [*argv, *more]
 
 
@@ -43,7 +51,10 @@ def test_a_pass_already_on_the_head_is_found_in_a_review_or_a_comment() -> None:
     head = "a" * 40
     review = {"commit_id": head, "body": "**Verifier (codex/terra-6.1/med), pass 1**"}
     comment = {"body": f"Head: {head}\n\nVerifier: codex/sol-6.1/high, pass 2\n"}
-    assert omnigent_agent.earlier_codex_pass([review], [comment], head) == ("codex/sol-6.1/high", "2")
+    assert omnigent_agent.earlier_codex_pass([review], [comment], head) == (
+        "codex/sol-6.1/high",
+        "2",
+    )
     assert omnigent_agent.earlier_codex_pass([review], [], "b" * 40) is None  # a fix was pushed
     claude = {"commit_id": head, "body": "Verifier (claude, same-family), pass 1"}
     assert omnigent_agent.earlier_codex_pass([claude], [], head) is None
@@ -54,7 +65,7 @@ def test_the_refusal_names_the_earlier_pass_and_a_forge_that_cannot_answer_refus
 ) -> None:
     head = "c" * 40
     answers = {
-        f"repos/{{owner}}/{{repo}}/pulls/7": json.dumps({"head": {"sha": head}}),
+        "repos/{owner}/{repo}/pulls/7": json.dumps({"head": {"sha": head}}),
         "repos/{owner}/{repo}/pulls/7/reviews": json.dumps(
             [{"commit_id": head, "body": "**Verifier (codex/terra-6.1/med), pass 3**"}]
         ),

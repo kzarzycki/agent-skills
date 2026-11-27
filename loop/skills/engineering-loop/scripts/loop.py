@@ -72,8 +72,11 @@ def diff_summary(base: str, head: str) -> list[str]:
     """The brief's diff lines: `git diff --stat` between the merge-base and the head and the changed files with their
     status, so the verifier reads them from the brief instead of exploring the tree for them. The head is fetched
     first when this clone lacks it; where git can't answer, one line says so."""
+
     def git(*args: str) -> str:
-        return subprocess.run(["git", *args], capture_output=True, text=True, check=True).stdout.rstrip("\n")
+        return subprocess.run(
+            ["git", *args], capture_output=True, text=True, check=True
+        ).stdout.rstrip("\n")
 
     try:
         try:
@@ -85,7 +88,9 @@ def diff_summary(base: str, head: str) -> list[str]:
     except (subprocess.CalledProcessError, OSError):
         return ["- Diff: not available here; run `git diff --stat <base> <head>`"]
     shown = names[:FILE_LIST_CAP]
-    more = [f"  ...and {len(names) - FILE_LIST_CAP} more: run `git diff --name-status`"] * (len(names) > FILE_LIST_CAP)
+    more = [f"  ...and {len(names) - FILE_LIST_CAP} more: run `git diff --name-status`"] * (
+        len(names) > FILE_LIST_CAP
+    )
     return [
         f"- Changed files ({len(names)}, status then path):",
         *(f"  {line}" for line in shown),
