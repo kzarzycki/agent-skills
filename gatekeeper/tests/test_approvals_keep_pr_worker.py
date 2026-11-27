@@ -57,6 +57,7 @@ def test_archive_workers_starts_reap_merged_detached_and_does_not_wait(
     assert cmd[2:] == ["reap", "--merged", "--pr", "7"]
     assert cmd[1].endswith("omnigent-agents/scripts/omnigent_agent.py")
     assert kw["start_new_session"] is True and kw["stdin"] == subprocess.DEVNULL
+    assert kw.get("env") is None  # inherited: the caller's session id reaches the reap (#2794)
     out = capsys.readouterr().out
     assert "PR #7: finishing its worker sessions in the background, log " in out
     log = Path(out.rsplit("log ", 1)[1].strip())
