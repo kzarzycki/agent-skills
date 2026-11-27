@@ -3672,6 +3672,105 @@ EFFORTS = {
 AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 # the verifier's routes (`--verifier-route`): with no setting the default stays Codex, the other two are its fallback when it refuses
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
+# a Codex verifier start with no model or effort named runs on these (cloud_verifier.py's CODEX_MODEL and CODEX_EFFORT)
+# (the model is a tier, never an id: a generation drops tiers, and `start` refuses an older generation's)
+CODEX_VERIFIER_TIER, CODEX_VERIFIER_EFFORT = "terra", "medium"
+CODEX_TIERS = (
+    "luna",
+    "terra",
+    "sol",
+    "astra",
+)  # smallest to largest, as engineering-loop SKILL.md, Models, names them
+
+
+def tier_model(listed: list[str], tier: str) -> str | None:
+    """The model of `tier` among Codex ids `listed` (`gpt-<generation>-<tier>`): the newest generation's, else that
+    generation's closest higher tier, else its highest, never an older generation's; None when none is listed."""
+    found: dict[tuple[int, ...], dict[str, str]] = {}
+    for i in listed:
+        if m := re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-([a-z]+)", i):
+            found.setdefault(tuple(map(int, m[1].split("."))), {})[m[2]] = i
+    if not found:
+        return None
+    tiers = found[max(found)]
+    above = [t for t in CODEX_TIERS[CODEX_TIERS.index(tier) :] if t in tiers]
+    return (
+        tiers[above[0]]
+        if above
+        else tiers[max(tiers, key=lambda t: CODEX_TIERS.index(t) if t in CODEX_TIERS else -1)]
+    )
+
+
+CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
+
+
+def earlier_codex_pass(
+    reviews: list[Any], comments: list[Any], head: str
+) -> tuple[str, str] | None:
+    """The (family, pass) of the newest Codex verifier pass already posted on `head`, else None: a review on that
+    commit headed `Verifier (codex/...), pass <n>`, or a cloud_verifier.py comment (`Head: <sha>` in view,
+    `Verifier: codex/..., pass <n>` folded below). Twin of cloud_verifier.py's, which a VM runs without this file."""
+    found = [
+        (int(m[2]), m[1])
+        for r in reviews
+        if isinstance(r, dict)
+        and r.get("commit_id") == head
+        and (m := CODEX_PASS.search(r.get("body") or ""))
+    ] + [
+        (int(m[2]), m[1])
+        for c in comments
+        if isinstance(c, dict)
+        and re.search(rf"^Head: {re.escape(head)}\s*$", c.get("body") or "", re.MULTILINE)
+        and (m := CODEX_PASS.search(c.get("body") or ""))
+    ]
+    if not found:
+        return None
+    number, family = max(found)
+    return family, str(number)
+
+
+def codex_pass_on_head(pr: int | None) -> str | None:
+    """Why a Codex verifier start on `pr` is refused, or None: its head already has a Codex pass. An answer from
+    GitHub that can't be read is no refusal, since the start itself is what the lead asked for."""
+    if not pr:
+        return None
+    try:
+
+        def get(path: str) -> list[Any]:
+            out = subprocess.run(
+                ["gh", "api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            items, at, decoder = [], 0, json.JSONDecoder()
+            while at < len(out):
+                if out[at].isspace():
+                    at += 1
+                    continue
+                part, at = decoder.raw_decode(out, at)
+                items += part if isinstance(part, list) else []
+            return items
+
+        head = json.loads(
+            subprocess.run(
+                ["gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )["head"]["sha"]
+        again = earlier_codex_pass(get(f"pulls/{pr}/reviews"), get(f"issues/{pr}/comments"), head)
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError):
+        return None
+    if not again:
+        return None
+    return (
+        f"PR #{pr} head {head[:12]} already has a Codex verifier pass ({again[0]}, pass {again[1]}): a second pass on an"
+        " unchanged head repeats it. Push a fix and verify the new head, or start another route (--verifier-route)"
+    )
+
+
 VALUES_FILE, VALUES_ENV = "cos-values.yml", "COS_VALUES"
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
@@ -13816,6 +13915,30 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # the model's
             if verifier and not args.model and args.verifier_route == setting.get("route"):
                 args.model = setting.get("model")
+            if (
+                verifier
+                and args.verifier_route == "codex"
+                and (args.agent == "codex" or "codex" in og.harness(args.agent))
+            ):
+                # never Codex's own defaults: a Sol model and an unset effort resend ~100k tokens of context per
+                # tool call at the larger model's rate (#2870); a start asks for Sol or another effort itself
+                if not model_for(args.agent, args.model)[
+                    0
+                ]:  # no flag, no $OMNIGENT_MODEL_CODEX, no setting
+                    with contextlib.suppress(
+                        Fail
+                    ):  # a host that lists none leaves the agent's own model
+                        args.model = tier_model(
+                            og.models(args.agent, og.host(args.host) if args.host else None),
+                            CODEX_VERIFIER_TIER,
+                        )
+                # `$OMNIGENT_EFFORT_CODEX` (read by `start` for the two aliases) outranks the default effort
+                if not (
+                    args.agent in AGENTS and os.environ.get(f"OMNIGENT_EFFORT_{args.agent.upper()}")
+                ):
+                    args.effort = args.effort or CODEX_VERIFIER_EFFORT
+                if again := codex_pass_on_head(args.pr):
+                    raise Fail(again)
             if verifier:
                 print(
                     f"verifier route: {args.verifier_route} (from {source}), model: {args.model or 'the agent default'}"

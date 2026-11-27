@@ -605,6 +605,81 @@ def report_path(brief: str) -> Path | None:
     return Path(found[1]) if found else None
 
 
+# A Codex verifier pass with no model or effort named runs on these, never on Codex's own defaults (a Sol model, an
+# unset effort), which resend ~100k tokens of context on every tool call at the larger model's rate (#2870). A start
+# asks for Sol (risk:high, design-heavy work) with `--model`, and for another effort with `--effort`.
+CODEX_MODEL, CODEX_EFFORT = "gpt-6.1-terra", "medium"
+
+
+def codex_defaults(model: str | None, effort: str | None) -> tuple[str, str]:
+    """The model and effort a Codex verifier pass runs on: the start's own, else Terra at medium effort."""
+    return model or CODEX_MODEL, effort or CODEX_EFFORT
+
+
+CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
+
+
+def earlier_codex_pass(
+    reviews: list[dict], comments: list[dict], head: str
+) -> tuple[str, str] | None:
+    """The (family, pass) of a Codex verifier pass already posted on `head`, else None: a review on that commit headed
+    `Verifier (codex/...), pass <n>`, or a comment of this script's own (`Head: <sha>` in view, `Verifier: codex/...,
+    pass <n>` folded below). A second Codex pass on an unchanged head repeats the first one's reading at the same
+    cost, so the lead pushes a fix, or starts another route, instead (#2870)."""
+    found = []
+    for review in reviews:
+        if review.get("commit_id") == head and (m := CODEX_PASS.search(review.get("body") or "")):
+            found.append((int(m[2]), m[1]))
+    for comment in comments:
+        body = comment.get("body") or ""
+        if re.search(rf"^Head: {re.escape(head)}\s*$", body, re.MULTILINE) and (
+            m := CODEX_PASS.search(body)
+        ):
+            found.append((int(m[2]), m[1]))
+    if not found:
+        return None
+    number, family = max(found)
+    return family, str(number)
+
+
+def pass_history(pr: int) -> tuple[list[dict], list[dict]]:
+    """The PR's reviews and issue comments through REST, as lists (anything else answers as none)."""
+    both = []
+    for path in ("pulls", "issues"):
+        got = run(
+            "gh",
+            "api",
+            "--paginate",
+            f"repos/{{owner}}/{{repo}}/{path}/{pr}/{'reviews' if path == 'pulls' else 'comments'}",
+        ).stdout
+        both.append(json_arrays(got))
+    return both[0], both[1]
+
+
+def refuse_repeat_codex_pass(pr: int, head: str) -> None:
+    """The one place every Codex route (`verify`, `thread`) refuses a second pass on `head`, naming the first."""
+    if again := earlier_codex_pass(*pass_history(pr), head):
+        raise Refused(
+            f"PR #{pr} head {head[:12]} already has a Codex verifier pass ({again[0]}, pass {again[1]}): a second pass on"
+            " an unchanged head repeats it. Push a fix and verify the new head, or use another route"
+        )
+
+
+def json_arrays(text: str) -> list[dict]:
+    """The objects in `gh api --paginate`'s output, one JSON array per page back to back; anything else is skipped."""
+    items, at, decoder = [], 0, json.JSONDecoder()
+    while at < len(text):
+        if text[at].isspace():
+            at += 1
+            continue
+        try:
+            part, at = decoder.raw_decode(text, at)
+        except ValueError:
+            break
+        items += [item for item in part if isinstance(item, dict)] if isinstance(part, list) else []
+    return items
+
+
 def signature(model: str | None, effort: str | None, harness: str = "codex") -> str:
     """`codex/<model>/<effort>` (`cc/...` for Claude) as orchestrating-agents' launcher writes it atop a brief
     (`gpt-6.1-terra` is `terra-6.1`, `claude-sonnet-5-5` is `sonnet-5.5`, `medium` is `med`, `?` for the CLI's own
@@ -990,6 +1065,8 @@ def verify(
     requested: float | None = None,
 ) -> int:
     """One pass (`review`) that writes its `verifier` event: an exception leaves the event `failed`, the default."""
+    if harness == "codex":
+        model, effort = codex_defaults(model, effort)
     event = PassEvent()
     try:
         return review(pr, brief_file, model, effort, harness, requested, event)
@@ -1033,6 +1110,8 @@ def review(
     pull = json.loads(run("gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}").stdout)
     head, ref = pull["head"]["sha"], pull["head"]["ref"]
     HEAD[0] = head
+    if harness == "codex":
+        refuse_repeat_codex_pass(pr, head)
     event.start(ref)
     was = (
         run("git", "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
@@ -1426,6 +1505,7 @@ def thread_verify(
     pending_head: str | None = None,
 ) -> int:
     """One thread pass (`thread_review`) that writes its `verifier` event: an exit without a report ends it `failed`."""
+    model, effort = codex_defaults(model, effort)
     event = PassEvent()
     try:
         return thread_review(pr, brief_file, model, effort, thread, env, pending_head, event)
@@ -1450,9 +1530,6 @@ def thread_review(
     token = host_token()
     print(f"quota before: {quota(token)}")
     rpc = Rpc(token)
-    if not thread:
-        thread, env = thread_start(rpc, model, effort)
-        print(f"thread {thread} env {env}")
     head = run(
         "gh",
         "pr",
@@ -1464,6 +1541,10 @@ def thread_review(
         '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name+" "+.headRefName',
     ).stdout.split()
     head[0] = pending_head or head[0]
+    refuse_repeat_codex_pass(pr, head[0])  # before a thread is made for it
+    if not thread:
+        thread, env = thread_start(rpc, model, effort)
+        print(f"thread {thread} env {env}")
     event.start(head[2])
     code, said = thread_exec(
         rpc,
@@ -1610,8 +1691,11 @@ def command(argv: list[str] | None) -> int:
         help="the verifier's CLI: codex for a Claude-written PR, claude for a Codex-written one, gemini when Codex has"
         " no quota (exit 5: no agy login here, use a host)",
     )
-    v.add_argument("--model")
-    v.add_argument("--effort", help="Codex's reasoning effort; refused with --harness claude")
+    v.add_argument("--model", help=f"the model; Codex runs {CODEX_MODEL} when unset")
+    v.add_argument(
+        "--effort",
+        help="Codex's reasoning effort, medium when unset; refused with --harness claude",
+    )
     v.add_argument(
         "--requested",
         type=float,

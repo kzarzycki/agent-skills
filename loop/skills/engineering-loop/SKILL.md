@@ -1115,7 +1115,10 @@ or the owner's private network.
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded (`omnigent_agent.py start` refuses a Codex model when the host lists a newer generation). A lead that can't read the
-  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A launch that fails on
+  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A Codex verifier start that names
+  no model or effort runs Terra at medium effort, never Codex's own defaults, which cost several times as much per
+  pass; a start asks for Sol or another effort itself. A second Codex pass on a head that already has one is refused
+  at start, naming it (#2870). A launch that fails on
   capacity takes the next placement option (Where work runs); with none left it is retried
   later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's
