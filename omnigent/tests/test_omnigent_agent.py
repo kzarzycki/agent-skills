@@ -15649,12 +15649,18 @@ def test_parallel_registry_writers_keep_every_entry_in_a_file_that_parses_2406(
         subprocess.Popen([sys.executable, "-c", code, str(registry), str(i), str(go)])
         for i in range(n)
     ]
-    deadline = time.time() + 60
-    while len(list(tmp_path.glob("go.ready*"))) < n and time.time() < deadline:
-        time.sleep(0.01)
-    assert len(list(tmp_path.glob("go.ready*"))) == n
-    go.write_text("")
-    assert [p.wait() for p in procs] == [0] * n
+    try:
+        deadline = time.time() + 60
+        while len(list(tmp_path.glob("go.ready*"))) < n and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(list(tmp_path.glob("go.ready*"))) == n
+        go.write_text("")
+        assert [p.wait(60) for p in procs] == [0] * n
+    finally:  # a worker that never got ready must not leave the others polling
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+            p.wait()
     owed, bad = omnigent_agent.registered(registry)
     assert bad == []
     assert sorted(owed) == sorted(f"s{i}_{k}" for i in range(n) for k in range(8))
@@ -15683,6 +15689,16 @@ def test_a_registry_writer_waits_on_the_sidecar_lock_before_it_reads_and_edits_2
     thread.join()
     assert entered.is_set()
     assert registry.read_text() == "s0=r0.md\n"
+
+
+def test_a_first_registry_write_follows_the_umask_2406(tmp_path: Path) -> None:
+    registry = tmp_path / "registry"
+    old_umask = os.umask(0o077)
+    try:
+        omnigent_agent.arm(registry, "s0", Path("r0.md"))
+    finally:
+        os.umask(old_umask)
+    assert registry.stat().st_mode & 0o077 == 0
 
 
 def test_the_registry_temp_file_is_never_wider_than_the_registry_it_replaces_2406(

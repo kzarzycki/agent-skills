@@ -8963,11 +8963,15 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         lines = edit(lines)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         try:
-            # created with the file's own mode (else the default), never wider, before any text
-            mode = path.stat().st_mode & 0o7777 if path.exists() else 0o666
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+            # created with the file's own mode, never wider, before any text; a first write
+            # takes the umask's default, as the old `open(path, "a+")` did
+            mode = path.stat().st_mode & 0o7777 if path.exists() else None
+            fd = os.open(
+                tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666 if mode is None else mode
+            )
             with os.fdopen(fd, "w") as out:
-                os.fchmod(out.fileno(), mode)
+                if mode is not None:
+                    os.fchmod(out.fileno(), mode)
                 out.write("".join(line + "\n" for line in lines))
             os.replace(tmp, path)
         finally:
