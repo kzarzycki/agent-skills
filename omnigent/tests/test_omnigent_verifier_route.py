@@ -76,7 +76,7 @@ def test_claude_route_start_on_the_author_s_own_model_starts_a_child(
 def test_signature_names_agy() -> None:
     assert (
         omnigent_agent.signature("antigravity-native", "gemini-4-hydrogen-medium", None)
-        == "agy/gemini-4-hydrogen-medium/?"
+        == "agy/gemini-4-hydrogen-medium/med"
     )
 
 
@@ -114,6 +114,7 @@ def test_gemini_route_on_the_callers_own_host_starts_a_child(
     (tmp_path / "b.md").write_text("review")
     argv = ["start", "codex", "t", "b.md", str(tmp_path / "r.md")]
     argv += ["--role", role_file("verifier.md"), "--verifier-route", "gemini", "--host", "host"]
+    argv += ["--model", "gemini-4-hydrogen-medium"]  # an id that carries agy's effort
     assert omnigent_agent.main(argv) == 0
     assert list(og.sessions) == ["s0"]
 
@@ -263,6 +264,7 @@ def test_verifier_start_reads_a_remote_workspace_head_through_a_session_there(
     def start(head: str, name: str) -> int:
         (tmp_path / "b.md").write_text(f"- Reviewed head: {head}\n")
         argv = ["start", "codex", name, "b.md", "/there/r.md", "--role", role_file("verifier.md")]
+        argv += ["--effort", "medium"]  # a far host's config is not readable from here (#2838)
         return omnigent_agent.main(
             [*argv, "--top-level", "--host", "kris", "--workspace", "/there"]
         )
@@ -323,6 +325,8 @@ def test_env_route_on_a_verifier_start_routes_to_agy(
         "h",
         "--workspace",
         "/w",
+        "--model",
+        "gemini-4-hydrogen-medium",
     ]
     assert omnigent_agent.main(argv) == 0
     assert agents == ["antigravity-native-ui"]
@@ -428,6 +432,7 @@ def test_gemini_route_run_records_its_verdict_like_every_route(
     argv = ["run", "codex", "t", "b.md", str(tmp_path / "r.md"), "--confirm-seconds", "0"]
     argv += ["--role", role_file("verifier.md"), "--pr", "7"]
     argv += ["--verifier-route", "gemini", "--host", "host"]
+    argv += ["--model", "gemini-4-hydrogen-medium"]
     assert omnigent_agent.main(argv) == 0
     assert calls.read_text() == f"record verdict 7 {tmp_path / 'r.md'}"
 

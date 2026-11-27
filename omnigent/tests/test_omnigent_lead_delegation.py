@@ -111,7 +111,7 @@ def test_a_top_level_lead_start_carries_the_text_only_under_delegate_all(
             )
             plain = plain.format(report=report, role="")
         assert Path(f"{report}.brief").read_text() == (
-            "AGENT_SIGNATURE=cc/?/?\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/s0\n"
+            "AGENT_SIGNATURE=cc/?/high\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/s0\n"
             + plain
             + "do X"
         )
