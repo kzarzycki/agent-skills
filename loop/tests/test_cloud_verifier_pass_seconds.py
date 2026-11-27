@@ -24,7 +24,7 @@ def pass_run(checkout, monkeypatch):  # noqa: F811 - the imported fixture, used 
     edits: list[tuple[str, str]] = []
 
     def run(*cmd: str, check: bool = True, **kw):
-        if cmd[:2] == ("gh", "api") and any("/issues/" in word for word in cmd):
+        if cmd[:2] == ("gh", "api") and "--paginate" not in cmd and any("/issues/" in word for word in cmd):
             if "PATCH" in cmd:
                 if seen.get("edit fails"):
                     raise cv.Refused("`gh api` exited 1: HTTP 502")

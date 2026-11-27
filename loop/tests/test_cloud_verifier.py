@@ -375,6 +375,8 @@ def checkout(tmp_path, monkeypatch):
     seen: dict = {}
 
     def run(*cmd: str, check: bool = True, **kw):
+        if cmd[:3] == ("gh", "api", "--paginate"):  # the PR's earlier passes: none
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
         if cmd[:2] == ("gh", "api") and "/pulls/" in cmd[2]:
             return subprocess.CompletedProcess(
                 cmd, 0, json.dumps({"head": {"sha": head, "ref": "feat/pr"}}), ""
@@ -447,9 +449,7 @@ def test_the_final_message_is_the_report_when_the_brief_names_no_file(checkout) 
     brief.write_text("Review PR #7.\n")
     assert cv.verify(7, brief, None, None) == 0
     assert posted == [cv.folded_report("final\nSATISFIED: yes\n")]
-    assert (
-        "-m" not in seen["cmd"] and "-c" not in seen["cmd"]
-    )  # no model named: Codex's configured default
+    assert seen["cmd"][-5:-1] == ["-m", "gpt-6.1-terra", "-c", "model_reasoning_effort=medium"]  # #2870
 
 
 def test_a_final_message_linking_the_report_file_yields_it_but_a_link_outside_the_checkout_does_not(

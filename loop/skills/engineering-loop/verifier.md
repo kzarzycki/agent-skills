@@ -114,6 +114,10 @@ yourself, keeping standards and spec as separate axes.
   the tool timeout), and past the limit you state the pass ends with a report naming it, never
   on a run still pending, since nothing wakes an idle session and a run left queued can apply
   its mutation after you have gone.
+- **Read the brief, not the tree, and keep to its budget.** The brief lists the changed files and the diff stat: start
+  from them rather than `ls`, `find` or a read of unchanged files, since every tool call resends your whole context.
+  Its `Budget:` line is a number of tool calls. At it, stop: write the report with what you checked and what you did
+  not, and say so on a `Budget:` line of the report, so the lead can start a pass on what is left.
 - **Checks match their lines.** For each Before merge line, read the check it names and say
   whether it tests what the line says. A check that doesn't is a major, since a passing wrong
   check proves nothing.
