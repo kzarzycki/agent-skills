@@ -3,4 +3,4 @@
 # a needs-owner question reaches the owner whole and only with the message it was written for, and only the
 # followed lead's own branch is read.
 set -e
-exec uv run pytest -q -p no:cacheprovider engineering/tests/test_lead_event.py
+exec uv run pytest -q -p no:cacheprovider omnigent/tests/test_lead_event.py

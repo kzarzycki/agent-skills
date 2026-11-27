@@ -4,4 +4,4 @@
 # refuses a report without `## Criteria`; `brief` prints loop.md's `Acceptance tests:` command with
 # the issue, else the fallback runner.
 set -e
-exec uv run pytest -q -p no:cacheprovider engineering/tests/test_approvals_acceptance_evidence.py
+exec uv run pytest -q -p no:cacheprovider gatekeeper/tests/test_approvals_acceptance_evidence.py

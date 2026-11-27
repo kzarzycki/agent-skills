@@ -177,7 +177,8 @@ def test_supervise_reads_the_default_branch_rarely_over_an_hour(monkeypatch, tmp
     # beside them each PR poll (once per PR_STALL_POLL) lists the repo's open PRs (#1819) and its queue comments (#2085)
     polls = HOUR / oa.PR_STALL_POLL + 1
     assert len([r for r in reads if any("issues/comments" in a for a in r)]) <= polls
-    assert len(reads) - len(heads) <= 2 * polls
+    # and the open red-nightly issues (#1386): three reads a poll, each a 304 once nothing moved
+    assert len(reads) - len(heads) <= 3 * polls
 
 
 @pytest.mark.parametrize(
