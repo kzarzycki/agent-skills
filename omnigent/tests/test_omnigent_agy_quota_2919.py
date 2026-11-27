@@ -21,16 +21,14 @@ def quota_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def agy_info(og: FakeOmnigent) -> None:
-    og.info = lambda s: {"id": s, "status": "idle", "harness": "antigravity-native"}  # type: ignore[method-assign]
+    og.info = lambda s: {"id": s, "status": "failed", "harness": "antigravity-native"}  # type: ignore[method-assign]
 
 
 def test_a_quota_banner_fails_the_turn_with_the_reset_time(tmp_path: Path) -> None:
     og = FakeOmnigent()
     agy_info(og)
     sid = og.create("antigravity-native-ui", "t")
-    og.sessions[sid].append(
-        {"type": "message", "role": "assistant", "content": [{"type": "text", "text": BANNER}]}
-    )
+    og.sessions[sid].append({"type": "error", "content": [{"type": "text", "text": BANNER}]})
     before = time.time()
     with pytest.raises(omnigent_agent.Fail) as e:
         omnigent_agent.wait(og, sid, tmp_path / "r.md", timeout=5)
@@ -110,13 +108,57 @@ def test_a_gemini_start_is_refused_until_the_recorded_reset_passes(
     assert list(og.sessions) == ["s0"]
 
 
-def test_other_harnesses_and_partial_phrases_are_no_banner(tmp_path: Path) -> None:
+def test_other_harnesses_phrases_and_quotes_are_no_banner() -> None:
     now = time.time()
-    assert omnigent_agent.agy_quota_reset("the quota reached its limit", now) is None
+    assert omnigent_agent.agy_quota_reset("the quota reached its limit. Resets in 1h", now) is None
     assert omnigent_agent.agy_quota_reset("Individual quota reached.", now) is None  # no reset time
-    said = [{"type": "message", "role": "assistant", "content": [{"type": "text", "text": BANNER}]}]
-    assert omnigent_agent.agy_quota_banner({"harness": "claude-native"}, said) is None
-    assert omnigent_agent.agy_quota_banner({"harness": "antigravity-native"}, said) is not None
+    error = [{"type": "error", "content": [{"type": "text", "text": BANNER}]}]
+    quoted = [
+        {"type": "message", "role": "assistant", "content": [{"type": "text", "text": BANNER}]}
+    ]
+    agy, claude = {"harness": "antigravity-native"}, {"harness": "claude-native"}
+    assert omnigent_agent.agy_quota_banner(claude, error) is None
+    assert omnigent_agent.agy_quota_banner(agy, quoted) is None  # an assistant quoting the banner
+    assert omnigent_agent.agy_quota_banner(agy, error) is not None
+
+
+def test_an_old_banner_in_the_own_pane_is_no_new_hold(quota_file: Path) -> None:
+    now = time.time()
+    first = omnigent_agent.agy_banner(PANE, now, need_id=True)
+    assert first is not None and first[2] == "5b0e1c9e-6f3a-4d8e-9a53-0c1f2b7d4e11-1"
+    omnigent_agent.record_agy_quota(first[0], first[2])
+    # read again later: the same banner keeps its first reset, not one counted from this read
+    again = omnigent_agent.agy_banner(PANE, now + 3600, need_id=True)
+    assert again is not None and again[0] == first[0]
+    # after its reset the same banner left in scrollback is none
+    assert omnigent_agent.agy_banner(PANE, first[0] + 1, need_id=True) is None
+    # a pane banner with no Error ID (an agent quoting the text) is none
+    assert omnigent_agent.agy_banner(PANE.split("Error ID")[0], now, need_id=True) is None
+
+
+def test_the_configured_pane_command_reaches_wait(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pane = tmp_path / "pane.txt"
+    pane.write_text(PANE)
+    monkeypatch.setenv("OMNIGENT_AGY_PANE_CMD", f"cat {pane} # {{sid}}")
+    og = FakeOmnigent()
+    sid = og.create("antigravity-native-ui", "t")
+    og.sessions[sid].append(
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "text", "text": "review"}],
+            "created_at": time.time() - 2 * omnigent_agent.AGY_SILENT_SECONDS,
+        }
+    )
+    og.info = lambda s: {"id": s, "status": "running", "harness": "antigravity-native"}  # type: ignore[method-assign]
+    with pytest.raises(omnigent_agent.Fail, match="129h5m17s"):
+        omnigent_agent.wait(og, sid, tmp_path / "r.md", timeout=5)
+    pane.write_text(PANE)  # the same banner, left behind after a later reset, fails nothing new
+    omnigent_agent.record_agy_quota(time.time() - 1, "5b0e1c9e-6f3a-4d8e-9a53-0c1f2b7d4e11-1")
+    with pytest.raises(omnigent_agent.Fail, match="gave no report"):
+        omnigent_agent.wait(og, sid, tmp_path / "r.md", timeout=1)
 
 
 def test_the_pane_is_read_only_through_the_sessions_own_command(

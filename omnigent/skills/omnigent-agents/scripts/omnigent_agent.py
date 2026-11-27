@@ -551,40 +551,83 @@ def agy_quota_path() -> Path:
     return cache / "agy-quota.json"
 
 
-def record_agy_quota(reset: float) -> None:
-    """Record that Antigravity's quota is out until ``reset``, never lowering an earlier, later reset."""
+AGY_ERROR_ID = re.compile(r"\bError ID:\s*([0-9a-f][0-9a-f-]{7,})", re.IGNORECASE)
+
+
+def agy_quota_state() -> dict:
+    """The recorded quota-out: ``until`` (its latest reset) and ``seen`` (each banner's Error ID with its reset)."""
+    try:
+        state = json.loads(agy_quota_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def record_agy_quota(reset: float, key: str | None = None) -> None:
+    """Record that Antigravity's quota is out until ``reset``, never lowering an earlier, later reset, and the banner's
+    Error ID ``key`` as seen, so the same banner left in a pane later is no new quota-out."""
+    state = agy_quota_state()
+    seen = state.get("seen") if isinstance(state.get("seen"), dict) else {}
+    if key:
+        seen[key] = reset
+    try:
+        until = max(float(state.get("until", 0.0)), reset)
+    except (TypeError, ValueError):
+        until = reset
     path = agy_quota_path()
     try:
-        held = json.loads(path.read_text()).get("until", 0.0)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"until": max(float(held), reset)}))
-    except (OSError, ValueError, AttributeError):
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({"until": reset}))
-        except OSError:
-            pass  # the failed turn still names the reset; only the start's refusal is lost
+        path.write_text(json.dumps({"until": until, "seen": seen}))
+    except OSError:
+        pass  # the failed turn still names the reset; only the start's refusal is lost
 
 
 def agy_quota_until(now: float) -> float | None:
     """The reset instant of a recorded quota-out still in force at ``now``, else None."""
     try:
-        until = float(json.loads(agy_quota_path().read_text()).get("until", 0.0))
-    except (OSError, ValueError, AttributeError, TypeError):
+        until = float(agy_quota_state().get("until", 0.0))
+    except (TypeError, ValueError):
         return None
     return until if until > now else None
 
 
-def agy_quota_banner(info: dict, items: list[dict]) -> tuple[float, str] | None:
-    """The quota banner an Antigravity session printed since the last user message, else None: another harness's
-    session never has one."""
+def agy_banner(
+    text: str, now: float, need_id: bool = False
+) -> tuple[float, str, str | None] | None:
+    """The fresh Antigravity quota banner in ``text`` as (reset instant, printed duration, Error ID), else None. A
+    banner whose Error ID was seen before is the same one: it keeps its first reset, and is none once that has
+    passed (an old banner left in scrollback). With ``need_id`` (a pane, which may hold anything an agent quoted) a
+    banner with no Error ID is none."""
+    found = agy_quota_reset(text, now)
+    if not found:
+        return None
+    match = AGY_ERROR_ID.search(text)
+    key = match[1] if match else None
+    if need_id and not key:
+        return None
+    seen = agy_quota_state().get("seen")
+    if key and isinstance(seen, dict) and key in seen:
+        try:
+            first = float(seen[key])
+        except (TypeError, ValueError):
+            return None
+        return (first, found[1], key) if first > now else None
+    return found[0], found[1], key
+
+
+def agy_quota_banner(info: dict, items: list[dict]) -> tuple[float, str, str | None] | None:
+    """The quota banner the harness reported since the last user message, else None: an agy session's non-assistant
+    items only (an error), since an assistant that quotes the banner has said nothing of its own quota, and
+    another harness's session never has one."""
     if not agy_session(info):
         return None
     now = time.time()
     for item in reversed(items):
         if item.get("role") == "user":
             break
-        if found := agy_quota_reset(text_of(item), now):
+        if item.get("role") == "assistant":
+            continue
+        if found := agy_banner(text_of(item), now):
             return found
     return None
 
@@ -621,9 +664,9 @@ def agy_pane(sid: str) -> str:
         return ""
 
 
-def agy_quota_failure(sid: str, banner: tuple[float, str]) -> Fail:
+def agy_quota_failure(sid: str, banner: tuple[float, str, str | None]) -> Fail:
     """Record the quota-out ``banner`` and the failure of session ``sid`` naming its reset time."""
-    record_agy_quota(banner[0])
+    record_agy_quota(banner[0], banner[2])
     return Fail(
         f"session {sid} ended: Antigravity's quota is out (resets in {banner[1]}, at"
         f" {datetime.fromtimestamp(banner[0], timezone.utc):%Y-%m-%d %H:%MZ}); start the verifier on"
@@ -631,7 +674,9 @@ def agy_quota_failure(sid: str, banner: tuple[float, str]) -> Fail:
     )
 
 
-def agy_silent_banner(sid: str, info: dict, items: list[dict]) -> tuple[float, str] | None:
+def agy_silent_banner(
+    sid: str, info: dict, items: list[dict]
+) -> tuple[float, str, str | None] | None:
     """The quota banner in the pane of an agy session that has said nothing since its brief, ``AGY_SILENT_SECONDS``
     on: the banner never reaches its history, so the history alone reads as a stall or an endless turn."""
     if not agy_session(info) or any(
@@ -641,7 +686,7 @@ def agy_silent_banner(sid: str, info: dict, items: list[dict]) -> tuple[float, s
     sent = [float(i.get("created_at") or 0) for i in items if i.get("role") == "user"]
     if not sent or time.time() - max(sent) < AGY_SILENT_SECONDS:
         return None
-    return agy_quota_reset(agy_pane(sid), time.time())
+    return agy_banner(agy_pane(sid), time.time(), need_id=True)
 
 
 def backoff(count: int) -> float:
