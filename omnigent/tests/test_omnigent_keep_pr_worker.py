@@ -12,7 +12,7 @@ LINK = "https://github.com/o/r/pull/7#issuecomment-42"
 
 
 class Hub:
-    """gh faked: this checkout is ``o/r``; ``pr view N --repo X`` answers ``states[(X, N)]``."""
+    """gh faked: this checkout is ``o/r``; ``api repos/X/issues/N`` answers ``states[(X, N)]``."""
 
     def __init__(self, states: dict[tuple[str, int], str]) -> None:
         self.states, self.asked, self.deleted = states, [], []
@@ -21,12 +21,15 @@ class Hub:
     def __call__(self, *args: str) -> str:
         if args[:2] == ("repo", "view"):
             return "o/r\n"
-        if args[:2] == ("pr", "view"):
-            repo, number = args[args.index("--repo") + 1], int(args[2])
-            self.asked.append((repo, number))
-            if (repo, number) not in self.states:
-                raise omnigent_agent.Fail(f"gh pr view {number}: not found")
-            return json.dumps({"state": self.states[(repo, number)]})
+        if (
+            args[0] == "api" and "/issues/" in args[1] and "/comments/" not in args[1]
+        ):  # one read for an issue and a PR (#2823)
+            repo, _, number = args[1].removeprefix("repos/").partition("/issues/")
+            key = (repo, int(number))
+            self.asked.append(key)
+            if key not in self.states:
+                raise omnigent_agent.Fail(f"gh api issues/{key[1]}: Not Found")
+            return json.dumps({"state": self.states[key]})
         if args[:3] == ("api", "-X", "DELETE"):
             self.deleted.append(args[3])
             return ""
@@ -161,6 +164,42 @@ def test_a_pr_that_cannot_be_read_holds_the_worker(
     sid = worker(og, tmp_path)
     lines, _ = omnigent_agent.reap(og, [sid])
     assert og.archived == [] and "o/r#7 not read" in lines[0]
+
+
+def _lead(og: base.FakeOmnigent, ref: str) -> str:
+    og.labels["lead"] = {"omni.role": "lead", "omni.pr": ref}
+    og.sessions["lead"] = []
+    return "lead"
+
+
+def test_reap_releases_an_idle_lead_whose_label_names_a_closed_issue(
+    og: base.FakeOmnigent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2823: the label names issue 992, whose fix was another PR; ``gh pr view`` can't read an issue."""
+    hub(monkeypatch, o__r_992="closed")
+    sid = _lead(og, "o/r#992")
+    lines, failed = omnigent_agent.reap(og, [sid])
+    assert not failed and og.archived == [sid] and lines[0].endswith("archived (idle)")
+
+
+@pytest.mark.parametrize("ref", ["o/r#992", "o/r#7"])
+def test_reap_keeps_a_lead_whose_label_names_an_open_issue_or_pr(
+    og: base.FakeOmnigent, monkeypatch: pytest.MonkeyPatch, ref: str
+) -> None:
+    hub(monkeypatch, o__r_992="open", o__r_7="open")
+    lines, _ = omnigent_agent.reap(og, [_lead(og, ref)])
+    assert og.archived == [] and f"kept ({ref} is open)" in lines[0]
+
+
+def test_reap_keeps_a_lead_when_the_read_fails(
+    og: base.FakeOmnigent, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub(monkeypatch)  # nothing known: every read fails
+    lines, _ = omnigent_agent.reap(og, [_lead(og, "o/r#992")])
+    assert og.archived == [] and "o/r#992 not read" in lines[0]
+    monkeypatch.setattr(omnigent_agent, "gh", lambda *a, **k: "<html>502</html>")  # unparseable
+    lines, _ = omnigent_agent.reap(og, [_lead(og, "o/r#992")])
+    assert og.archived == [] and "o/r#992 not read" in lines[0]
 
 
 def test_a_label_naming_no_pr_holds_the_worker(og: base.FakeOmnigent) -> None:

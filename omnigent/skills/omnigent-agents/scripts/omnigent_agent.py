@@ -7537,16 +7537,18 @@ def own_pr(og: Omnigent, sid: str, refs: list[str]) -> str:
 
 
 def pr_hold(repo: str, pr: int) -> str | None:
-    """Why a worker of PR ``pr`` of ``repo`` is still held: the PR is open; None once it is merged
-    or closed. A PR that can't be read holds the worker, saying so. The lookup names ``repo``, never
-    the caller's checkout, since the label outlives it."""
+    """Why a session labelled with PR ``pr`` of ``repo`` is still held: it is open; None once it is merged
+    or closed. The issues endpoint answers for an issue number and a PR number alike (state ``open`` or
+    ``closed``, a merged PR ``closed``), so a label naming an issue releases once it is closed, where
+    ``gh pr view`` fails on one (#2823). A number that can't be read holds the session, saying so. The lookup
+    names ``repo``, never the caller's checkout, since the label outlives it."""
     try:
-        state = json.loads(gh("pr", "view", str(pr), "--repo", repo, "--json", "state")).get(
-            "state"
-        )
+        state = json.loads(gh("api", f"repos/{repo}/issues/{pr}")).get("state")
     except (Fail, ValueError, AttributeError) as e:
         return f"{repo}#{pr} not read ({e})"
-    return f"{repo}#{pr} is open" if state == "OPEN" else None
+    if not isinstance(state, str):
+        return f"{repo}#{pr} not read (no state in the answer)"
+    return f"{repo}#{pr} is open" if state.upper() == "OPEN" else None
 
 
 def prune_demo_branch(repo: str, pr: int) -> None:
