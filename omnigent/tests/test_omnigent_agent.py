@@ -14866,8 +14866,8 @@ def test_reap_deletes_the_branches_a_merged_prs_workers_pushed_but_not_an_open_p
 
     def fake_gh(*args: str, **kw: object) -> str:
         calls.append(args)
-        if args[:2] == ("pr", "view"):
-            return '{"state": "MERGED"}'
+        if args[0] == "api" and "/issues/" in args[1]:
+            return '{"state": "closed"}'
         if args[0] == "api" and "pulls?state=open" in args[1]:
             return '[{"number": 9}]' if "claude/b-open-pr" in args[1] else "[]"
         if args[:3] == ("api", "-X", "DELETE") and "claude/d-refused" in args[3]:
