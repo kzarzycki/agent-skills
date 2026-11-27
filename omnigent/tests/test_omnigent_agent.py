@@ -77,6 +77,7 @@ class FakeOmnigent:
         self.prs: list[str] = []
         self.workspaces: list[str | None] = []
         self.hosts_of: dict[str, str] = {}  # each created session's host
+        self.needs_of: dict[str, list[str] | None] = {}  # the needs each create passed (#2831)
         self.others: list[dict] = []  # sessions this script did not create, as the list shows them
         self.taken: set[str] = set()  # titles an earlier child holds: create answers 409
         self.subscriptions: list[tuple[str, str]] = []
@@ -192,6 +193,7 @@ class FakeOmnigent:
         role: str | None = None,
         effort: str | None = None,
         pr: str = "",
+        needs: list[str] | None = None,
     ) -> str:
         if title in self.taken:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
@@ -201,6 +203,7 @@ class FakeOmnigent:
         self.top_level.append(top_level)
         self.roles.append(role)
         self.prs.append(pr)
+        self.needs_of[sid] = needs
         self.efforts[sid] = effort
         self.modes[sid] = permission_mode
         self.workspaces.append(workspace)
@@ -15627,3 +15630,96 @@ def test_supervise_install_from_a_developer_checkout_refuses_and_names_the_insta
     )  # names the checkout it refused, not as the service's script
     installed_script = _pack_script(tmp_path, git=False)
     assert _service_script_of(installed_script, monkeypatch, tmp_path) == installed_script.resolve()
+
+
+# --- placement: a repo states what each role needs, start matches the machine (#2831) ---
+
+PLACEMENT_MAC = (
+    "# Loop\n\nplacement:\n  worker:   {needs: [os:macos, tool:xcode]}\n"
+    "  verifier: {needs: [os:macos], hosts: [mac]}\n"
+)
+
+
+def placement_hosts_api(og: FarVerifierHost, mac_has: list[str] | None) -> None:
+    real = og.call
+    mac: dict[str, object] = {"host_id": "mac", "name": "mac", "status": "online"}
+    if mac_has is not None:
+        mac["capabilities"] = mac_has
+    hosts = [
+        {"host_id": "h", "name": "here", "status": "online", "capabilities": ["os:linux"]},
+        mac,
+    ]
+    og.call = lambda m, path, *a, **k: (  # type: ignore[method-assign]
+        {"hosts": hosts} if (m, path) == ("GET", "/v1/hosts") else real(m, path, *a, **k)
+    )
+
+
+def worker_start(host: str, *more: str) -> list[str]:
+    argv = ["start", "claude", "w", "do X", "/there/repo/tmp/r.md", "--top-level", "--host", host]
+    return [
+        *argv,
+        "--role",
+        "worker",
+        "--workspace",
+        "/there/repo",
+        "--confirm-seconds",
+        "0",
+        "--effort",
+        "high",
+        *more,
+    ]
+
+
+def test_a_worker_start_needing_macos_is_refused_on_a_host_without_it_naming_the_need(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    (tmp_path / "docs/agents/loop.md").write_text(PLACEMENT_MAC)
+    placement_hosts_api(og, ["os:macos", "tool:xcode"])
+    assert omnigent_agent.main(worker_start("here")) == 1
+    err = capsys.readouterr().err
+    assert "os:macos" in err and "tool:xcode" in err and "mac" in err and og.sessions == {}
+
+
+def test_a_worker_start_needing_macos_runs_on_a_host_that_has_it_and_passes_the_needs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    (tmp_path / "docs/agents/loop.md").write_text(PLACEMENT_MAC)
+    placement_hosts_api(og, ["os:macos", "tool:xcode", "device:iphone-15"])
+    assert omnigent_agent.main(worker_start("mac")) == 0
+    assert og.hosts_of["s0"] == "mac" and og.needs_of["s0"] == ["os:macos", "tool:xcode"]
+
+
+def test_until_a_host_states_capabilities_its_roles_hosts_list_stands_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    (tmp_path / "docs/agents/loop.md").write_text(
+        "placement:\n  worker: {needs: [os:macos], hosts: [mac]}\n"
+    )
+    placement_hosts_api(og, None)
+    assert omnigent_agent.main(worker_start("here")) == 1
+    assert "needs os:macos" in capsys.readouterr().err
+    assert omnigent_agent.main(worker_start("mac")) == 0
+
+
+def test_a_role_with_no_placement_entry_starts_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    (tmp_path / "docs/agents/loop.md").write_text("placement:\n  verifier: {needs: [os:macos]}\n")
+    assert omnigent_agent.main(worker_start("mac")) == 0
+    assert og.hosts_of["s0"] == "mac"
+
+
+def test_start_needs_adds_a_tag_for_one_start_and_a_bare_word_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    placement_hosts_api(og, ["os:macos"])
+    assert omnigent_agent.main(worker_start("mac", "--needs", "login:browser")) == 1
+    assert "login:browser" in capsys.readouterr().err
+    assert omnigent_agent.main(worker_start("mac", "--needs", "os:macos")) == 0
+    assert omnigent_agent.main(worker_start("mac", "--needs", "macos")) == 1
+    assert "<namespace>:<name>" in capsys.readouterr().err
