@@ -28,6 +28,7 @@
     uv run scripts/approvals.py gate-record <head> [-- <command>]  # the verifier's read: origin's pass record of the gate (or <command>) on <head>'s tree, exit 0, else 1 naming what to run
     uv run scripts/approvals.py queue-select [<base>]      # a merge queue's batch check (R6): one command per line to run on the batch, the select.unkeyed checks and `affected-tests --base <point>` for each PR with no record; exit 1 when that is nothing while a PR has no record
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
+    uv run scripts/approvals.py loop-migrate [<loop.md>] [--write]  # loop.md's old script-read lines (`Affected tests:`, `Gate cost:`, `Placement:` ...) as a `## Loop settings` yaml block (SKILL.md § Loop settings): the whole file printed, or rewritten with --write, the old lines removed and every value read back the same; refused where a line does not fit the block's schema, or the block is there already
     uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1, one line each, when .mergify.yml, a marked workflow job's `timeout-minutes`, loop.md's `Wall-clock variable:`, a hand-set `land.wait` or the nightly's push paths (against `select.build_inputs`) is out of step
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
     uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
@@ -944,6 +945,23 @@ class Choice(tuple):
     aliases: dict[str, str]  # set where a setting has some; read through getattr
 
 
+class Number:
+    """A setting that is a whole or a decimal number, such as loop.md's `gate_cost.cores`."""
+
+
+class Either(tuple):
+    """A setting that is any one of these kinds; `says` words them for the refusal."""
+
+    says = ""
+
+
+def either(says: str, *kinds: Any) -> Either:
+    """An Either of `kinds`, worded `says` in a refusal."""
+    found = Either(kinds)
+    found.says = says
+    return found
+
+
 class Rows(Table):
     """A setting that is a list of sections, each holding these keys, such as `loop.gate_steps`; `unique` names the
     keys no two rows may share."""
@@ -1203,7 +1221,8 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
     exactly, which also refuses what YAML 1.1 reads as another type where a name was meant (`no` as false, `1.10` as
     a float), naming the key, since such a value is never the name written."""
     for key, value in list(section.items()):
-        where = f"`{name}.{key}`"
+        path = f"{name}.{key}" if name else key
+        where = f"`{path}`"
         if not isinstance(
             key, str
         ):  # `on:`, `no:` or `1.10:` as a name is read as a boolean or a number
@@ -1221,7 +1240,7 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                     f"{file}'s {where} must be a list of sections each holding `{'`, `'.join(kind)}`"
                 )
             for row in value:
-                typed(row, kind, f"{name}.{key}", file)
+                typed(row, kind, path, file)
             for unique in kind.unique:
                 seen = [row[unique] for row in value]
                 if twice := sorted({v for v in seen if seen.count(v) > 1}):
@@ -1229,7 +1248,16 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
         elif isinstance(kind, dict):  # a section within the section, such as `loop.head_proof`
             if not isinstance(value, dict):
                 raise Refused(f"{file}'s {where} must be a section holding `{'`, `'.join(kind)}`")
-            typed(value, kind, f"{name}.{key}", file)
+            typed(value, kind, path, file)
+        elif isinstance(kind, Either):  # one of several kinds, such as `loop settings`' `placement`
+            for alternative in kind:
+                try:
+                    typed({key: value}, {key: alternative}, name, file)
+                    break
+                except Refused:
+                    continue
+            else:
+                raise Refused(f"{file}'s {where} must be {kind.says}, not {value!r}")
         elif isinstance(kind, Choice):
             if not (
                 isinstance(value, str) and (value in kind or value in getattr(kind, "aliases", {}))
@@ -1257,6 +1285,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                 raise Refused(
                     f"{file}'s {where} must be true, false or a list of {', '.join(kind)}, not {value!r}"
                 )
+        elif kind is Number:  # a whole or a decimal number, never a bool (an int to Python)
+            if type(value) not in (int, float):
+                raise Refused(f"{file}'s {where} must be a number, not {value!r}")
         # bool is an int to Python, so a type is matched exactly
         elif type(value) is not kind or (
             kind is list and not all(isinstance(item, str) for item in value)
@@ -1380,6 +1411,363 @@ def deprecated(name: str, instead: str = "land batches every landable PR (#650)"
     if name not in DEPRECATED:
         DEPRECATED.add(name)
         print(f"deprecated: {name} goes in the next release; {instead}", file=sys.stderr)
+
+
+# ---- loop.md's `## Loop settings` block: every value a script reads, in one fenced `yaml` block read by one loader
+# (SKILL.md § Loop settings has its keys). The block sits under its own heading, never `## Settings`, the deprecated
+# policy location chosen() looks for. Without the block the lines it replaces keep their meaning (LOOP_LINES); a key set in
+# the block and as its line is refused, naming the key.
+LOOP_HEADING = "Loop settings"
+LOOP_HEAD = re.compile(r"^## Loop settings[ \t]*$", re.MULTILINE)
+BACKENDS = ("native", "omnigent", "herdr-link")
+LOOP_TOOLS = either("`full` or a list of tools and servers", Choice(("full",)), list)
+LOOP_KEYS: dict[str, Any] = {
+    "affected_tests": str,
+    "test_report": str,
+    "gate": Choice(("full",)),
+    "gate_base": str,
+    "gate_cost": Table(cores=Number, gb=Number, reserve_gb=Number, optional=("reserve_gb",)),
+    "wall_clock_variable": str,
+    "acceptance": Table(
+        tests=str, budget=Table(spec=Number, nightly=Number), optional=("tests", "budget")
+    ),
+    "cloud_worker": either(
+        "`none` or a section of agent, gate and env",
+        Choice(("none",)),
+        Table(agent=str, gate=str, env=str, optional=("agent", "gate", "env")),
+    ),
+    "placement": either(
+        "`same machine`, `CI` or a section holding hosts",
+        Choice(("same machine", "CI")),
+        Table(hosts=list),
+    ),
+    "models": Table(lead=str, worker=str, verifier=str, optional=("lead", "worker", "verifier")),
+    "lead_autocompact": either("a size such as `200k`", str, int),
+    "tools": Table(worker=LOOP_TOOLS, verifier=LOOP_TOOLS, optional=("worker", "verifier")),
+    "verifier_session": Choice(("reuse", "fresh")),
+    "orchestration_backend": Choice(BACKENDS),
+}
+LOOP_SCHEMA = Table(optional=tuple(LOOP_KEYS), **LOOP_KEYS)
+# each key as the line it replaces is labelled (a key read from either place is set in only one: loop_block)
+LOOP_LABELS = {
+    "affected_tests": ("Affected tests",),
+    "test_report": ("Test report",),
+    "gate": ("Gate",),
+    "gate_base": ("Gate base",),
+    "gate_cost": ("Gate cost",),
+    "wall_clock_variable": ("Wall-clock variable",),
+    "acceptance.tests": ("Acceptance tests",),
+    "acceptance.budget": ("Acceptance budget",),
+    "cloud_worker": ("Cloud worker",),
+    "placement": ("Placement", "Verifier hosts"),
+    "models.lead": ("Lead model",),
+    "models.worker": ("Worker model",),
+    "models.verifier": ("Verifier model",),
+    "lead_autocompact": ("Lead autocompact",),
+    "tools.worker": ("Worker tools",),
+    "tools.verifier": ("Verifier tools",),
+    "verifier_session": ("Verifier session",),
+    "orchestration_backend": ("Orchestration backend",),
+}
+VARIABLE = re.compile(r"[A-Za-z_]\w*")
+# the lines the keys replace, read as they always were: the narrowed mode's command (SKILL.md, Adopting the loop), where
+# it writes its JUnit XML report (rerun-tests counts the tests it ran), the opt-out `Gate: full`, the variable a
+# project's affected-tests wall-clock limit is set in (seconds), what one heavy gate run costs (SKILL.md, One heavy
+# gate per host slot: `Gate cost: <cores> cores, <GB> GB`, optionally `, reserve <GB> GB`) and the acceptance budget
+AFFECTED = re.compile(r"^Affected tests:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+TEST_REPORT = re.compile(r"^Test report:[ \t]*`?(.+?)`?[ \t]*$", re.MULTILINE)
+FULL_GATE = re.compile(r"^Gate:[ \t]*`?full`?[ \t]*$", re.MULTILINE)
+WALL_CLOCK = re.compile(r"^Wall-clock variable:[ \t]*`?([A-Za-z_]\w*)", re.MULTILINE)
+GATE_COST = re.compile(
+    r"^Gate cost:[ \t]*`?(?P<cores>\d+(?:\.\d+)?) cores?,[ \t]*(?P<gb>\d+(?:\.\d+)?) GB"
+    r"(?:,[ \t]*reserve (?P<reserve>\d+(?:\.\d+)?) GB)?`?[ \t]*$"
+)
+BUDGET_LINE = re.compile(r"^\W*Acceptance budget:\s*(.*?)\W*$", re.MULTILINE)
+BUDGET_VALUE = re.compile(r"^(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)$")
+
+
+def strict(data: dict[str, Any], schema: Any, name: str, file: str) -> None:
+    """Refuse a key the schema does not name, at any depth, naming it (and the key it probably meant): a settings
+    block that dropped a misspelt key would read as no setting, so the default would apply unnoticed."""
+    for key, value in data.items():
+        where = f"{name}.{key}" if name else str(key)
+        if key not in schema:
+            near = difflib.get_close_matches(str(key), list(schema), n=1, cutoff=0.6)
+            hint = f": did you mean `{near[0]}`?" if near else ""
+            raise Refused(
+                f"{file} has an unknown setting `{where}` in its ## {LOOP_HEADING} block{hint}"
+            )
+        kind = schema[key]
+        for alternative in kind if isinstance(kind, Either) else (kind,):
+            if isinstance(alternative, dict) and isinstance(value, dict):
+                strict(value, alternative, where, file)
+
+
+def loop_lines(text: str, label: str) -> str | None:
+    """The value of loop.md's line `<label>: <value>`, None without one or with no value."""
+    found = re.search(rf"^{re.escape(label)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
+    return found.group(1) if found else None
+
+
+def comma_list(value: str) -> list[str]:
+    return [item for item in (part.strip() for part in value.split(",")) if item]
+
+
+def legacy_cost(text: str) -> dict[str, Fraction | None] | None:
+    for line in text.splitlines():
+        if not line.startswith("Gate cost:"):
+            continue
+        found = GATE_COST.match(line.rstrip())
+        if found is None or not Fraction(found["cores"]) or not Fraction(found["gb"]):
+            raise Refused(
+                f"loop.md's {line.strip()!r} is not `Gate cost: <cores> cores, <GB> GB`"
+                " (optional `, reserve <GB> GB`), each cost above 0"
+            )
+        reserve = found["reserve"]
+        return {
+            "cores": Fraction(found["cores"]),
+            "gb": Fraction(found["gb"]),
+            "reserve_gb": None if reserve is None else Fraction(reserve),
+        }
+    return None
+
+
+def legacy_budget(text: str) -> tuple[float, float] | None:
+    found = BUDGET_LINE.search(text)
+    if not found:
+        return None
+    value = BUDGET_VALUE.match(found.group(1).strip("` "))
+    if not value:
+        raise Refused(
+            f"`Acceptance budget: {found.group(1)}` is not `<spec minutes>, <nightly minutes>`"
+        )
+    return float(value.group(1)), float(value.group(2))
+
+
+def legacy_cloud(text: str) -> Any:
+    found = re.search(r"^Cloud worker:[ \t]*(.*?)[ \t]*$", text, re.MULTILINE)
+    if not found:
+        return None
+    if re.match(r"none\b", found.group(1), re.IGNORECASE):
+        return "none"
+    agent, *clauses = [c.strip() for c in found.group(1).split(",")]
+    said = dict(c.split(None, 1) for c in clauses if len(c.split(None, 1)) == 2)
+    return {
+        "agent": agent or "claude-cloud",
+        "gate": said.get("gate", ""),
+        "env": said.get("env", ""),
+    }
+
+
+def legacy_placement(text: str) -> Any:
+    if new := loop_lines(text, "Placement"):
+        if new.lower().startswith("hosts:"):
+            return {"hosts": comma_list(new[len("hosts:") :])}
+        return {"ci": "CI", "same machine": "same machine"}.get(new.lower(), new)
+    old = loop_lines(text, "Verifier hosts")
+    return {"hosts": comma_list(old)} if old else None
+
+
+def legacy_tools(label: str) -> Callable[[str], Any]:
+    def read(text: str) -> Any:
+        named = loop_lines(text, label)
+        return None if named is None else "full" if named == "full" else comma_list(named)
+
+    return read
+
+
+def legacy_text(label: str) -> Callable[[str], Any]:
+    return lambda text: loop_lines(text, label)
+
+
+def legacy_regex(pattern: re.Pattern[str], strip: str = "") -> Callable[[str], Any]:
+    def read(text: str) -> Any:
+        found = pattern.search(text)
+        return found.group(1).strip().strip(strip) if found else None
+
+    return read
+
+
+def legacy_tests(text: str) -> str | None:
+    found = loop_lines(text, "Acceptance tests")
+    return found.strip("`").strip() or None if found else None
+
+
+# the old line of each key, read as it always was: the value the key holds, None where there is no line
+LOOP_LINES: dict[str, Callable[[str], Any]] = {
+    "affected_tests": legacy_regex(AFFECTED, "`"),
+    "test_report": legacy_regex(TEST_REPORT),
+    "gate": lambda text: "full" if FULL_GATE.search(text) else None,
+    "gate_base": legacy_regex(re.compile(r"^Gate base:[ \t]*`?([^\s`]+)", re.MULTILINE)),
+    "gate_cost": legacy_cost,
+    "wall_clock_variable": legacy_regex(WALL_CLOCK),
+    "acceptance.tests": legacy_tests,
+    "acceptance.budget": legacy_budget,
+    "cloud_worker": legacy_cloud,
+    "placement": legacy_placement,
+    "models.lead": legacy_text("Lead model"),
+    "models.worker": legacy_text("Worker model"),
+    "models.verifier": legacy_text("Verifier model"),
+    "lead_autocompact": legacy_text("Lead autocompact"),
+    "tools.worker": legacy_tools("Worker tools"),
+    "tools.verifier": legacy_tools("Verifier tools"),
+    "verifier_session": legacy_text("Verifier session"),
+    "orchestration_backend": legacy_text("Orchestration backend"),
+}
+
+
+def loop_flat(data: dict[str, Any], file: str = "loop.md") -> dict[str, Any]:
+    """The block's checked values as loop_setting returns them, one entry per dotted key."""
+    flat: dict[str, Any] = {}
+    for key, value in data.items():
+        if key == "gate_cost":
+            flat[key] = {
+                "cores": Fraction(str(value["cores"])),
+                "gb": Fraction(str(value["gb"])),
+                "reserve_gb": (
+                    Fraction(str(value["reserve_gb"])) if "reserve_gb" in value else None
+                ),
+            }
+            if (
+                not flat[key]["cores"]
+                or not flat[key]["gb"]
+                or (flat[key]["cores"] < 0 or flat[key]["gb"] < 0)
+            ):
+                raise Refused(f"{file}'s `gate_cost` needs a `cores` and a `gb` above 0")
+            if flat[key]["reserve_gb"] is not None and flat[key]["reserve_gb"] < 0:
+                raise Refused(f"{file}'s `gate_cost.reserve_gb` must be 0 or more")
+        elif key == "acceptance":
+            if "tests" in value:
+                flat["acceptance.tests"] = value["tests"].strip("`").strip()
+            if "budget" in value:
+                spec, nightly = float(value["budget"]["spec"]), float(value["budget"]["nightly"])
+                if spec < 0 or nightly < 0:
+                    raise Refused(f"{file}'s `acceptance.budget` minutes must be 0 or more")
+                flat["acceptance.budget"] = (spec, nightly)
+        elif key in ("models", "tools"):
+            flat.update({f"{key}.{role}": item for role, item in value.items()})
+        elif key == "cloud_worker":
+            flat[key] = (
+                value
+                if value == "none"
+                else {
+                    "agent": value.get("agent", "claude-cloud"),
+                    "gate": value.get("gate", ""),
+                    "env": value.get("env", ""),
+                }
+            )
+        elif key == "lead_autocompact":
+            flat[key] = str(value)
+        elif key == "placement" and isinstance(value, dict):
+            flat[key] = {"hosts": list(value["hosts"])}
+        else:
+            if key in ("gate_base", "wall_clock_variable") and not VARIABLE.fullmatch(value):
+                raise Refused(f"{file}'s `{key}` names {value!r}, which is no variable name")
+            flat[key] = value
+    return flat
+
+
+@functools.cache
+def loop_block(text: str) -> dict[str, Any]:
+    """The values of loop.md's `## Loop settings` block, checked against LOOP_SCHEMA, one entry per dotted key; {}
+    where `text` has no such heading. Refused, naming the key, for an unknown key, a wrong type, a key set twice, or
+    a key the block sets that its old line sets too. A heading with no `yaml` block under it is refused."""
+    if not LOOP_HEAD.search(text):
+        return {}
+    file = "loop.md"
+    if SETTINGS.search(section(text, LOOP_HEADING)) is None:
+        raise Refused(f"{file} has a ## {LOOP_HEADING} heading but no ```yaml block under it")
+    data = block(text, file, LOOP_HEADING)
+    strict(data, LOOP_SCHEMA, "", file)
+    typed(data, LOOP_SCHEMA, "", file)
+    flat = loop_flat(data, file)
+    for key in flat:
+        for label in LOOP_LABELS[key]:
+            if re.search(rf"^[^\w\n]*{re.escape(label)}:", text, re.MULTILINE):
+                raise Refused(
+                    f"{file} sets `{key}` twice: in its ## {LOOP_HEADING} block and as the line `{label}:`: keep one"
+                )
+    return flat
+
+
+def loop_setting(text: str, key: str) -> Any:
+    """The value of one dotted key (LOOP_LABELS) of loop.md's `text`: from its `## Loop settings` block, else from
+    the line that key replaces (LOOP_LINES), as that line was always read; None where neither sets it. The one reader of
+    these values, so a script never reads a line of its own."""
+    held = loop_block(text)
+    return held[key] if key in held else LOOP_LINES[key](text)
+
+
+def loop_dump(values: dict[str, Any]) -> str:
+    """The `## Loop settings` section holding `values` (loop_setting's, by dotted key), in the schema's order."""
+    data: dict[str, Any] = {}
+
+    def number(item: Fraction | float) -> int | float:
+        return int(item) if item == int(item) else float(item)
+
+    for key, value in values.items():
+        if key == "gate_cost":
+            data[key] = {"cores": number(value["cores"]), "gb": number(value["gb"])} | (
+                {} if value["reserve_gb"] is None else {"reserve_gb": number(value["reserve_gb"])}
+            )
+        elif key == "acceptance.budget":
+            data.setdefault("acceptance", {})["budget"] = {
+                "spec": number(value[0]),
+                "nightly": number(value[1]),
+            }
+        elif key == "acceptance.tests":
+            data.setdefault("acceptance", {})["tests"] = value
+        elif "." in key:
+            group, name = key.split(".")
+            data.setdefault(group, {})[name] = value
+        elif key == "cloud_worker" and value != "none":
+            data[key] = {name: item for name, item in value.items() if item}
+        else:
+            data[key] = value
+    ordered = {key: data[key] for key in LOOP_KEYS if key in data}
+    body = yaml.safe_dump(ordered, sort_keys=False, default_flow_style=False, width=1000)
+    return f"## {LOOP_HEADING}\n\n```yaml\n{body}```\n"
+
+
+def loop_migrate(text: str) -> str:
+    """`text` with its script-read lines (LOOP_LABELS) replaced by a `## Loop settings` block holding the same values,
+    inserted before the first `## ` heading (else at the end). Prose lines stay. A `Cloud worker: none` reason is kept
+    as a comment on the block's line. Refused where the text has the heading already, or where a line's value does not
+    fit the block's schema, naming the key; the result is read back and refused unless every key reads the same."""
+    if LOOP_HEAD.search(text):
+        raise Refused(f"loop.md has a ## {LOOP_HEADING} block already: nothing to migrate")
+    values = {key: value for key in LOOP_LABELS if (value := LOOP_LINES[key](text)) is not None}
+    if not values:
+        return text
+    lines = text.splitlines(keepends=True)
+    kept: list[str] = []
+    for at, line in enumerate(lines):
+        if any(
+            re.match(rf"^{re.escape(label)}:", line) for key in values for label in LOOP_LABELS[key]
+        ):
+            if kept and not kept[-1].strip() and at + 1 < len(lines) and not lines[at + 1].strip():
+                lines[at + 1] = ""  # the blank line after it goes too: no gap is left behind
+            continue
+        if line or at:
+            kept.append(line)
+    rest = "".join(kept)
+    dump = loop_dump(values)
+    reason = re.search(
+        r"^Cloud worker:[ \t]*none\b[ \t,:.-]*(.*?)[ \t]*$", text, re.MULTILINE | re.IGNORECASE
+    )
+    if reason and reason[1] and values.get("cloud_worker") == "none":
+        dump = dump.replace("cloud_worker: none", f"cloud_worker: none  # {reason[1]}")
+    head = re.search(r"^## ", rest, re.MULTILINE)
+    cut = head.start() if head else len(rest)
+    before, after = rest[:cut].rstrip("\n"), rest[cut:]
+    migrated = f"{before}\n\n{dump}" + (f"\n{after}" if after else "")
+    loop_block.cache_clear()
+    for key, value in values.items():
+        if loop_setting(migrated, key) != value:
+            raise Refused(
+                f"loop-migrate: `{key}` does not read back the same from the block it wrote"
+            )
+    return migrated
 
 
 def tracker_settings(tracker: str) -> dict[str, dict[str, str]]:
@@ -6700,7 +7088,7 @@ def full_check_line() -> None:
     project running the full check at every gate sees why; nothing with the opt-out `Gate: full`, which chose it."""
     with contextlib.suppress(Refused, OSError, subprocess.CalledProcessError):
         text = loop_md()
-        if not AFFECTED.search(text) and not FULL_GATE.search(text):
+        if loop_setting(text, "affected_tests") is None and loop_setting(text, "gate") is None:
             print(
                 "loop.md has no `Affected tests:` line, so every gate runs the full check: name the project's"
                 " selector there (SKILL.md, Adopting the loop)",
@@ -7029,8 +7417,6 @@ JOB_MINUTES = re.compile(
 )
 # the workflow that is the project's nightly: one comment line says so, and its push paths must be `select.build_inputs`
 NIGHTLY_MARK = re.compile(r"^#[ \t]*timeouts:[ \t]*nightly\b", re.MULTILINE)
-# loop.md's line naming the variable a project's affected-tests wall-clock limit is set in, in seconds
-WALL_CLOCK = re.compile(r"^Wall-clock variable:[ \t]*`?([A-Za-z_]\w*)", re.MULTILINE)
 
 
 def push_paths(text: str) -> list[str]:
@@ -7063,9 +7449,9 @@ def limit_drift(root: Path, loop: str | None) -> list[str]:
     budget, minutes = timeouts(loop)["run"], job_minutes(loop)
     flows = sorted((root / WORKFLOWS).glob("*.y*ml")) if (root / WORKFLOWS).is_dir() else []
     loop_file = root / LOOP
-    named = WALL_CLOCK.search(read(loop_file)) if loop_file.exists() else None
+    named = loop_setting(read(loop_file), "wall_clock_variable") if loop_file.exists() else None
     select = settings(loop).get("select", {})
-    setting = re.compile(rf"\b{named[1]}\b[\"']?[ \t]*[:=][ \t]*[\"']?(\d+)") if named else None
+    setting = re.compile(rf"\b{named}\b[\"']?[ \t]*[:=][ \t]*[\"']?(\d+)") if named else None
     files = [(f"{WORKFLOWS}/{flow.name}", read(flow)) for flow in flows]
     if setting and (root / "mise.toml").exists():
         files.append(("mise.toml", read(root / "mise.toml")))
@@ -7077,7 +7463,7 @@ def limit_drift(root: Path, loop: str | None) -> list[str]:
         ]
         if setting and (limit := setting.search(text)) and int(limit[1]) != budget:
             out.append(
-                f"{where}: `{named[1]}` is {limit[1]} seconds but `timeouts.run` makes it {budget}"  # type: ignore[index]
+                f"{where}: `{named}` is {limit[1]} seconds but `timeouts.run` makes it {budget}"  # type: ignore[index]
             )
         if (
             NIGHTLY_MARK.search(text)
@@ -9402,7 +9788,7 @@ def whole_suite(pull: dict[str, Any]) -> str | None:
     gatekeeper.md's `select.build_inputs_in_queue: full`. Only the project's settings decide, never a path or name
     the pack knows."""
     text = loop_md()
-    if FULL_GATE.search(text):
+    if loop_setting(text, "gate"):
         return "loop.md's `Gate: full`"
     if narrowing(text) is None:
         return "loop.md names no `Affected tests:` selector"
@@ -11250,19 +11636,14 @@ def gate_base_variable(text: str | None = None) -> str:
     """The variable loop.md's line `Gate base:` names (of `text`, else the policy's loop.md), else `GATE_BASE`; refused
     when it is no variable name."""
     text = (policy_file(toplevel(), LOOP, POLICY_BASE.get()) or "") if text is None else text
-    named = re.search(r"^Gate base:[ \t]*`?([^\s`]+)", text, re.MULTILINE)
-    variable = named.group(1) if named else "GATE_BASE"
-    if not re.fullmatch(r"[A-Za-z_]\w*", variable):
+    variable = loop_setting(text, "gate_base") or "GATE_BASE"
+    if not VARIABLE.fullmatch(variable):
         raise Refused(f"loop.md's `Gate base:` names {variable!r}, which is no variable name")
     return variable
 
 
 # loop.md's narrowed mode (SKILL.md, Adopting the loop): its `Affected tests:` command is the whole narrowed check, and
 # the line `Gate: full` opts the project out, so every gate runs the full check as it does without the selector
-AFFECTED = re.compile(r"^Affected tests:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
-# where the `Affected tests:` command writes its JUnit XML report, which rerun-tests reads to count the tests it ran
-TEST_REPORT = re.compile(r"^Test report:[ \t]*`?(.+?)`?[ \t]*$", re.MULTILINE)
-FULL_GATE = re.compile(r"^Gate:[ \t]*`?full`?[ \t]*$", re.MULTILINE)
 # the end of a narrowed gate's command (narrowed_gate): `(` is a shell operator command_line refuses, and the command it
 # returns is shlex-quoted, so no full gate's command, record or key can ever equal a narrowed one
 NARROWED = " (narrowed)"
@@ -11300,10 +11681,10 @@ def loop_md() -> str:
 def narrowing(text: str | None = None) -> str | None:
     """loop.md's `Affected tests:` command (of `text`, else loop_md), or None: no line, or the opt-out `Gate: full`."""
     text = loop_md() if text is None else text
-    found = AFFECTED.search(text)
-    if found is None or FULL_GATE.search(text):
+    found = loop_setting(text, "affected_tests")
+    if found is None or loop_setting(text, "gate"):
         return None
-    return found.group(1).strip().strip("`")
+    return found
 
 
 @contextlib.contextmanager
@@ -11575,7 +11956,7 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     variable = gate_base_variable(text)
     env = {name: value for name, value in os.environ.items() if name != variable}
     words, sets = [*LOCAL_CI[:-1], "check"], {}
-    if not FULL_GATE.search(text):
+    if not loop_setting(text, "gate"):
         if (base := selection_base(given)) is None:
             print(
                 f"affected-tests: the base {given} is no commit here: it selects against the merge base",
@@ -11611,7 +11992,7 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     # ponytail: the pack sees the selection only where it makes it (the whole suite): a project's `Affected tests:`
     # command picks its tests internally, so no list-only mode yet (#2445's open question) and no estimate for it
     estimate: float | None = None
-    if written is None or FULL_GATE.search(text):
+    if written is None or loop_setting(text, "gate"):
         try:
             shards = shard_count()
         except Refused:
@@ -11619,7 +12000,7 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
         estimate, why = read_estimate(root, shards)
         cause = (
             "`Gate: full` selects the whole suite"
-            if FULL_GATE.search(text)
+            if loop_setting(text, "gate")
             else "loop.md names no `Affected tests:` selector, so the whole suite"
         )
     else:
@@ -11653,7 +12034,7 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
     if estimate is not None:  # no estimate, nothing to compare, and no file to dirty a checkout
         note_run(root, estimate, time.monotonic() - started, code)
     if spent is SPENT:
-        whole = "`Gate: full`" if FULL_GATE.search(text) else "no `Affected tests:` line"
+        whole = "`Gate: full`" if loop_setting(text, "gate") else "no `Affected tests:` line"
         print(
             over_budget(budget, root, base if written is not None else None, whole), file=sys.stderr
         )
@@ -12285,8 +12666,8 @@ def rerun(red: str, base: str | None, text: str, red_ran: bool) -> int | None:
     that is red again, as any red rerun is."""
     if base is None:
         return did_not_run("no base to select against")
-    found = TEST_REPORT.search(text)
-    report = toplevel() / found.group(1) if found else None
+    found = loop_setting(text, "test_report")
+    report = toplevel() / found if found else None
     if report:
         report.unlink(missing_ok=True)
     try:
@@ -12328,7 +12709,7 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
         raise Refused(f"rerun-tests: no commit {red} here: fetch the red run's head") from None
     base = selection_base(given)
     text = (shown_at(toplevel(), red, LOOP) or b"").decode()
-    if narrowing(text) is None and not FULL_GATE.search(text):
+    if narrowing(text) is None and not loop_setting(text, "gate"):
         did_not_run(f"{red}'s loop.md names no `Affected tests:` selector")
         return DID_NOT_RUN
     fixed, candidates = rerun_plan(failed, fix_since(red, base))
@@ -12432,12 +12813,8 @@ def gate_env(step: dict[str, Any]) -> dict[str, str]:
     cleared = set(local_ci_env()) | {"GATE_BASE", *INCUBATING_ENV}
     with contextlib.suppress(Refused, OSError):  # the working tree's loop.md, read with no git call
         held = toplevel() / LOOP
-        named = (
-            re.search(r"^Gate base:[ \t]*`?([A-Za-z_]\w*)\b", held.read_text(), re.MULTILINE)
-            if held.exists()
-            else None
-        )
-        cleared |= {named.group(1)} if named else set()
+        named = loop_setting(held.read_text(), "gate_base") if held.exists() else None
+        cleared |= {named} if named and VARIABLE.fullmatch(named) else set()
     return {name: value for name, value in os.environ.items() if name not in cleared} | step["sets"]
 
 
@@ -12454,10 +12831,6 @@ def slot_file(name: str) -> str:
 
 # loop.md's line stating what one heavy gate run costs, measured on the project's heaviest gate (SKILL.md, One heavy
 # gate per host slot): `Gate cost: <cores> cores, <GB> GB`, optionally `, reserve <GB> GB`
-GATE_COST = re.compile(
-    r"^Gate cost:[ \t]*`?(?P<cores>\d+(?:\.\d+)?) cores?,[ \t]*(?P<gb>\d+(?:\.\d+)?) GB"
-    r"(?:,[ \t]*reserve (?P<reserve>\d+(?:\.\d+)?) GB)?`?[ \t]*$"
-)
 GIB = 1 << 30
 
 
@@ -12504,8 +12877,8 @@ def total_memory() -> Fraction | None:
 
 
 def gate_cost() -> tuple[tuple[Fraction, Fraction] | None, Fraction | None]:
-    """loop.md's `Gate cost:` line (GATE_COST) in the checkout this runs in, as read from its root as the template's
-    `gate-slot` greps it: ((cores, GB), reserve or None), or (None, None) outside a repo or without the line. The root
+    """loop.md's `gate_cost` (loop_setting; the old `Gate cost:` line) in the checkout this runs in, as read from its root
+    as the template's `gate-slot` greps it: ((cores, GB), reserve or None), or (None, None) outside a repo or without the line. The root
     is the nearest directory up from here holding `.git`, found without running git, since a heavy step's caller may
     run anywhere and this is read on every slot it takes. A line off its form, or a cost of 0, is refused, naming the
     line, since a stated cost ignored would oversubscribe the host."""
@@ -12513,19 +12886,8 @@ def gate_cost() -> tuple[tuple[Fraction, Fraction] | None, Fraction | None]:
     top = next((d for d in (here, *here.parents) if (d / ".git").exists()), None)
     with contextlib.suppress(OSError):
         text = "" if top is None else (top / LOOP).read_text(encoding="utf-8", errors="replace")
-        for line in text.splitlines():
-            if not line.startswith("Gate cost:"):
-                continue
-            found = GATE_COST.match(line.rstrip())
-            if found is None or not Fraction(found["cores"]) or not Fraction(found["gb"]):
-                raise Refused(
-                    f"loop.md's {line.strip()!r} is not `Gate cost: <cores> cores, <GB> GB`"
-                    " (optional `, reserve <GB> GB`), each cost above 0"
-                )
-            reserve = found["reserve"]
-            return (Fraction(found["cores"]), Fraction(found["gb"])), (
-                None if reserve is None else Fraction(reserve)
-            )
+        if (cost := loop_setting(text, "gate_cost")) is not None:
+            return (cost["cores"], cost["gb"]), cost["reserve_gb"]
     return None, None
 
 
@@ -14796,6 +15158,10 @@ def main(argv: list[str]) -> int:
     # --local: run a whole-suite selection here though CI runs it (#2621)
     selecting.add_argument("--local", action="store_true")
     commands.add_parser("queue-config")
+    # the `## Loop settings` block written from loop.md's old lines (loop_migrate)
+    migrating = commands.add_parser("loop-migrate")
+    migrating.add_argument("path", nargs="?", default=str(LOOP))
+    migrating.add_argument("--write", action="store_true")
     # the batch's base: the queue's target branch tip the batch merges onto
     queueing = commands.add_parser("queue-select")
     queueing.add_argument("base", nargs="?", default="origin/main")
@@ -14876,6 +15242,14 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         args.command == "queue-config"
     ):  # the checkout's own policy, so a PR's change to `land` renders with it
         print(queue_config(), end="")
+        return 0
+    if args.command == "loop-migrate":  # a file's text only: no forge, no remote
+        target = Path(args.path)
+        migrated = loop_migrate(target.read_text())
+        if args.write:
+            target.write_text(migrated)
+        else:
+            print(migrated, end="")
         return 0
     if args.command == "prune-records":
         drop_records(args.head)
