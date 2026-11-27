@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.31 - 2026-11-27
+
+- `reap` releases a session whose PR label names an issue once that issue is closed: `pr_hold()` reads the issues endpoint, which answers for issues and PRs alike, instead of `gh pr view`, which fails on an issue number and so kept the session for good. An open issue or PR and a failed read still hold it (#2823).
+
 ## 0.1.30 - 2026-11-27
 
 - A verifier's `Verifier:` line names the effort it ran at on every route: the start's `--effort`, else the effort in the model's name (agy's `gemini-4-hydrogen-medium`), else the harness's own config (Codex's `model_reasoning_effort`, Claude Code's `effortLevel`). A verifier start whose effort can't be resolved is refused, naming the harness and where it looked. The `SKILL.md` Antigravity paragraph names the model the Gemini verifiers run (#2838).
