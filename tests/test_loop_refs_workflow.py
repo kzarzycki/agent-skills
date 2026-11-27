@@ -33,6 +33,10 @@ def test_it_runs_on_the_three_branch_families_alone_with_the_write_token() -> No
     assert (
         "${{ github.ref_name }}" not in job["steps"][1]["run"]
     )  # reaches the shell through env only
+    assert found["concurrency"] == {
+        "group": "loop-refs-${{ github.ref }}",
+        "cancel-in-progress": False,
+    }  # two beats of one branch never run together
 
 
 def git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -102,3 +106,38 @@ def test_each_branch_moves_to_its_ref_and_is_deleted(
         env=os.environ | {"BRANCH": branch, "SHA": newer},
     )
     assert git(origin, "rev-parse", dest).strip() == newer
+
+
+def test_a_late_run_for_an_older_commit_changes_nothing_and_a_run_for_a_gone_branch_succeeds(
+    tmp_path: Path,
+) -> None:
+    """#2821 F1: the run for beat 1 starts after beat 2 moved the branch: it must not overwrite the ref with the older
+    commit or delete the newer branch; a run whose branch is already deleted exits 0."""
+    origin, clone = tmp_path / "origin.git", tmp_path / "clone"
+    git(tmp_path, "init", "-q", "--bare", str(origin))
+    git(tmp_path, "init", "-q", str(clone))
+    git(clone, "remote", "add", "origin", str(origin))
+    ident = ["-c", "user.name=t", "-c", "user.email=t@invalid"]
+    git(clone, *ident, "commit", "-q", "--allow-empty", "-m", "a")
+    older = git(clone, "rev-parse", "HEAD").strip()
+    git(clone, *ident, "commit", "-q", "--allow-empty", "-m", "b")
+    newer = git(clone, "rev-parse", "HEAD").strip()
+    branch = "loop-event/lead/feat/x"
+    script = next(s for s in workflow()["jobs"]["move"]["steps"] if "run" in s)["run"]
+
+    def run(sha: str) -> None:
+        subprocess.run(
+            ["bash", "-c", script],
+            cwd=clone,
+            check=True,
+            env=os.environ | {"BRANCH": branch, "SHA": sha},
+        )
+
+    git(clone, "push", "-q", "origin", f"{newer}:refs/heads/{branch}")  # beat 2 already there
+    run(older)  # beat 1's late run
+    assert git(origin, "for-each-ref", "--format=%(refname)") == f"refs/heads/{branch}\n"
+    run(newer)
+    assert git(origin, "rev-parse", "refs/loop/lead/feat/x").strip() == newer
+    assert git(origin, "for-each-ref", "--format=%(refname)", "refs/heads/") == ""
+    run(newer)  # the same run again, the branch gone: no error
+    assert git(origin, "rev-parse", "refs/loop/lead/feat/x").strip() == newer

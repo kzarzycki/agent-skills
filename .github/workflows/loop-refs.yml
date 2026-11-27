@@ -13,6 +13,11 @@ on:
 permissions:
   contents: write
 
+# two beats on one branch run one after the other, never together, so a late run can't undo an earlier one (#2821)
+concurrency:
+  group: loop-refs-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   move:
     runs-on: ubuntu-latest
@@ -33,6 +38,11 @@ jobs:
             claude/loop-event/*) dest="refs/loop/${BRANCH#claude/loop-event/}" ;;
             *) echo "not a loop ref: $BRANCH"; exit 0 ;;
           esac
+          # a newer push to the branch has its own run: this one moves and deletes only the commit it was started for,
+          # and does nothing when the branch is gone already or has moved on
+          tip=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
+          if [ "$tip" != "$SHA" ]; then echo "$BRANCH is no longer at $SHA: left to the run of its newer push"; exit 0; fi
           # an event is rewritten as a new parentless commit on every beat, so the move replaces what is there
           git push --force origin "$SHA:$dest"
-          git push origin ":refs/heads/$BRANCH"
+          # a lease, so a push that landed since the check above keeps its branch for its own run
+          git push --force-with-lease="refs/heads/$BRANCH:$SHA" origin ":refs/heads/$BRANCH" || echo "$BRANCH was not deleted: it moved on, or is gone"

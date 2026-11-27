@@ -13953,9 +13953,21 @@ def upgrade_sweep(force: bool = False) -> None:
     if SWEPT in listed and not force:
         return
     moves: dict[str, str] = {}  # branch ref -> the refs/loop/ name it becomes
+    # an open PR's record branch stays a branch: the independent rerun's check asks the forge who pushed that branch
+    # (rerun_gap, pusher), which the forge's activity list answers for `refs/heads/` alone. drop_records deletes it by
+    # its own rule once the PR is closed. With the open PRs unreadable, none of them moves.
+    held_open: set[str | None] | None = None
+    if any(ref.startswith("refs/heads/loop-gate/") for ref in listed):
+        try:
+            held_open = {tree_of(head) for head in open_heads()}
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            held_open = None
     for ref in listed:
         if ref.startswith("refs/heads/loop-gate/"):
-            moves[ref] = RECORD_REF.format(ref.removeprefix("refs/heads/loop-gate/"))
+            name = ref.removeprefix("refs/heads/loop-gate/")
+            if held_open is None or None in held_open or name.split("-", 1)[0] in held_open:
+                continue
+            moves[ref] = RECORD_REF.format(name)
         for prefix in EVENT_BRANCHES:
             if ref.startswith(prefix):
                 moves[ref] = f"refs/loop/{ref.removeprefix(prefix)}"

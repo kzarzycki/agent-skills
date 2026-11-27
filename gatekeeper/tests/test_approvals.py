@@ -10576,6 +10576,12 @@ def test_the_upgrade_sweep_moves_old_branches_and_deletes_only_finished_claude_b
     head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
     a, b, origin = tmp_path / "a", tmp_path / "b", tmp_path / "origin.git"
     record = record_on_branch(b, head, "2026-01-01T00:00:00Z")
+    (a / "app.py").write_text("value = 'rerun'\n")
+    git_in(a, "commit", "-qam", "an open PR's head")
+    open_head = git_in(a, "rev-parse", "HEAD").strip()
+    git_in(a, "push", "-q", "origin", f"{open_head}:refs/heads/open-pr")
+    git_in(b, "fetch", "-q", "origin")
+    open_record = record_on_branch(b, open_head, "2026-01-01T00:00:00Z")  # as rerun.yml pushes one
     git_in(a, "push", "-q", "origin", f"{head}:refs/heads/loop-event/lead/feat/x")
     for name in ("claude/merged", "claude/closed", "claude/open", "claude/no-pr"):
         git_in(a, "push", "-q", "origin", f"{head}:refs/heads/{name}")
@@ -10585,17 +10591,24 @@ def test_the_upgrade_sweep_moves_old_branches_and_deletes_only_finished_claude_b
 
     def gh(*args: str) -> str:
         asked.append(args)
+        if "state=open" in args[2]:  # open_heads: the open PR on the rerun record's head
+            return json.dumps({"head": {"sha": open_head, "ref": "open-pr"}}) + "\n"
         pulls = [("closed", "claude/merged"), ("closed", "claude/closed"), ("open", "claude/open")]
         return "".join(json.dumps({"state": s, "ref": r}) + "\n" for s, r in pulls)
 
     monkeypatch.setattr(approvals.github, "gh", gh)
     UPGRADE_SWEEP()
+    # F2: an open PR's record branch stays a branch, since the rerun check asks the forge who pushed that branch
     assert git_ref_names(origin, "refs/heads/") == [
         "refs/heads/claude/no-pr",
         "refs/heads/claude/open",
         "refs/heads/feature",
+        open_record,
         "refs/heads/main",
+        "refs/heads/open-pr",
     ]
+    kept_name = approvals.RECORD_REF.format(open_record.rsplit("/", 1)[1])
+    assert kept_name not in git_ref_names(origin, "refs/loop/")
     moved = git_ref_names(origin, "refs/loop/")
     assert approvals.RECORD_REF.format(record.rsplit("/", 1)[1]) in moved
     assert {"refs/loop/lead/feat/x", "refs/loop/lead/feat/y", approvals.SWEPT} <= set(moved)
