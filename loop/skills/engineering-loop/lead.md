@@ -349,7 +349,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      exit 0 means your PR merged in the local queue, with a `Landed` comment naming the base commit and the tree,
      and its kept `--pr` worker sessions finishing in the background (its log is named; `reap --merged
      --pr <n>` finishes them again). On a base with GitHub's merge queue, or under `land.queue: mergify`, `land <pr>` exits 0 once the
-     PR is enqueued (or already queued); `land <pr> --wait` waits on until the queue merges it (exit 0) or takes
+     PR is enqueued (or already queued); on GitHub's queue `--wait` is the same as no flag, so it exits at once and the merge or
+     a removal reaches you as an event (#1287); under `land.queue: mergify` `land <pr> --wait` waits on until the queue merges it (exit 0) or takes
      it out, reading only the PR's queue state about once a minute, so don't poll the PR yourself. A removal's
      next round runs in the same wait: a red is enqueued once more, a second red or a dequeue evicts (exit 1).
      That once-more run repeats the whole check, which R5 rules out (SKILL.md, A check runs only if it can fail

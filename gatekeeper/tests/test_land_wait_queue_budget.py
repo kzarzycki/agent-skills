@@ -10,8 +10,8 @@ protection). Reproduced here, it had two causes, both in the old code:
 - inside a round, a refused `api user` read was never kept, so each viewer() asked it again: four times a round here,
   each also reading the viewer's own permission.
 
-The wait now waits until the queue merges the PR or takes it out, reading between rounds only its queue state
-(queue_watch, one call a QUEUE_WATCH); a refused login is kept KEPT seconds, and a read refused or rate-limited is not
+On a GitHub-queue base `--wait` no longer waits on the queue at all (#1287: land enqueues and exits, so the queue
+is never polled); the Mergify wait still reads only its queue state (queue_watch, one call a QUEUE_WATCH). A refused login is kept KEPT seconds, and a read refused or rate-limited is not
 asked again inside its round. Driven on the `queue` fake GitHub (test_approvals_github_queue.py), with `gh` faked at
 subprocess.run under the real github.gh(), its quota guard included, and a fake clock.
 """
@@ -19,7 +19,6 @@ subprocess.run under the real github.gh(), its quota guard included, and a fake 
 from __future__ import annotations
 
 import collections
-import itertools
 import json
 import re
 import subprocess
@@ -209,54 +208,16 @@ def within_a_poll(state: dict[str, Any], since: float) -> bool:
     )
 
 
-@pytest.mark.parametrize("user", ["loop", REFUSED])
-def test_a_30_minute_queue_wait_reads_the_login_once_and_spends_two_calls_a_poll(
-    wait: dict[str, Any], user: str
-) -> None:
-    wait["user"] = user
-    wait["queued"]()
-    wait["at"](WAIT, lambda: wait["queue_merge"](7))
-    code, lines = wait["land"]("7", "--wait")
-    # the old code exited 0 at once, the PR still queued: its caller then polled with whole rounds
-    assert code == 0, lines
-    assert wait["now"] >= WAIT and "PR #7 is merged" in lines
-    calls, rounds = spent(wait), polls(wait)
-    assert calls["api user"] <= 1, calls  # a refused one too: the old code asked it 4 times a round
-    permission = calls["api repos/{owner}/{repo}/collaborators/loop/permission"]
-    assert permission <= 1 + int(wait["now"] // github.KEPT), calls
-    assert len(rounds) >= WAIT // approvals.QUEUE_WATCH - 2
-    assert len(wait["gh_calls"]) <= PER_POLL * len(rounds) + CONSTANT, calls
-
-
-def test_poll_rounds_and_landing_rounds_are_at_least_60_s_apart(wait: dict[str, Any]) -> None:
-    wait["queued"]()
-    wait["at"](WAIT, lambda: wait["queue_merge"](7))
-    assert wait["land"]("7", "--wait")[0] == 0
-    for times in (polls(wait), wait["rounds"]):
-        assert all(later - earlier >= 60 for earlier, later in itertools.pairwise(times)), times
-    assert len(wait["rounds"]) < len(
-        polls(wait)
-    )  # a round runs on a move, or each FULL, never each poll
-
-
-def test_under_a_rest_rate_limit_no_failed_read_is_asked_again_before_the_reset(
+def test_under_a_rest_rate_limit_a_wait_on_a_queue_base_spends_no_read_after_the_enqueue(
     wait: dict[str, Any],
 ) -> None:
-    """The REST bucket empties mid-round, after the rules read, with the guard's reading still fresh: the next REST
-    read is refused once, and gh() waits to the reset before it asks again; past it the wait goes on to the merge."""
-    wait["queued"]()
-    wait["limit_after"] = 1
-    wait["at"](WAIT, lambda: wait["queue_merge"](7))
+    """The REST bucket empties after the enqueue: land has nothing left to read, so it exits 0 at once, whole."""
+    head = wait["opened"](7)
+    wait["limit_after"] = 1000
     code, lines = wait["land"]("7", "--wait")
     assert code == 0, lines
-    refused = [(now, args) for now, args, answered in wait["gh_calls"] if not answered]
-    assert refused, "the bucket never emptied"
-    reset = wait["reset"] - EPOCH
-    for now, args in refused:
-        assert now < reset
-        again = [later for later, same, _ in wait["gh_calls"] if same == args and later > now]
-        assert all(later >= reset for later in again), (args, again)
-    assert collections.Counter(args for _, args in refused).most_common(1)[0][1] == 1
+    assert wait["now"] == 0 and wait["enqueued"] == [(7, head)]
+    assert not [1 for _, args, answered in wait["gh_calls"] if not answered]
 
 
 def test_outside_a_wait_a_rate_limited_or_refused_read_is_asked_once_a_round(
@@ -310,58 +271,6 @@ def test_a_refused_login_is_kept_for_the_process_and_a_later_grant_is_seen_withi
         github.gh = real_gh
 
 
-def test_a_merge_ends_the_wait_within_one_poll(wait: dict[str, Any]) -> None:
-    wait["queued"]()
-    wait["at"](300, lambda: wait["queue_merge"](7))
-    code, lines = wait["land"]("7", "--wait")
-    assert code == 0, lines
-    assert within_a_poll(wait, 300) and wait["now"] <= 300 + approvals.QUEUE_WATCH + approvals.POLL
-    assert len(notes_on(wait, 7, approvals.LANDED)) == 1
-
-
-def test_a_removal_runs_the_round_within_one_poll_and_the_wait_goes_on(
-    wait: dict[str, Any],
-) -> None:
-    """A removal for no reason that counts (`manual`) is enqueued again by the round, and the wait goes on."""
-    head = wait["queued"]()
-    wait["at"](300, lambda: wait["remove"](7, "MANUAL", at="2026-10-02T12:00:00Z"))
-    wait["at"](900, lambda: wait["queue_merge"](7))
-    code, lines = wait["land"]("7", "--wait")
-    assert code == 0, lines
-    assert within_a_poll(wait, 300)
-    assert wait["enqueued"][-1] == (7, head) and len(wait["enqueued"]) == 2
-
-
-def test_a_red_group_runs_the_round_within_one_poll(wait: dict[str, Any]) -> None:
-    """GitHub takes the PR out for a red required check on its group: the round comments the red and enqueues it again."""
-    wait["queued"]()
-
-    def red() -> None:
-        red_group(wait, "g1", 440)
-        wait["remove"](7, approvals.FAILED_CHECKS, at="2026-10-02T12:00:00Z")
-
-    wait["at"](300, red)
-    wait["at"](900, lambda: wait["queue_merge"](7))
-    code, lines = wait["land"]("7", "--wait")
-    assert code == 0, lines
-    assert within_a_poll(wait, 300)
-    assert len(notes_on(wait, 7, approvals.QUEUE_RED)) == 1
-
-
-def test_a_push_to_the_head_runs_the_round_within_one_poll(wait: dict[str, Any]) -> None:
-    """A push takes the PR out of the queue; the round reads the new head, which has no verdict of its own: exit 1."""
-    wait["queued"]()
-
-    def push() -> None:
-        wait["pulls"][7].update(headRefOid="c" * 40, mergeQueueEntry=None)
-
-    wait["at"](300, push)
-    code, lines = wait["land"]("7", "--wait")
-    assert code == 1, "\n".join(dict.fromkeys(lines))
-    assert any("not on the head " + "c" * 40 in line for line in lines)
-    assert within_a_poll(wait, 300) and wait["now"] <= 300 + approvals.QUEUE_WATCH + approvals.POLL
-
-
 @pytest.fixture
 def mergify_wait(wait: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """`wait` on a base whose rules require `qualify` and no GitHub merge queue, the policy naming Mergify."""
@@ -408,15 +317,6 @@ def test_a_push_to_a_head_queued_for_mergify_runs_the_round_within_one_poll(
     assert 300 <= mergify_wait["now"] <= 300 + approvals.QUEUE_WATCH + approvals.POLL
 
 
-def test_a_wait_that_enqueues_the_pr_waits_on_for_the_merge(wait: dict[str, Any]) -> None:
-    head = wait["opened"](7)
-    wait["at"](300, lambda: wait["queue_merge"](7))
-    code, lines = wait["land"]("7", "--wait")
-    assert code == 0, lines
-    assert wait["enqueued"] == [(7, head)] and within_a_poll(wait, 300)
-    assert "PR #7 is merged" in lines
-
-
 def test_a_rate_limited_permission_read_is_no_answer_and_is_asked_again_next_round(
     wait: dict[str, Any],
 ) -> None:
@@ -439,3 +339,43 @@ def test_a_refused_permission_read_for_another_account_is_kept_as_an_answer(
     github.read_afresh()
     assert github.writer("worker") is False
     assert spent(wait)["api repos/{owner}/{repo}/collaborators/worker/permission"] == 1
+
+
+def test_wait_on_a_github_queue_base_enqueues_and_exits_without_polling(
+    wait: dict[str, Any],
+) -> None:
+    """#1287: `land 7 --wait` is `land 7` on a GitHub-queue base: enqueue, say it once, exit 0, no sleep, no queue read."""
+    head = wait["opened"](7)
+    code, lines = wait["land"]("7", "--wait")
+    # the fixture's bare gh answers the record sweep no better than it did for the old wait: only the first line counts
+    assert code == 0 and lines[:1] == [f"PR #7 enqueued at {head}, position 1"], lines
+    assert wait["now"] == 0, "it slept"
+    assert polls(wait) == [] and len(wait["rounds"]) == 1
+    assert wait["enqueued"] == [(7, head)]
+    assert wait["pulls"][7]["mergeQueueEntry"]  # in the queue when it exits
+
+
+def test_wait_on_a_pr_already_in_the_queue_says_so_and_exits_0_at_once(
+    wait: dict[str, Any],
+) -> None:
+    head = wait["queued"]()
+    code, lines = wait["land"]("7", "--wait")
+    assert code == 0 and lines[:1] == [f"PR #7 is in the merge queue at {head}, position 1"], lines
+    assert wait["now"] == 0 and polls(wait) == [] and wait["enqueued"] == [(7, head)]
+
+
+def test_wait_reconciles_a_removed_entry_once_with_a_comment_and_one_enqueue_then_drafts(
+    wait: dict[str, Any],
+) -> None:
+    """The removal step stays in land as a one-shot: first red comments and enqueues once more, the second drafts."""
+    head = wait["queued"]()
+    wait["remove"](7, approvals.FAILED_CHECKS, at="2026-10-02T12:00:00Z", group="g1")
+    red_group(wait, "g1", 440)
+    assert wait["land"]("7", "--wait")[0] == 0
+    assert len(notes_on(wait, 7, approvals.QUEUE_RED)) == 1
+    assert wait["enqueued"] == [(7, head), (7, head)] and wait["now"] == 0
+    wait["remove"](7, approvals.FAILED_CHECKS, at="2026-10-02T13:00:00Z", group="g2")
+    red_group(wait, "g2", 450)
+    code, _ = wait["land"]("7", "--wait")
+    assert code == 1 and wait["pulls"][7]["isDraft"] and len(wait["enqueued"]) == 2
+    assert wait["now"] == 0 and polls(wait) == []
