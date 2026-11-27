@@ -1039,6 +1039,73 @@ def test_a_merge_waits_for_check_and_the_owners_go_and_fails_a_missing_proof(
     )
 
 
+def owner_pass(*unrun: str, counts: str = "0 blocker, 0 major, 0 minor") -> dict[str, Any]:
+    """A pass with no finding and `SATISFIED: no`, its `Not run:` lines in the review's visible closing block."""
+    review = verdict_on(HEAD, counts, satisfied="no")
+    review["body"] += "".join(f"{line}\n" for line in unrun) + "Risk: low — a test fixture\n"
+    return review
+
+
+OWNER_RUNS = (
+    "Not run: unit tests, owner action: run them on the Mac",
+    "Not run: hardware run, owner action: plug in the board",
+)
+
+
+def gate_merge(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], review: dict[str, Any]
+) -> tuple[int, list[str]]:
+    in_project(monkeypatch)
+    monkeypatch.setattr(approvals, "required_checks", lambda _base: set())
+    pr = pull(reviews=(review,), checks=(), files=("app.py",))
+    pr["closingIssuesReferences"]["nodes"] = [approved(1, "area:web", "kind:bug")]
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    code = approvals.main(["check", "merge", "7"])
+    return code, capsys.readouterr().out.splitlines()
+
+
+def test_a_pass_with_only_owner_actions_open_waits_for_the_owner_not_unsatisfied(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#994: 0/0/0, `SATISFIED: no`, every gap an owner-action line: exit WAITING naming each action, no `risk:high`."""
+    code, out = gate_merge(monkeypatch, capsys, owner_pass(*OWNER_RUNS))
+    assert code == approvals.WAITING
+    assert len(out) == 1 and out[0].startswith("PR #7 waits for the owner: ")
+    assert (
+        "unit tests: run them on the Mac" in out[0] and "hardware run: plug in the board" in out[0]
+    )
+    assert "not satisfied" not in "\n".join(out) and "risk:high" not in "\n".join(out)
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        owner_pass(*OWNER_RUNS, "Not run: gate"),
+        owner_pass(*OWNER_RUNS, counts="0 blocker, 1 major, 0 minor"),
+        owner_pass(),
+    ],
+    ids=["another-not-run", "a-major", "no-not-run"],
+)
+def test_a_pass_with_any_other_gap_stays_not_satisfied(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], review: dict[str, Any]
+) -> None:
+    code, out = gate_merge(monkeypatch, capsys, review)
+    assert code == 1
+    assert any("is not satisfied: fix and verify again" in line for line in out)
+    assert not any("waits for the owner" in line for line in out)
+
+
+def test_verdict_posts_the_not_run_lines_in_the_reviews_visible_block(tmp_path: Path) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(
+        REPORT.split("### C1")[0]
+        + "\n".join(OWNER_RUNS)
+        + f"\n\nHead: {HEAD}\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: no\nRisk: low — a test fixture\n"
+    )
+    closing = approvals.parse_report(report)[3]
+    assert closing[-2:] == list(OWNER_RUNS)
+
+
 @pytest.mark.parametrize("loop", [LOOP, add(LOOP, "loop", "ci: false\n")], ids=["ci", "ci-false"])
 def test_check_merge_passes_on_a_base_requiring_no_check_with_no_ci_and_a_satisfied_verdict(
     monkeypatch: pytest.MonkeyPatch,

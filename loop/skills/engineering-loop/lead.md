@@ -367,7 +367,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      - `main itself is red` (a queue's batch check red on main alone): nobody is evicted, since
        the fault is on main; fix main first (Rules for every role, Revert first);
      - a merge GitHub refused: as the bullet below says.
-     Exit 3 is what `--wait` doesn't clear: the owner's go, or 2 hours of another land's lock
+     Exit 3 is what `--wait` doesn't clear: the owner's go, a line `waits for the owner: <each action>` (the newest
+     pass has no blocker or major and every unrun item is a `Not run: …, owner action: …` line: post one owner card
+     listing every action, and when the owner has done them and the evidence is in, a new verifier pass judges
+     again), or 2 hours of another land's lock
      (one whose PR already merged is broken at once). On a GitHub-queue
      base exit 3 for a conflict GitHub is still working out, or for main's checks on the commit a red group was
      built on, ends the run: run `land` again later. With gatekeeper.md's `land` section it squashes, signs and pushes

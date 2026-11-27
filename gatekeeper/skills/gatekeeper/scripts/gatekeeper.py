@@ -3558,6 +3558,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                     )
                     if key.strip() in ("VERDICT", "SATISFIED", "Risk", LOGIC, RERUN_LINE)
                 },
+                **({NOT_RUN: "\n".join(unrun)} if (unrun := not_run(review["body"])) else {}),
                 **{
                     key.strip(): value.strip()
                     for key, _, value in (
@@ -3575,6 +3576,33 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     ]
     keys = [(commit, number, kin(lines["Family"])) for commit, number, lines in read]
     return [entry for i, entry in enumerate(read) if keys[i] not in keys[i + 1 :]]
+
+
+NOT_RUN = "Not run"
+OWNER_ACTION = re.compile(r"Not run:(.*?),\s*owner action:\s*(\S.*)", re.IGNORECASE)
+
+
+def not_run(body: str) -> list[str]:
+    """The `Not run:` lines of a review's body outside its folded part, each stripped, in order."""
+    return [
+        line.strip()
+        for line in folding.visible(body).splitlines()
+        if re.match(r"Not run:(?!\s*none\.?\s*$)", line.strip(), re.IGNORECASE)
+    ]
+
+
+def owner_gap(same: list[dict[str, str]]) -> list[str] | None:
+    """The owner's actions a pass waits on, or None: every review of the pass has no blocker or major, says it is not
+    satisfied, and its only `Not run:` lines are `Not run: <step>, owner action: <what>` ones (at least one). A
+    satisfied pass, a finding, or any other `Not run:` line leaves it unsatisfied as before (#994)."""
+    actions: list[str] = []
+    for lines in same:
+        unrun = lines.get(NOT_RUN, "").splitlines()
+        found = [OWNER_ACTION.match(line) for line in unrun]
+        if counts(lines) != (0, 0) or held(lines) or not unrun or None in found:
+            return None
+        actions += [f"{m[1].strip()}: {m[2].strip()}" for m in found if m]
+    return actions or None
 
 
 def kin(family: str) -> str:
@@ -3930,7 +3958,9 @@ def reviewed(
         )
     if decided:
         return found
-    if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same):
+    if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same) and not owner_gap(
+        same
+    ):
         found.append(f"{where}: a verifier review on {head} is not satisfied: fix and verify again")
     if blocker or major:
         found.append(
@@ -4564,7 +4594,38 @@ def fetched(sha: str) -> bool:
     return subprocess.run(have, capture_output=True, check=False).returncode == 0
 
 
+def owner_steps(pull: dict[str, Any], loop: str | None) -> list[str]:
+    """One line while the newest pass on the head has no blocker or major and waits only on steps the owner holds
+    (owner_gap): each action named, so check merge exits WAITING, not 1, and land asks the owner (#994)."""
+    verdicts = passes(pull)
+    if isinstance(verdicts, str) or not verdicts:
+        return []
+    head = pull["headRefOid"].lower()
+    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
+    if not on_head:
+        return []
+    last = max(number for number, _ in on_head)
+    actions = owner_gap([lines for number, lines in on_head if number == last])
+    if not actions:
+        return []
+    return [
+        f"PR #{pull['number']} waits for the owner: "
+        + "; ".join(actions)
+        + f" (pass {last} found nothing else; a new verifier pass judges once the evidence is in)"
+    ]
+
+
 def owner_waits(
+    pull: dict[str, Any],
+    issues: list[dict[str, Any]],
+    loop: str | None,
+    pushed: Callable[[dict[str, Any]], str | None] | None = None,
+) -> list[str]:
+    """The owner's go (go_waits) and the steps the owner holds (owner_steps)."""
+    return owner_steps(pull, loop) + go_waits(pull, issues, loop, pushed)
+
+
+def go_waits(
     pull: dict[str, Any],
     issues: list[dict[str, Any]],
     loop: str | None,
@@ -10883,6 +10944,8 @@ def parse_report(
         *logic[-1:],
         *scope[-1:],
         *reruns_named[-1:],
+        # every step not run, so the gate can tell a pass held only by the owner's own steps (owner_gap)
+        *[line for line in lines if re.match(r"Not run:(?!\s*none\.?\s*$)", line, re.IGNORECASE)],
     ]
     heading = f"Verifier ({family}), pass {number}"
     return heading, heads[-1].lower(), found, closing, qualifier
