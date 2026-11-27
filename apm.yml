@@ -9,6 +9,10 @@ dependencies:
   apm:
   - git: kzarzycki/agent-skills/engineering
     ref: engineering-v0.35.5
+  # omnigent-v0.1.23-next carries the claude-cloud `start` fix (#2797). Drop this pin once a
+  # stable omnigent tag carries it.
+  - git: kzarzycki/agent-skills/omnigent
+    ref: omnigent-v0.1.23-next
   mcp: []
 includes:
 - .apm/instructions/**/*.md
