@@ -8963,9 +8963,12 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         lines = edit(lines)
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         try:
-            tmp.write_text("".join(line + "\n" for line in lines))
-            if path.exists():
-                tmp.chmod(path.stat().st_mode & 0o7777)
+            # created with the file's own mode (else the default), never wider, before any text
+            mode = path.stat().st_mode & 0o7777 if path.exists() else 0o666
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+            with os.fdopen(fd, "w") as out:
+                os.fchmod(out.fileno(), mode)
+                out.write("".join(line + "\n" for line in lines))
             os.replace(tmp, path)
         finally:
             tmp.unlink(missing_ok=True)

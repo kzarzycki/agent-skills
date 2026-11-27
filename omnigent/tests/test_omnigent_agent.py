@@ -1,6 +1,7 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
 import errno
+import fcntl
 import importlib.util
 import inspect
 import io
@@ -15633,12 +15634,12 @@ def test_parallel_registry_writers_keep_every_entry_in_a_file_that_parses_2406(
 ) -> None:
     registry = tmp_path / "registry"
     go = tmp_path / "go"
-    # every worker imports first, then waits for `go`, so their writes really overlap
+    # every worker imports, says it is ready, then waits for `go`, so their writes really overlap
     code = (
         "import importlib.util,sys,time;from pathlib import Path;"
         f"s=importlib.util.spec_from_file_location('o',{str(spec.origin)!r});"
         "m=importlib.util.module_from_spec(s);sys.modules['o']=m;s.loader.exec_module(m);"
-        "g=Path(sys.argv[3]);"
+        "g=Path(sys.argv[3]);Path(sys.argv[3]+'.ready'+sys.argv[2]).write_text('');"
         "[time.sleep(0.001) for _ in iter(lambda: not g.exists(), False)];"
         "[m.arm(Path(sys.argv[1]),f's{sys.argv[2]}_{k}',Path(f'r{sys.argv[2]}_{k}.md'))"
         " for k in range(8)]"
@@ -15648,12 +15649,65 @@ def test_parallel_registry_writers_keep_every_entry_in_a_file_that_parses_2406(
         subprocess.Popen([sys.executable, "-c", code, str(registry), str(i), str(go)])
         for i in range(n)
     ]
-    time.sleep(1.5)
+    deadline = time.time() + 60
+    while len(list(tmp_path.glob("go.ready*"))) < n and time.time() < deadline:
+        time.sleep(0.01)
+    assert len(list(tmp_path.glob("go.ready*"))) == n
     go.write_text("")
     assert [p.wait() for p in procs] == [0] * n
     owed, bad = omnigent_agent.registered(registry)
     assert bad == []
     assert sorted(owed) == sorted(f"s{i}_{k}" for i in range(n) for k in range(8))
+
+
+def test_a_registry_writer_waits_on_the_sidecar_lock_before_it_reads_and_edits_2406(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry"
+    entered, done = threading.Event(), threading.Event()
+
+    def edit(lines: list[str]) -> list[str]:
+        entered.set()
+        return [*lines, "s0=r0.md"]
+
+    def writer() -> None:
+        omnigent_agent.edit_registry(registry, edit)
+        done.set()
+
+    with open(tmp_path / "registry.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        thread = threading.Thread(target=writer)
+        thread.start()
+        assert not entered.wait(0.5)  # blocked on the sidecar, not yet in the edit
+    assert done.wait(10)
+    thread.join()
+    assert entered.is_set()
+    assert registry.read_text() == "s0=r0.md\n"
+
+
+def test_the_registry_temp_file_is_never_wider_than_the_registry_it_replaces_2406(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text("s0=r0.md\n")
+    registry.chmod(0o600)
+    made: list[int] = []
+    real_open = os.open
+
+    def recording(path: Any, flags: int, mode: int = 0o777, **kw: Any) -> int:
+        fd = real_open(path, flags, mode, **kw)
+        if str(path).endswith(".tmp"):
+            made.append(os.fstat(fd).st_mode & 0o777)  # the mode at creation, before any text
+        return fd
+
+    old_umask = os.umask(0o022)
+    try:
+        monkeypatch.setattr(os, "open", recording)
+        omnigent_agent.arm(registry, "s1", Path("r1.md"))
+    finally:
+        os.umask(old_umask)
+    assert made == [0o600]
+    assert registry.stat().st_mode & 0o777 == 0o600
 
 
 def test_a_registry_write_goes_through_a_symlink_and_keeps_the_file_mode_2406(
