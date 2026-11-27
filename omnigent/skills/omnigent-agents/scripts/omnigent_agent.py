@@ -3158,6 +3158,7 @@ POSTED = (
     RELAY_FROM.split("{")[0],
     RELAYED.split("{")[0],
     "[System:",
+    "[Message from session ",  # the `sys_session_message` tool (#2824)
     REVIVED,
     NO_REPORT,
 )
@@ -3167,6 +3168,31 @@ BRIEF = re.compile(r"Work on .+(\. Your brief:|: read .+ and do what it says\.)"
 def agent_posted(text: str) -> bool:
     text = text.strip()
     return text.startswith(POSTED) or bool(BRIEF.fullmatch(text.split("\n", 1)[0]))
+
+
+def owner_message(item: dict) -> bool:
+    """Whether a session item counts as the owner's own message: a ``role: user`` message with a ``created_by``, not
+    ``is_meta``, with no ``sender_session_id`` and opening as no agent's post (``agent_posted``). The one rule
+    ``owner_talked`` (reap) and the supervisor's auto-direct (#2824) read; ``owner_said`` reads the same marks."""
+    return bool(
+        from_user(item)
+        and item.get("created_by")
+        and not item.get("is_meta")
+        and not item.get("sender_session_id")
+        and not agent_posted(text_of(item))
+    )
+
+
+def steward_on(decisions: str) -> bool:
+    """Whether steward mode is on in the standing ``decisions`` text: a bullet opening ``- **Steward mode`` that holds
+    ``**ON`` (#2824). The chief of staff then answers approvals and cards in the owner's name."""
+    return bool(
+        re.search(
+            r"^\s*- \*\*Steward mode(?:(?!\n(?:\s*[-*] |\s*\n|#)).)*?\*\*ON",
+            decisions,
+            re.MULTILINE | re.DOTALL,
+        )
+    )
 
 
 def owner_said(og: Omnigent, sid: str, quote: str) -> tuple[bool, str]:
@@ -7924,13 +7950,7 @@ def owner_talked(og: Omnigent, sid: str) -> bool:
         page = og.older(sid, after)
         data = page.get("data") or []
         for i in data:
-            if (
-                from_user(i)
-                and i.get("created_by")
-                and not i.get("is_meta")
-                and not i.get("sender_session_id")
-                and not agent_posted(text_of(i))
-            ):
+            if owner_message(i):
                 return True
         if not data or not page.get("has_more"):
             return False
@@ -9804,6 +9824,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
                 "act",
                 "a question: the chief of staff answers it with one relay --answer",
             )
+        if not event.get("steward"):  # the owner sees it in their Inbox (#2824)
+            return "rule", "record", "an approval prompt: the owner approves it in their Inbox"
         return "rule", "owner", "an approval prompt: only the owner approves"
     if kind == "failed":
         if event.get("transient"):
@@ -9850,6 +9872,8 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
     if kind == "card-waiting":  # #2170
         if event.get("direct"):
             return "rule", "record", "the owner drives it directly: its card is theirs"
+        if not event.get("steward"):  # the owner sees it in their Inbox (#2824)
+            return "rule", "record", "its card waits in the owner's Inbox"
         return (
             "rule",
             "act",
@@ -10437,6 +10461,7 @@ def supervise_registry(
             else backoff(retrying.get("count", 0)) + now - retrying.get("since", now)
             > RETRY_CAP_SECONDS,
             "decisions": bool(found),
+            "steward": steward_on(found),
             "direct": bool(lead.get("direct")),
             "coordinator": bool(
                 lead.get("leads")
@@ -10788,6 +10813,8 @@ def supervise_registry(
             else:
                 log("hosts", None)
         host = str(info.get("host_id") or "")
+        if followed:  # a session owing a report to its caller keeps its terminal event (#2824)
+            direct = auto_direct(sid, lead, items, direct)
         lead.update(
             title=info.get("title") or "",
             host=(hosts or {}).get(host, host),
@@ -10823,6 +10850,27 @@ def supervise_registry(
         # with no activity at all, progress counts from now
         lead["progress_at"] = max([lead.get("progress_at") or 0.0, *own]) or time.time()
         return lead
+
+    def auto_direct(sid: str, lead: dict, items: list[dict], direct: bool) -> bool:
+        """The owner wrote in a followed session after the last one this supervisor saw: mark it ``direct`` (``mark_direct``, as
+        ``direct <session>`` does) and log it once, and return the new mark. ``direct --off`` stays off until a newer
+        owner message (#2824)."""
+        at = max((float(i.get("created_at") or 0) for i in items if owner_message(i)), default=0.0)
+        if not console or at <= float(lead.get("owner_at") or 0):
+            return direct
+        lead["owner_at"] = at
+        if direct:
+            return True
+        try:
+            if not mark_direct(registry, sid):
+                return direct
+        except (OSError, Fail) as e:
+            log(("direct", sid), f"{sid}: direct mark not written: {reason(e)}")
+            lead["owner_at"] = 0.0  # tried again next poll
+            return direct
+        log(("direct", sid), None)
+        print(stamp(f"{sid}: the owner wrote in it: marked direct"), flush=True)
+        return True
 
     def from_report(sid: str, lead: dict, items: list[dict]) -> None:
         """A lead whose last message is only a report's path takes its ``ending`` and ``wait`` from

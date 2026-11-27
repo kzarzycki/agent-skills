@@ -53,5 +53,5 @@ def test_a_direct_lead_s_failure_that_lost_its_runner_is_still_routed() -> None:
 
 
 def test_a_lead_not_direct_still_posts_its_prompt_and_failure() -> None:
-    assert route(kind="blocked", direct=False) == "owner"
+    assert route(kind="blocked", direct=False, steward=True) == "owner"
     assert route(kind="failed", line="a t-a: failed: exited 1", direct=False) == "revive"
