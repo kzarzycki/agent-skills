@@ -4552,18 +4552,20 @@ def detached_branch(path: Path, remote: str, pr: int = 0) -> tuple[str, str]:
             "fetch",
             "-q",
             "--prune",
+            "--no-tags",
             remote,
             f"+refs/heads/*:refs/remotes/{remote}/*",
         ],
         capture_output=True,
         check=False,
     )
+    base = f"refs/remotes/{remote}/"  # full names: a tag or local branch of the same name can't change the parse
     held = [
-        b.removeprefix(f"{remote}/")
+        b.removeprefix(base)
         for b in git_out(
-            path, "branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"
+            path, "for-each-ref", "--contains", "HEAD", "--format=%(refname)", base
         ).split()
-        if b.startswith(f"{remote}/") and b != f"{remote}/HEAD"
+        if b != f"{base}HEAD"
     ]
     return (held[0], held[0]) if len(held) == 1 else ("", "")
 

@@ -53,7 +53,7 @@ def test_a_detached_worktree_at_a_pushed_tip_runs_on_that_branch(
 
 
 def test_a_stale_tracking_ref_does_not_make_the_branch_ambiguous(
-    checkout: Path, monkeypatch: pytest.MonkeyPatch
+    checkout: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cloud(monkeypatch, "REPORT\nEXIT: 0")
     git("checkout", "-qb", "old", cwd=checkout)
@@ -61,9 +61,24 @@ def test_a_stale_tracking_ref_does_not_make_the_branch_ambiguous(
     git("push", "-q", "-u", "origin", "old", cwd=checkout)
     git("checkout", "-qb", "feat", cwd=checkout)
     git("push", "-q", "-u", "origin", "feat", cwd=checkout)
+    git("checkout", "-q", "--detach", tip, cwd=checkout)
+    # the branch is deleted on the server itself, so this clone keeps a stale `origin/old`
+    git("--git-dir", str(tmp_path / "remote.git"), "branch", "-D", "old", cwd=tmp_path)
+    refs = git("for-each-ref", "--format=%(refname)", "refs/remotes/origin", cwd=checkout)
+    assert "refs/remotes/origin/old" in refs and "refs/remotes/origin/feat" in refs
+    assert cloud_run(checkout, "pytest") == 0
+
+
+def test_a_tag_named_like_the_tracking_ref_does_not_hide_the_branch(
+    checkout: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cloud(monkeypatch, "REPORT\nEXIT: 0")
+    git("checkout", "-qb", "feat", cwd=checkout)
+    tip = commit(checkout, "f.txt")
+    git("push", "-q", "-u", "origin", "feat", cwd=checkout)
     git(
-        "push", "-q", "origin", "--delete", "old", cwd=checkout
-    )  # origin/old stays here until pruned
+        "tag", "origin/feat", tip, cwd=checkout
+    )  # named like the tracking ref: its short name turns ambiguous
     git("checkout", "-q", "--detach", tip, cwd=checkout)
     assert cloud_run(checkout, "pytest") == 0
 
