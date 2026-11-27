@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.9 - 2026-11-27
+
+- The values file takes an optional `verifier:` block (`route`, `model`, `fallback`), the setup's default verifier, checked by `cos_values.py` (#2840).
+
 ## 0.1.8 - 2026-11-27
 
 - `pin_update.py` follows a pin's own line: a `-next` pin moves to the newest newer tag of either line and never down to stable, a stable pin ignores `-next` tags, and every dependency pinned to a tag of the pack's repo moves by its own package prefix (#2772).
