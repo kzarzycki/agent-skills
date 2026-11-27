@@ -9249,7 +9249,7 @@ def test_origin_refusing_refs_outside_branches_still_takes_the_record(
     git_in(tmp_path, "init", "-q", "--bare", str(origin))
     hook = origin / "hooks" / "pre-receive"
     hook.write_text(
-        "#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/*) ;; *) echo refused $ref; exit 1;; esac;"
+        "#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/*) ;; *) echo refused $ref; echo $ref >> refused.log; exit 1;; esac;"
         " done\n"
     )
     hook.chmod(0o755)
@@ -9257,6 +9257,9 @@ def test_origin_refusing_refs_outside_branches_still_takes_the_record(
     assert f"published in origin as the record branch {loop_branch_of(head)}" in out
     assert approvals.reusable(head)["ref"] == loop_branch_of(head)
     assert git_in(origin, "for-each-ref", "refs/loop/gate/") == ""
+    assert (
+        branch_of(head) in (origin / "refused.log").read_text().split()
+    )  # the ref was tried first
 
 
 def recorded_in_origin(b: Path, tree_of_commit: str, when: str) -> str:

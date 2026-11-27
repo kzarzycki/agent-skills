@@ -6293,7 +6293,7 @@ def gate_outcome(pr: int, end: float, since: float | None = None) -> tuple[int, 
         r
         for r in pr_rest(f"git/matching-refs/heads/loop-gate/{tree}-", end)
         if str(r["ref"]).rsplit("/", 1)[1] not in names
-    ]
+    ]  # an ETag read, free while unchanged
     for record in records:
         at = pr_rest(f"git/commits/{record['object']['sha']}", end)["committer"]["date"]
         signals.append((stamp(at), 0, f"passed, record branch {record['ref']}"))

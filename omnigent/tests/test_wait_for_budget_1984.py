@@ -91,13 +91,15 @@ def test_gate_wait_spends_nothing_while_the_pr_is_unchanged(
     hub = GitHub(monkeypatch, rest_answers(), {})
     end = lambda: oa.time.monotonic() + 30
     first = hub.round_cost(lambda: oa.gate_outcome(5, end()))
-    assert first == 4  # the pull, its commit, the record refs, the statuses: plain reads
+    assert (
+        first == 5
+    )  # the pull, its commit, the record refs and branches, the statuses: plain reads
     assert [hub.round_cost(lambda: oa.gate_outcome(5, end())) for _ in range(ROUNDS)] == [
         0
     ] * ROUNDS
     assert (
-        hub.free == 3 * ROUNDS
-    )  # three ETag reads a round, each a 304 (the commit is kept for good)
+        hub.free == 4 * ROUNDS
+    )  # four ETag reads a round (the record refs and branches too), each a 304 (the commit is kept for good)
     hub.rest[f"repos/o/r/commits/{HEAD}/statuses?per_page=100"] = [
         {"context": "gate", "state": "success", "created_at": "2026-01-01T11:00:00Z"}
     ]
