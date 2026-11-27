@@ -3560,14 +3560,14 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                 },
                 # a run the verdict relies on that was never made (an acceptance line not run): kept so the cap decision
                 # can't waive it (reviewed); `Not run: none` names nothing
-                **{
-                    "Not run": value.strip()
-                    for key, _, value in (
-                        line.partition(":") for line in review["body"].splitlines()
+                **(
+                    {"Not run": "yes"}
+                    if any(
+                        re.match(r"Not run:(?!\s*none\.?\s*$)", line.strip(), re.IGNORECASE)
+                        for line in review["body"].splitlines()
                     )
-                    if key.strip() == "Not run"
-                    and not re.fullmatch(r"none\.?", value.strip(), re.IGNORECASE)
-                },
+                    else {}
+                ),
                 **{
                     key.strip(): value.strip()
                     for key, _, value in (
