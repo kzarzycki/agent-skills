@@ -5,6 +5,14 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.28 - 2026-11-27
+
+- A verifier start with no `--verifier-route` or `--model` takes the route and model from the setup's values file (`verifier:`, read from `$COS_VALUES` or `cos-values.yml` in the current folder) and prints what it chose; the flags and `$OMNIGENT_VERIFIER_ROUTE` still override it, and with no setting Codex stays the default (#2840).
+
+## 0.1.27 - 2026-11-27
+
+- Land's reap deletes the `claude/…` branches a PR's worker sessions pushed (each session record's `git_branch`), keeping a branch that is an open PR's head or whose worker is still running; a refused delete is said, never an error. The gate signal of `wait-for --until gate` reads `refs/loop/gate/` records first, then `loop-gate/` branches (#2821).
+
 ## 0.1.26 - 2026-11-27
 
 - omnigent-agents: `reap --force` finishes a session whose runner has gone away: when the `interrupt` is not queued and the session stays running, `Omnigent.interrupt` sends the server's `stop_session` event, so `start-lead` no longer refuses a new verifier on that PR (#2808).
