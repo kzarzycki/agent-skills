@@ -1,5 +1,6 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
+import argparse
 import errno
 import importlib.util
 import inspect
@@ -15723,3 +15724,29 @@ def test_start_needs_adds_a_tag_for_one_start_and_a_bare_word_is_refused(
     assert omnigent_agent.main(worker_start("mac", "--needs", "os:macos")) == 0
     assert omnigent_agent.main(worker_start("mac", "--needs", "macos")) == 1
     assert "<namespace>:<name>" in capsys.readouterr().err
+
+
+def test_null_capabilities_are_unknown_not_a_refusal_and_cloud_kinds_read_the_info_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = far_verifier(tmp_path, monkeypatch, "")
+    (tmp_path / "docs/agents/loop.md").write_text("placement:\n  worker: {needs: [os:macos]}\n")
+    real = og.call
+    host = {"host_id": "mac", "name": "mac", "status": "offline", "capabilities": None}
+    info = {"cloud_kind_capabilities": {"claude-cloud": ["os:linux", "os:macos"]}}
+    og.call = lambda m, path, *a, **k: (  # type: ignore[method-assign]
+        {"hosts": [host]}
+        if (m, path) == ("GET", "/v1/hosts")
+        else info
+        if (m, path) == ("GET", "/v1/info")
+        else real(m, path, *a, **k)
+    )
+    assert omnigent_agent.main(worker_start("mac")) == 0  # no report: the server decides
+    og.harnesses = {"claude-cloud": "acp:claude-cloud"}
+    cloud = argparse.Namespace(
+        cmd="start", role="worker", agent="claude-cloud", host=None, top_level=False, needs=[]
+    )
+    assert omnigent_agent.check_placement(og, cloud) == ["os:macos"]  # the kind states os:macos
+    info["cloud_kind_capabilities"] = {"claude-cloud": ["os:linux"]}
+    with pytest.raises(omnigent_agent.Fail, match="os:macos"):
+        omnigent_agent.check_placement(og, cloud)

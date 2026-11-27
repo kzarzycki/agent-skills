@@ -2259,8 +2259,7 @@ def placement_hosts(workspace: str) -> list[str]:
 
 
 NEED_TAG = re.compile(r"^[a-z][a-z0-9-]*:[A-Za-z0-9._-]+$")
-# ponytail: a cloud sandbox kind states no capabilities through the API yet (omnigent#998), so this is what every
-# one is taken to have. Upgrade: read the kind's own `capabilities` once the route exists.
+# what a cloud sandbox kind is taken to have when `GET /v1/info` gives no `cloud_kind_capabilities` for it
 CLOUD_CAPABILITIES = frozenset({"os:linux"})
 
 
@@ -2319,7 +2318,13 @@ def check_placement(og: Omnigent, args: argparse.Namespace) -> list[str]:
         not args.top_level and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS
     )
     if cloud and not args.host:
-        if missing := [n for n in needs if n not in CLOUD_CAPABILITIES]:
+        try:
+            kinds = og.call("GET", "/v1/info").get("cloud_kind_capabilities")
+        except Fail:  # a server without the field: every kind is taken to have CLOUD_CAPABILITIES
+            kinds = None
+        stated = kinds.get(args.agent) if isinstance(kinds, dict) else None
+        have = set(stated) if isinstance(stated, list) else CLOUD_CAPABILITIES
+        if missing := [n for n in needs if n not in have]:
             raise Fail(
                 f"{role or args.agent} needs {', '.join(needs)}, which a cloud sandbox lacks ({', '.join(missing)}):"
                 " start it on a host that has them (--top-level --host <name>)"
@@ -2335,6 +2340,10 @@ def check_placement(og: Omnigent, args: argparse.Namespace) -> list[str]:
         stated = h.get("capabilities")
         if isinstance(stated, list):
             return [n for n in needs if n not in stated]
+        # null: the server has no report for this host (it may be offline), which is unknown, not empty. The
+        # role's hosts: list decides when it has one; with none the server's own check on the create is the backstop
+        if not entry_hosts:
+            return []
         return [] if {h["host_id"], h["name"]} & set(entry_hosts) else list(needs)
 
     if missing := has(mine[0]):
