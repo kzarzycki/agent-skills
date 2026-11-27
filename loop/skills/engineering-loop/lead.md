@@ -305,8 +305,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      findings open, it stays so) and go with no new pass, since no file changed: `check merge`
      and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
-     the short delta pass. Where loop.md still has `carry_over_main` (deprecated), no pass is
-     needed when `check merge` prints that the merge carries the head's verdict. When every
+     the short delta pass. When every
      commit since the last verdict's head is a merge of main and `land` named none of those
      heads in a conflict comment, `check merge` and the verifier brief print `unforced merge
      of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
@@ -333,8 +332,6 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
      (`?` for any part you can't know). A lead's line ends `· Session: <server>/c/<session id>`: keep that part, since
      `approvals.py check session <pr>` (run on every pull request, drafts too) and `check merge` fail an `Impl:` line without it.
-   - A project's own batching merge queue (`check queue`, `batch`) is deprecated: where the
-     project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <gatekeeper>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: the
      newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line),
@@ -437,7 +434,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA where the project has one
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
-   with `ci: false` there is none; the nightly is the run that tests main in full: SKILL.md, Nightly).
+   the nightly is the run that tests main in full: SKILL.md, Nightly).
    A merge whose tree the queue tested has a push run that tests nothing and names the queue's run in its summary:
    read that run's result instead, and wait on no push run
    (SKILL.md, A check runs only if it can fail because of the change). When it ends red, revert before anything else

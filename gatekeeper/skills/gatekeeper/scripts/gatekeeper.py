@@ -19,8 +19,8 @@
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py overlap <pr>|--files <path>... [--base <b>]  # other open PRs changing the same files: hunks, and whether the heads merge
-    uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
-    uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
+    uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; --run runs `mise run check:all` here then
+    uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py local-ci --record --rerun [--base <rev>] [--no-push]  # an independent rerun of HEAD's selection: nothing reused, its record keyed apart (levels' `rerun`); --no-push keeps the record commit as a local branch and names it, for a CI job without a write token
@@ -30,7 +30,7 @@
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
     uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1, one line each, when .mergify.yml, a marked workflow job's `timeout-minutes`, loop.md's `Wall-clock variable:`, a hand-set `land.wait` or the nightly's push paths (against `select.build_inputs`) is out of step
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
-    uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
+    uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the fix reaches, else the red run's whole selection, where a pass is a flake; the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py prune-records [--head <sha>...]  # delete origin's gate records (`refs/loop/gate/` refs and `loop-gate/` branches) no open PR head needs, then run the one upgrade sweep (old `loop-gate/` and `loop-event/` branches moved to `refs/loop/`; `claude/*` branches whose PR is merged or closed deleted, #2821): the trees of the given (closed or merged) heads at once, any other tree over a day old with no open PR; every `land` ends with it, so a merge by Mergify or a queue, or a closed PR, leaves none (#1869); needs a token that can delete refs
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
@@ -104,8 +104,7 @@ that only bumps the pack's pin, the pin target's tier rule judges that pass inst
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
 author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head,
-since GitHub merges nothing without them (a base that requires none waits for no check, and `ci: false` asks no
-`local-ci` pass: the verifier's record is the merge's proof, and no gate runs after it), and, while the change's level asks a go of its merge
+since GitHub merges nothing without them (a base that requires none waits for no check), and, while the change's level asks a go of its merge
 (below), for the owner's go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
 green, and the PR holds the owner's record (`Approved by the owner.`, then `Approved: merge`, `By: owner`,
 `Head: <sha>`) naming that head. `approve merge <pr> --head <sha> --by owner` posts both on the owner's word, the
@@ -190,7 +189,7 @@ over and left in place. The base is fetched once the lock is taken, so the batch
 2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
-own output) green on its head. Under `ci: false` the head needs no `local-ci` pass. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
+own output) green on its head. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
 names the command that records it. `land <pr>` on a draft marks it ready, never on a missing proof, since ready starts CI, and does so before it
 waits for the lock, so the holder's next batch includes it; while the checks that starts are required, it waits (exit 3).
 `land` takes several PRs: each named draft is marked ready the same way, and the named PRs land in one batch with the other
@@ -357,10 +356,10 @@ section, the project's word that its base requires none (a ruleset that does pic
 a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
 (`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
 `land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not on the base's history (an older base commit passes this step, and the drift check above judges its files). `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
-loop.md's `carry_over_main` and `ci` work as below for one more release, each printing one `deprecated:` line on
-stderr. The keys that drove a gate at land, `batch_queue` under `loop` and `land`'s `gate_on`,
+loop.md's `carry_over_main` section, its `ci` and its `batch_queue` are gone (#654): a policy that sets one is refused,
+naming it. The keys that drove a gate at land, `land`'s `gate_on`,
 `cloud_gate_timeout_seconds` and `host_gate`, do nothing (#1872): a policy that still sets one parses, with one
-`ignored:` line on stderr naming it, and the `check queue` and `batch` verbs are gone.
+`ignored:` line on stderr naming it, and the queue verbs are gone.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 In a shallow clone (a cloud session's), before the gate it fetches the base (the PR's, else the default branch) into
 `refs/remotes/origin/<base>` and deepens (`git fetch --deepen 50`, up to three times, then `--unshallow`) until `git
@@ -459,25 +458,14 @@ base SHA, a push's previous tip), else the merge base with the branch's base. Wh
 the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a new branch) selects against the
 merge base, and a loop.md without the line runs the `select` cut, then `mise run check` for a change the cut can't
 settle; zero runs only for a change of non-product paths, saying `0 selected: non-product`. The opt-out runs `mise run
-check`. Under
-`ci: false`, `local-ci --record` runs it against `--base`, else the merge base, and `local-ci <pr>` posts that pass on
-the head's tree, against the merge base of the head and the PR's base; `check merge` reads no local-ci pass (#1872). A
+check`. With `--base`,
+`local-ci --record` runs it against that rev; `check merge` reads no local-ci pass (#1872). A
 narrowed pass's command is the variable's assignment, the command, then ` (narrowed)`, which no gate command can hold,
 so its record and key never equal a full pass's, and nothing that wants a full pass takes it. `affected-tests
 --record` records its pass the same way (local_ci under narrowed_to its base), and `gate-record <head> -- <the narrowed
 command>` reads it, its last word `(narrowed)`. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
 `gate_steps` keeps its steps everywhere, since each narrows by its `paths`. Without the `Affected tests:` line, `check
 build` says in one line that every gate runs the full check (not with the opt-out, which chose it).
-Deprecated: with loop.md's `carry_over_main` section (`except: <globs>`), merges of the base into a PR head H keep H's proofs:
-each commit from the head H' down its first-parent line to H is a merge whose second parent is on the base (an
-ancestor of its tip), whose tree is what `git merge-tree --write-tree` makes of its parents (no conflict resolved,
-nothing added), and where the base's changes since the merge base touch no file the PR's side changes and no path an
-`except` glob matches (fnmatch, as a rule's `paths`: the project's merge-check configuration, such as lint, type,
-test and gate config and lockfiles). So a PR commit after H, new, edited or rebased, carries nothing. Then H's newest
-verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line included). It never carries
-a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line per merge
-naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
-any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
 variable `LOOP_DENY_LIST` names (denied): a line naming a listed term, outside an Omnigent session link, refuses the post before any call to GitHub.
 `verdict` posts a report in the verifier role's format as one PR review (event COMMENT, since GitHub refuses the others on
@@ -977,7 +965,6 @@ MERGE_ACTIONS = ("gates", "go", "owner")
 SCHEMA: dict[str, dict[str, Any]] = {
     "loop": {
         "cap": int,
-        "ci": bool,
         "opt_out": bool,
         "local_ci_env": list,
         "gate": str,
@@ -1047,7 +1034,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "queue",
         ),
     ),
-    "carry_over_main": Table({"except": list}),
     # the narrowed gate's first cut (classify): the project's build inputs, and the checks a non-product path still gets
     "select": Table(
         build_inputs=list,
@@ -1290,6 +1276,7 @@ def settings(loop: str | None) -> dict[str, Any]:
     data: dict[str, Any] = {}
     parsed = block(loop, file, "Policy" if isinstance(loop, Policy) else "Settings")
     for name, section in sections(parsed, file).items():
+        gone(section, name, file)
         if name == "bot":
             for login, bot in section.items():
                 where = f"bot.{login}"
@@ -1306,8 +1293,6 @@ def settings(loop: str | None) -> dict[str, Any]:
                 )
         elif name == "loop":
             data.update(typed(ignored(section, name, file), SCHEMA["loop"], name, file))
-            if "ci" in section:
-                deprecated("ci")
         elif name in SCHEMA:
             data[name] = typed(ignored(section, name, file), SCHEMA[name], name, file)
             if data[name].get("batch_wait_seconds", 0) < 0:
@@ -1333,8 +1318,6 @@ def settings(loop: str | None) -> dict[str, Any]:
                         f"{file}'s `timeouts.{key}` is {given!r}: write it as days, hours, minutes and seconds"
                         " in that order, such as `90s`, `60m` or `4h15m`"
                     )
-            if name == "carry_over_main":
-                deprecated(name)
             if name == "risk" and "merge_paths" in section:
                 # two sources of one list would drift, so the old name is read only alone
                 if "critical_paths" in section:
@@ -1357,9 +1340,30 @@ DEPRECATED: set[str] = set()
 # keys a policy may still set that no longer do anything, since land runs no gate (#1872): each is said once on
 # stderr and dropped, so a consumer's older policy file still parses
 IGNORED = {
-    "loop": ("batch_queue",),
     "land": ("gate_on", "cloud_gate_timeout_seconds", "host_gate"),
 }
+
+
+# settings and sections a policy may no longer set (#654): refused, each naming the key and saying it is gone, since a
+# policy that still names one expects a path (a project's own queue, a verdict carried by a glob list, a repo with no
+# CI) the pack no longer has
+GONE = {
+    "loop": {
+        "ci": "land merges every landable PR as one batch and runs no gate of its own: remove it",
+        "batch_queue": "land merges every landable PR as one batch: remove it",
+    },
+    "carry_over_main": {
+        "": "a merge of the base into a PR head carries its verdict only when it adds nothing (same tree, or a clean merge"
+        " of the base): remove the section"
+    },
+}
+
+
+def gone(section: Any, name: str, file: str) -> None:
+    """Refuse a section or key of GONE, naming it and saying what replaced it."""
+    for key, why in GONE.get(name, {}).items():
+        if key == "" or (isinstance(section, dict) and key in section):
+            raise Refused(f"{file}'s `{name}{'.' + key if key else ''}` is gone (#654): {why}")
 
 
 def ignored(section: dict[str, Any], name: str, file: str) -> dict[str, Any]:
@@ -3951,10 +3955,6 @@ def waits(
     return (ran(pull) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
 
 
-def no_ci(loop: str | None) -> bool:
-    return settings(loop).get("ci") is False
-
-
 def opted_out(loop: str | None) -> bool:
     return settings(loop).get("opt_out", False)
 
@@ -4242,8 +4242,8 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 def ran(pull: dict[str, Any]) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s lines for the checks the base branch requires but the
     loop's own statuses (OWN), since GitHub merges nothing without them. A base that requires none waits for nothing:
-    no aggregate `check`, and under `ci: false` no local-ci pass, since the verifier's record is the merge's proof and
-    no gate runs between it and the merge (#1872)."""
+    no aggregate `check`, and no local-ci pass, since the verifier's record is the merge's proof and no gate runs
+    between it and the merge (#1872)."""
     # the approvals status is check merge's own output: waiting for it never ends
     required = required_checks(pull["baseRefName"]) - OWN
     return ci(f"PR #{pull['number']}", pull, required) if required else []
@@ -4271,15 +4271,9 @@ def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> 
     return login == viewer() or writer(login)
 
 
-def merged(
-    first: str, second: str, guard: list[str] | None = None, base: str = "the base"
-) -> tuple[str, str] | str:
+def merged(first: str, second: str) -> tuple[str, str] | str:
     """The tree `git merge-tree --write-tree` makes of commits `first` and `second`, so a merge with that tree resolved
-    no conflict and added nothing, and their merge base; a string names why not. With `guard`, the globs of gatekeeper.md's
-    `carry_over_main.except`, the proofs on `first` carry over to that merge only when `second`'s changes since the
-    merge base (`base`'s) touch no file `first`'s changes touch, neither side's changes touch a file a glob matches
-    (fnmatch on the full path, as a rule's `paths`), and the two have one merge base. `first` is the PR's head, so a
-    why names its side as the PR's. Fail-closed: a git error is a why, never a carry."""
+    no conflict and added nothing; a string names why not. Fail-closed: a git error is a why, never a carry."""
     try:
         clean = subprocess.run(
             ["git", "merge-tree", "--write-tree", first, second],
@@ -4289,91 +4283,24 @@ def merged(
         )
         if clean.returncode or not clean.stdout.split():
             return f"{first} and {second} conflict"
-        tree = clean.stdout.split()[0]
-        if guard is None:
-            return tree, ""
-        bases = git("merge-base", "--all", first, second).split()
-        if len(bases) != 1:
-            return f"{first} and {second} have {len(bases)} merge bases"
-        # plumbing: porcelain `git diff` follows config (diff.relative, a submodule's `ignore = all`) that hides paths
-        changed = [
-            set(
-                filter(
-                    None,
-                    git(
-                        "diff-tree",
-                        "-r",
-                        "--name-only",
-                        "--no-renames",
-                        "--ignore-submodules=none",
-                        "-z",
-                        bases[0],
-                        side,
-                    ).split("\0"),
-                )
-            )
-            for side in (first, second)
-        ]
-        if both := sorted(changed[0] & changed[1]):
-            return f"{both[0]} changed on both sides since {bases[0]}"
-        # the PR's own config change was gated only on the PR's code, never on what the base added since
-        for side, paths in ((f"{base}'s", changed[1]), ("the PR's", changed[0])):
-            if hit := sorted(
-                path for path in paths if any(fnmatch.fnmatch(path, glob) for glob in guard)
-            ):
-                return f"{side} changes since {bases[0]} touch {hit[0]}, a `carry_over_main.except` path"
-        return tree, bases[0]
+        return clean.stdout.split()[0], ""
     except (subprocess.CalledProcessError, OSError) as exc:
         return f"git failed reading the merge of {first} and {second}: {exc}"
-
-
-def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
-    """The line check merge and land print when `what` carries the proofs of `head` (carried, merged)."""
-    return (
-        f"{what} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {base}'s"
-        f" {second}, whose changes since {since} touch none of the PR's files, and neither side touches a"
-        " `carry_over_main.except` path"
-    )
 
 
 def carried(
     pull: dict[str, Any], loop: str | None, verified: str
 ) -> tuple[str, list[str]] | str | None:
-    """`verified` with one carry_line() per merge, oldest first, when the PR's head carries the verdict on
-    `verified`, the newest verdict's commit, where gatekeeper.md has `carry_over_main`: from the head, each commit on its
-    first-parent line down to `verified` is a merge whose second parent is on the base (an ancestor of its tip), whose
-    tree is git merge-tree's of its parents, and where merged() finds the base's changes disjoint from the PR's and
-    neither side's touching an except glob. So a PR commit after `verified` (new, edited or rebased) carries nothing.
-    A head with `verified`'s tree (same_tree) carries it with or without the setting, by one same_tree_line(). A
-    string names why it carries nothing; None without the setting and with another tree."""
+    """`verified`, the newest verdict's commit, with the line saying why, when the PR's head carries its verdict: the
+    head holds `verified`'s tree (same_tree), or only takes the base in since (catch_up). None otherwise."""
     if tree := same_tree(pull["headRefOid"], verified):
         return verified, [same_tree_line(verified, tree)]
-    guard = settings(loop).get("carry_over_main")
-    if (
-        guard is None
-    ):  # a project's own `except` globs (deprecated) keep deciding where it sets them
-        proof = catch_up(pull, verified)
-        return (
-            (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"])
-            if proof
-            else None
-        )
-    walked = base_merges(pull, verified)
-    if isinstance(walked, str):
-        return walked
-    base, lines = pull["baseRefName"], []
-    for commit, first, second in walked:
-        found = merged(first, second, guard["except"], base)
-        if isinstance(found, str):
-            return found
-        try:
-            tree = git("rev-parse", f"{commit}^{{tree}}").strip()
-        except (subprocess.CalledProcessError, OSError) as exc:
-            return f"git failed reading {commit}: {exc}"
-        if found[0] != tree:
-            return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
-        lines.insert(0, carry_line(commit, first, second, found[1], base))
-    return verified, lines
+    proof = catch_up(pull, verified)
+    return (
+        (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"])
+        if proof
+        else None
+    )
 
 
 def same_tree(head: str, old: str) -> str | None:
@@ -4656,8 +4583,6 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     the head decides alone, so a go withdrawn there stays withdrawn. A string names why the older go carries nothing;
     None: no go to carry."""
     head = pull["headRefOid"]
-    # a project with its own rule keeps it for the go too
-    guard = settings(loop).get("carry_over_main")
     by = go_on(pull, head, loop)
     if by is not None:
         return (by, head) if by else None
@@ -4669,7 +4594,7 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
     old = earlier[-1]
-    if same_tree(head, old) or (guard is None and catch_up(pull, old)):
+    if same_tree(head, old) or catch_up(pull, old):
         return by, old
     why = unchanged(pull, old.lower())
     return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
@@ -4797,11 +4722,7 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
     line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
     if old != pull["headRefOid"] and (tree := same_tree(pull["headRefOid"], old)):
         line += f", carried to {pull['headRefOid']}: same tree {tree}"
-    elif (
-        old != pull["headRefOid"]
-        and "carry_over_main" not in settings(loop)
-        and (proof := catch_up(pull, old))
-    ):
+    elif old != pull["headRefOid"] and (proof := catch_up(pull, old)):
         line += f", carried to {pull['headRefOid']}: {proof}"
     elif old != pull["headRefOid"]:
         line += (
@@ -5436,7 +5357,7 @@ def breakglass_cover(pull: dict[str, Any], loop: str | None, lines: list[str]) -
     every line a required check red or missing, none, and a line saying so; with a record that is no approval, the
     lines and what is wrong with it; with no record or status, or a pending check among the lines, the lines as they
     were. Every other proof stays required: this replaces the green gate and nothing else."""
-    if not lines or no_ci(loop):
+    if not lines:
         return Covered(lines, [])
     names: dict[str, str] = {}
     for line in lines:
@@ -6520,14 +6441,14 @@ RERUN_STEP = re.compile(r"\blocal-ci\b[^\n;&|]*--rerun\b")
 def rerun_workflow_gap(
     root: Path, loop: str | None, level: str, ref: str | None = None
 ) -> str | None:
-    """A line, or None: `levels.<level>.rerun` is on, the repo has CI (`loop.ci` is not false), and no workflow under
+    """A line, or None: `levels.<level>.rerun` is on, and no workflow under
     .github/workflows runs `local-ci --record --rerun`, in a step or through a mise task a step runs, so the rerun
     record `rerun_gap` waits on can never come: a setup problem, not a wait. ponytail: a text scan of the workflows and
     of mise's tasks, as setup_problems reads them (#2473's open question); where mise's TOML can't be read (Python
     before 3.11) the tasks are not scanned, so a rerun run only through a task reads as present, never as missing.
     With `ref` the files are read from that ref, as the policy is (policy_tree), so a clone with no working tree sees
     the base's workflows; a ref git can't list reads as present too, since nothing then shows one missing."""
-    if no_ci(loop) or not levels(loop)[level].get("rerun"):
+    if not levels(loop)[level].get("rerun"):
         return None
     flows = sorted((root / ".github" / "workflows").glob("*.y*ml")) if ref is None else []
     if ref is not None:
@@ -10889,36 +10810,10 @@ def parse_report(
 
 
 def report_check(report: Path) -> int:
-    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying;
-    a warning on stderr where it would leave a high-risk head without the rerun it needs (unnamed_rerun)."""
-    closing = parse_report(report)[3]
-    if warning := unnamed_rerun(report, closing):
-        print(warning, file=sys.stderr)
+    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying."""
+    parse_report(report)
     print(f"{report} reads as a verdict")
     return 0
-
-
-def unnamed_rerun(report: Path, closing: list[str]) -> str | None:
-    """A warning, or None: the report rates the change high (any `Risk:` word but `low`), the policy asks a rerun at
-    `high` and has no CI to make it (`loop.ci: false`, where the verifier starts the rerun), and the report names no
-    `Rerun:` record, so `check merge` would refuse the head. A warning, not a refusal: a label or path may already
-    rate the change high whatever the verifier says, and the gate itself refuses the merge. Outside a checkout, or
-    with a policy that can't be read, None."""
-    if re.match(r"Risk:[ \t]*low\b", closing[2], re.IGNORECASE) or any(
-        line.startswith(f"{RERUN_LINE}:") for line in closing
-    ):
-        return None
-    try:
-        loop = project()[1]
-    except (Refused, OSError, subprocess.CalledProcessError):
-        return None
-    if not no_ci(loop) or not levels(loop)["high"].get("rerun"):
-        return None
-    return (
-        f"warning: {report} rates the change high and names no `{RERUN_LINE}: <commit>`, and this repo has no CI to"
-        " rerun its selection: `check merge` will refuse the head until a verifier pass on it names the record a fresh"
-        " session's `local-ci --record --rerun` pushed"
-    )
 
 
 def report_facts(report: Path) -> dict[str, Any]:
@@ -10975,8 +10870,6 @@ def verdict(pr: int, report: Path) -> int:
     line of the diff when its line is outside it, in the review's body when its file is."""
     heading, head, found, closing, qualifier = parse_report(report)
     denied(report.read_text())  # before any read of GitHub, not only at the post
-    if warning := unnamed_rerun(report, closing):
-        print(warning, file=sys.stderr)
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:
@@ -11440,12 +11333,9 @@ LOCAL_VAR = "AFFECTED_TESTS_LOCAL"
 
 
 def ci_runs_whole_suite(base: str, head: str | None = None) -> str | None:
-    """The first `select.whole_suite` file of the change since `base`, when the project's CI is the merge proof
-    (`loop.ci` is not false), else None (#2621): the narrowed gate keys its record `select.checks: ... ci` then, and the
+    """The first `select.whole_suite` file of the change since `base`, (#2621): the narrowed gate keys its record `select.checks: ... ci` then, and the
     run (non_product_run) runs no test unless `--local` is given: the merge queue or the required check runs the
     whole suite, sharded."""
-    if no_ci(project()[1]):
-        return None
     cut = selected(base, head)
     if cut is None:
         return None
@@ -14406,10 +14296,10 @@ def local_ci(
     but no head proof, nor a pass for a PR, since the gate as a whole has none. With a PR the gate is the policy of the
     base it merges onto (policy_from); without one, the default branch's. With a PR it prints one line naming the
     head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head). Without a PR or
-    `proof`, in narrowed mode (narrowing) under `ci: false` or with `given` (`--base <rev>`), the gate is the narrowed
+    `proof`, in narrowed mode (narrowing) with `given` (`--base <rev>`), the gate is the narrowed
     one against `given`, else the merge base (selection_base, narrowed_gate). With `rerun` (`--record --rerun`, an
     independent rerun of the head's selection, which levels' `rerun` asks and rerun_gap reads), narrowed in narrowed
-    mode whatever `ci` says, no pass is reused (FRESH), here or on origin, and the command runs with RERUN_VAR set in
+    mode, no pass is reused (FRESH), here or on origin, and the command runs with RERUN_VAR set in
     front of it, so its record is keyed apart from the worker's and says in its `Env:` line that it is a rerun."""
     if rerun:
         os.environ[RERUN_VAR] = "1"
@@ -14419,7 +14309,7 @@ def local_ci(
         and proof is None
         and NARROW_BASE.get() is None
         and narrowing() is not None
-        and (given is not None or rerun or no_ci(project()[1]))
+        and (given is not None or rerun)
     ):
         if (base := selection_base(given)) is not None:
             with narrowed_to(base):
@@ -14484,16 +14374,6 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     loop = project()[1]
     # the PR is read only for a policy with an `incubating` section: no other project pays the read
     passed = tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
-    # narrowed mode's gate of record on a `ci: false` head; a full pass on it is taken first
-    if (
-        NARROW_BASE.get() is None
-        and no_ci(loop)
-        and not reusable(head, passed)
-        and (base := merge_base_of(pull_status(pr)["baseRefName"], head)) is not None
-    ):
-        with narrowed_to(base, head):
-            if narrowed_gate(passed) is not None:
-                return pr_local_ci(pr, run, want)
     if record := reusable(head, passed, why=why):
         source = f"{reused(record)}\n"
         gate_event(gate_branch(), "ok", lambda: gate_url(record))

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import fcntl
-import fnmatch
 import hashlib
 import importlib.util
 import itertools
@@ -622,7 +621,6 @@ def test_loop_md_settings_are_read_from_its_yaml_block() -> None:
             "loop.md's `loop.cap` must be a whole number, not 'three'",
         ),
         ("loop:\n  cap: true\n", "loop.md's `loop.cap` must be a whole number, not True"),
-        ('loop:\n  ci: "false"\n', "loop.md's `loop.ci` must be true or false, not 'false'"),
         (
             "spec:\n  auto: auto unless risk\n",
             "loop.md's `spec.auto` must be true, false or a list of bug, follow-up, sub-issue, not 'auto unless risk'",
@@ -698,7 +696,6 @@ def test_a_loop_md_without_its_settings_block_or_with_one_that_is_not_yaml_is_re
             "loop:\n  local_ci_env:\n    - 1.10\n",
             "loop.md's `loop.local_ci_env` must be a list of strings",
         ),
-        ("loop:\n  ci: off-ish\n", "loop.md's `loop.ci` must be true or false, not 'off-ish'"),
         ("bot:\n  yes:\n    paths: []\n", "loop.md's `bot.True` is no name: quote it"),
     ],
 )
@@ -739,10 +736,6 @@ def test_skill_mds_settings_examples_pass_their_schema() -> None:
         },
     ]
     assert approvals.tracker_settings(loop_md(tracker))["renames"] == {"frontend": "area:web"}
-    excepted = approvals.settings(loop_md(loop))["carry_over_main"]["except"]
-    # a glob matches the full path: a nested copy needs a glob of its own
-    for path in ("uv.lock", "engineering/uv.lock"):
-        assert any(fnmatch.fnmatch(path, glob) for glob in excepted), path
 
 
 def test_a_script_run_without_pyyaml_says_in_one_line_how_to_run_it() -> None:
@@ -759,13 +752,13 @@ def test_a_script_run_without_pyyaml_says_in_one_line_how_to_run_it() -> None:
     ]
 
 
-EXAMPLE = "## Example\n\n```yaml\nloop:\n  ci: false\n```\n\n"
+EXAMPLE = "## Example\n\n```yaml\nloop:\n  cap: 5\n```\n\n"
 
 
 def test_a_yaml_example_outside_settings_is_never_read_as_the_settings() -> None:
     """Only the block under `## Settings` is read: an example in the prose neither replaces nor stands in for it."""
-    document = EXAMPLE + loop_md("loop:\n  ci: true\nrisk:\n  always: true\n")
-    assert approvals.settings(document)["ci"] is True
+    document = EXAMPLE + loop_md("loop:\n  opt_out: true\nrisk:\n  always: true\n")
+    assert approvals.settings(document)["opt_out"] is True
     assert approvals.ruled(set(), [], document) == "it matches a risk rule (always)"
     with pytest.raises(approvals.Refused, match="loop.md has no ```yaml settings block"):
         approvals.settings("## Approvals\n\n- risk: always\n\n" + EXAMPLE)
@@ -800,10 +793,12 @@ def test_the_policy_is_read_from_gatekeeper_md_under_its_policy_heading(
     _, policy = approvals.project()
     assert approvals.settings(policy)["gate"] == "mise run check"
     assert capsys.readouterr().err == ""
-    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: no-ish\n"))
-    with pytest.raises(approvals.Refused, match="gatekeeper.md's `loop.ci` must be true or false"):
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  cap: no-ish\n"))
+    with pytest.raises(
+        approvals.Refused, match="gatekeeper.md's `loop.cap` must be a whole number"
+    ):
         approvals.project()
-    (agents / "gatekeeper.md").write_text(loop_md("loop:\n  ci: false\n"))
+    (agents / "gatekeeper.md").write_text(loop_md("loop:\n  cap: 5\n"))
     with pytest.raises(
         approvals.Refused, match="gatekeeper.md has no ```yaml settings block under ## Policy"
     ):
@@ -824,8 +819,8 @@ def test_loop_md_settings_without_gatekeeper_md_are_read_with_one_deprecation_li
 
 def test_a_policy_in_both_gatekeeper_md_and_loop_md_is_refused_naming_both(agents: Path) -> None:
     """Two sources of the bar would drift."""
-    (agents / "loop.md").write_text(loop_md("loop:\n  ci: false\n"))
-    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  ci: false\n"))
+    (agents / "loop.md").write_text(loop_md("loop:\n  cap: 5\n"))
+    (agents / "gatekeeper.md").write_text(gatekeeper_md("loop:\n  cap: 5\n"))
     with pytest.raises(approvals.Refused) as raised:
         approvals.project()
     assert str(raised.value) == (
@@ -1039,18 +1034,16 @@ def test_a_merge_waits_for_check_and_the_owners_go_and_fails_a_missing_proof(
     )
 
 
-@pytest.mark.parametrize("loop", [LOOP, add(LOOP, "loop", "ci: false\n")], ids=["ci", "ci-false"])
 def test_check_merge_passes_on_a_base_requiring_no_check_with_no_ci_and_a_satisfied_verdict(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     required: list[str],
-    loop: str,
 ) -> None:
     """#349, #1872: a repo with no CI, whose base requires no check, has no status on the head at all: `check merge`
     waits for no aggregate `check` and no local-ci pass, so the verifier's satisfied record lets it pass (exit 0), as
     `land` merges it."""
     in_project(monkeypatch)
-    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, loop))
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
     monkeypatch.setattr(
         approvals, "reusable", lambda *_a, **_k: pytest.fail("read a local-ci pass")
     )
@@ -1298,12 +1291,11 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
     assert gate(said("claude, same-family, small", 1, "high"))
 
 
-def test_without_ci_check_merge_passes_on_the_verifiers_record_with_no_local_ci_pass(
+def test_check_merge_passes_on_the_verifiers_record_with_no_local_ci_pass(
     monkeypatch: pytest.MonkeyPatch, no_origin: list[list[str]]
 ) -> None:
-    """#1872, #349: under `ci: false`, on a base that requires no check, a satisfied verifier record is the merge's
+    """#1872, #349: on a base that requires no check, a satisfied verifier record is the merge's
     proof: no local-ci pass is read, and no aggregate `check` is waited for, whatever comments say."""
-    no_ci = add(LOOP, "loop", "ci: false\n")
     monkeypatch.setattr(
         approvals, "reusable", lambda *_a, **_k: pytest.fail("read a local-ci pass")
     )
@@ -1312,7 +1304,7 @@ def test_without_ci_check_merge_passes_on_the_verifiers_record_with_no_local_ci_
     def proofs(*comments: dict[str, Any]) -> list[str]:
         merged = pull(reviews=(VERDICT,), comments=comments, labels=OWNED, checks=())
         merged["isCrossRepository"] = True
-        return merge(merged, [approved(1, "area:web")], no_ci)
+        return merge(merged, [approved(1, "area:web")], LOOP)
 
     forged = note(f"{approvals.CHECKED}\nHead: {HEAD}\n", author={"login": "worker"})
     obsolete = note(
@@ -1322,7 +1314,7 @@ def test_without_ci_check_merge_passes_on_the_verifiers_record_with_no_local_ci_
     assert proofs() == proofs(forged) == proofs(obsolete) == []
     # the same PR with no verdict still fails: the record is what the merge needs
     unverified = pull(labels=OWNED, checks=())
-    assert merge(unverified, [approved(1, "area:web")], no_ci) == [
+    assert merge(unverified, [approved(1, "area:web")], LOOP) == [
         "PR #7: no verifier review posted (approvals.py verdict)"
     ]
 
@@ -4716,33 +4708,58 @@ def test_land_on_a_merged_pr_says_so_and_on_a_closed_one_refuses(lands: dict[str
     assert (lands["lock"](), lands["runs"]()) == ("", 0)
 
 
-def test_the_old_settings_say_they_are_deprecated_and_the_gate_keys_are_ignored(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_the_gate_keys_are_ignored_with_one_line_each(capsys: pytest.CaptureFixture[str]) -> None:
     """#1872: a policy still setting a key that drove land's gate parses, says once that it is ignored, and reads as
-    one without it; `ci` and `carry_over_main` still work, deprecated."""
+    one without it."""
     loop = add(
-        add(
-            add(LOOP, "loop", "ci: false\nbatch_queue: true\n"),
-            "carry_over_main",
-            "except:\n  - mise.toml\n",
-        ),
+        LOOP,
         "land",
         "gate_on: cloud\ncloud_gate_timeout_seconds: 2400\nhost_gate: false\nbatch_wait_seconds: 5\n",
     )
     approvals.DEPRECATED.clear()
     read = approvals.settings(loop)
-    assert approvals.no_ci(loop) and "batch_queue" not in read
     assert read["land"] == {"batch_wait_seconds": 5}
     assert capsys.readouterr().err.splitlines() == [
-        "ignored: loop.md's `loop.batch_queue` does nothing, since land runs no gate (#1872): remove it",
-        "deprecated: ci goes in the next release; land batches every landable PR (#650)",
-        "deprecated: carry_over_main goes in the next release; land batches every landable PR (#650)",
-        *(
-            f"ignored: loop.md's `land.{key}` does nothing, since land runs no gate (#1872): remove it"
-            for key in ("gate_on", "cloud_gate_timeout_seconds", "host_gate")
-        ),
+        f"ignored: loop.md's `land.{key}` does nothing, since land runs no gate (#1872): remove it"
+        for key in ("gate_on", "cloud_gate_timeout_seconds", "host_gate")
     ]
+
+
+@pytest.mark.parametrize(
+    ("section", "setting", "gone"),
+    [
+        ("carry_over_main", "except:\n  - mise.toml\n", "carry_over_main"),
+        ("loop", "ci: false\n", "loop.ci"),
+        ("loop", "batch_queue: true\n", "loop.batch_queue"),
+    ],
+    ids=["carry_over_main", "ci", "batch_queue"],
+)
+def test_a_policy_naming_a_removed_setting_is_refused_naming_it(
+    section: str, setting: str, gone: str
+) -> None:
+    """#654: the settings of the retired landing paths are refused, not read or ignored, so a project that still sets
+    one learns it is gone."""
+    with pytest.raises(approvals.Refused, match=f"loop.md's `{gone}` is gone \\(#654\\)"):
+        approvals.settings(add(LOOP, section, setting))
+
+
+def test_the_engineering_loop_skill_names_no_retired_landing_path() -> None:
+    """#654: the loop's skill folder, its docs and its scripts, says nothing of the queue, the carried-verdict section
+    or the batch key."""
+    folder = SCRIPTS.parents[3] / "loop" / "skills" / "engineering-loop"
+    hits = [
+        f"{path.relative_to(folder)}: {word}"
+        for path in sorted(folder.rglob("*"))
+        if path.is_file()
+        and "__pycache__" not in path.parts
+        and path.suffix in {".md", ".py", ".yml"}
+        for word in ("check queue", "batch_queue", "carry_over_main")
+        if word in path.read_text()
+    ]
+    assert hits == []
+
+
+def test_the_queue_verbs_are_gone() -> None:
     with pytest.raises(SystemExit):
         approvals.main(["check", "queue", "7", "--head", HEAD])
     with pytest.raises(SystemExit):
@@ -5872,7 +5889,7 @@ def test_a_recorded_pass_on_the_head_is_posted_without_running_again(
     ]
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
-    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
+    assert merge(merged, [approved(1, "area:web")], LOOP) == []
 
 
 def test_a_local_ci_comment_names_no_host(
@@ -5887,7 +5904,7 @@ def test_a_local_ci_comment_names_no_host(
     [body] = sent
     assert "owner-MacBook" not in body and "/Users/owner" not in body
     merged = pull(reviews=(VERDICT,), comments=(body,), labels=OWNED, checks=())
-    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
+    assert merge(merged, [approved(1, "area:web")], LOOP) == []
 
 
 @pytest.mark.parametrize(
@@ -6268,7 +6285,7 @@ def test_a_local_ci_record_is_the_merge_proof_without_ci(
     assert approvals.main(["local-ci", "7", "--run"]) == 0
     posted = [body for kind, _pr, body in github if kind == "comment"]
     merged = pull(reviews=(VERDICT,), comments=tuple(posted), labels=OWNED, checks=())
-    assert merge(merged, [approved(1, "area:web")], add(LOOP, "loop", "ci: false\n")) == []
+    assert merge(merged, [approved(1, "area:web")], LOOP) == []
 
 
 def hidden_untracked(repo: Path) -> None:
@@ -6522,13 +6539,12 @@ def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
     """Host B has no record to compare the command with, so the published status's key alone must tell: a gate whose
     command changed since A's pass runs again."""
     head = published_on_a(tmp_path, monkeypatch)
-    no_ci = add(LOOP, "loop", "ci: false\n")
     posted = note(f"{approvals.CHECKED}\nHead: {head}\nCommand: true\nEnv: default\n")
     merged = {
         **pull(reviews=(verdict_on(head),), comments=(posted,), labels=OWNED, checks=()),
         "headRefOid": head,
     }
-    assert merge(merged, [approved(1, "area:web")], no_ci) == []
+    assert merge(merged, [approved(1, "area:web")], LOOP) == []
     monkeypatch.setattr(approvals, "LOCAL_CI", ["true", "--another-tier"])
     ran: list[str | None] = []
 
@@ -6539,7 +6555,7 @@ def test_a_pass_published_under_another_command_is_not_reused_on_another_host(
     monkeypatch.setattr(approvals, "run_local_ci", run_local_ci)
     assert approvals.reusable(head) is None
     # check merge reads no local-ci pass (#1872): only `local-ci` runs the gate again
-    assert merge(merged, [approved(1, "area:web")], no_ci) == []
+    assert merge(merged, [approved(1, "area:web")], LOOP) == []
     assert approvals.main(["local-ci", "7", "--run"]) == 1
     assert (ran, github) == ([head], [])
 
@@ -8156,19 +8172,9 @@ def test_posted_text_names_no_account_in_a_temp_path(monkeypatch: pytest.MonkeyP
     )
 
 
-# --- a clean merge of main carries the head's verdict, never its local-ci record, where loop.md's carry_over_main says so ---
+# --- a clean merge of main carries the head's verdict (catch_up), where the carrying fixture builds it ---
 
-NO_CI = add(LOOP, "loop", "ci: false\n")
-CARRY = add(NO_CI, "carry_over_main", "except:\n  - mise.toml\n")
 APP = "".join(f"line {n}\n" for n in range(1, 11))
-
-
-def carries(merge: str, head: str, base: str, since: str, branch: str = "main") -> str:
-    return (
-        f"{merge} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {branch}'s"
-        f" {base}, whose changes since {since} touch none of the PR's files, and neither side touches a"
-        " `carry_over_main.except` path"
-    )
 
 
 @pytest.fixture
@@ -8261,45 +8267,6 @@ def carried_pull(case: dict[str, str], *comments: str, risk: str = "") -> dict[s
     pr = pull(reviews=(review,), comments=comments, checks=(), files=("app.py",))
     pr.update(headRefOid=case["merge"], baseRefOid=case["base"])
     return pr
-
-
-@pytest.fixture
-def posting(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """`local-ci <pr>` against a stubbed GitHub: `pull` is the PR, `loop` loop.md; `posted` holds each comment and
-    `ran` each head the check would run on, which it never does here."""
-    state: dict[str, Any] = {"posted": [], "ran": [], "loop": CARRY}
-
-    def run_local_ci(pr: int | None, head: str | None, _passed: Any = ()) -> dict[str, Any]:
-        state["ran"].append(head)
-        raise approvals.Refused("the check would run")
-
-    monkeypatch.setattr(approvals, "comment", lambda _number, body: state["posted"].append(body))
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: state["pull"])
-    monkeypatch.setattr(approvals, "project", lambda: (None, state["loop"]))
-    monkeypatch.setattr(approvals, "one_repo", lambda: None)
-    monkeypatch.setattr(approvals, "run_local_ci", run_local_ci)
-    return state
-
-
-def test_a_clean_merge_of_main_carries_the_verdict_but_never_the_local_ci_record(
-    carrying: Callable[..., dict[str, str]],
-    posting: dict[str, Any],
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Under `ci: false` `local-ci` reruns its own gate on the merge, as CI would: the head's record stays the head's;
-    check merge reads none (#1872)."""
-    case = carrying({"other.txt": "main moved\n"})
-    head, merge_sha = case["head"], case["merge"]
-    gated_head(head)
-    posting["pull"] = carried_pull(case)
-    assert approvals.main(["local-ci", "7", "--run"]) == 1
-    assert (posting["ran"], posting["posted"]) == ([merge_sha], [])
-    capsys.readouterr()
-    on_head = f"{approvals.CHECKED}\nHead: {head}\nCommand: mise run check:all\nEnv: default\n"
-    assert merge(carried_pull(case, on_head), [approved(1, "area:web")], CARRY) == []
-    assert capsys.readouterr().out.splitlines() == [
-        f"PR #7: {carries(merge_sha, head, case['base'], case['since'])}"
-    ]
 
 
 # --- the go on a head carries over merges of the base a verifier pass says change no logic (#808) ---
@@ -8419,29 +8386,15 @@ def test_a_clean_merge_of_the_base_carries_the_verdict_and_the_go_with_no_new_pa
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """#1314: the proof is mechanical (catch_up), so neither a verifier pass on the merge nor its `Logic change: none`
-    is read, and a project without `carry_over_main` gets it too."""
+    is read."""
     case = carrying({"other.txt": "main moved\n"})
     pr = go_over(case, hub, logic="", on="head")
     assert approvals.owner_waits(pr, [], LOOP) == []
     [line] = approvals.whose(pr, LOOP)
     assert f"carried to {case['merge']}: every commit since is a merge of main whose" in line
     assert "git show --remerge-diff` is empty" in line
-    assert merge(carried_pull(case), [approved(1, "area:web")], NO_CI) == []
+    assert merge(carried_pull(case), [approved(1, "area:web")], LOOP) == []
     assert "carried to" in capsys.readouterr().out
-
-
-def test_a_project_with_carry_over_main_keeps_its_own_rule_for_the_go_as_for_the_verdict(
-    carrying: Callable[..., dict[str, str]],
-    hub: dict[str, list[dict[str, Any]]],
-) -> None:
-    """The mechanical proof (catch_up) is for a project without `carry_over_main`: with it, the go carries only by the
-    verifier's pass on the new head, as the verdict carries only by the project's own merge rule (B3)."""
-    case = carrying({"other.txt": "main moved\n"})
-    pr = go_over(case, hub, logic="", on="head")
-    assert isinstance(approvals.carried_go(pr, LOOP), tuple)
-    found = approvals.carried_go(pr, CARRY)
-    assert isinstance(found, str) and found.startswith("the go on") and "carries nothing" in found
-    assert approvals.whose(pr, CARRY) == []
 
 
 def test_a_verifier_reports_logic_change_line_is_posted_with_its_verdict(tmp_path: Path) -> None:
@@ -8459,7 +8412,7 @@ def test_a_carried_verdicts_risk_line_still_holds_the_merge(
 ) -> None:
     case = carrying({"other.txt": "main moved\n"})
     pr = carried_pull(case, risk="Risk: high — a test fixture\n")
-    assert approvals.risk(pr, [], add(CARRY, "risk", "verifier: true\n")) == (
+    assert approvals.risk(pr, [], add(LOOP, "risk", "verifier: true\n")) == (
         f"it matches a risk rule (verifier): the verifier's pass 1 on {case['head'][:7]} says"
         " `Risk: high — a test fixture`"
     )
@@ -8470,200 +8423,28 @@ REFUSED = {
     "a resolved conflict": (
         {"app.py": CONFLICTED},
         {"resolve": {"app.py": APP.replace("line 1\n", "line 1, both\n")}},
-        CARRY,
-        "{head} and {base} conflict",
     ),
     "an evil merge": (
         {"other.txt": "main moved\n"},
         {"extra": {"extra.txt": "in neither parent\n"}},
-        CARRY,
-        "{merge}'s tree is not git merge-tree's of its parents: the merge resolved or added something",
-    ),
-    "an overlapping file": (
-        {"app.py": APP.replace("line 10\n", "line 10, on main\n")},
-        {},
-        CARRY,
-        "app.py changed on both sides since {since}",
-    ),
-    "a touched except-path": (
-        {"mise.toml": "[tools]\nuv = 'latest'\n"},
-        {},
-        CARRY,
-        "main's changes since {since} touch mise.toml, a `carry_over_main.except` path",
-    ),
-    "the PR's own except-path change": (
-        {"other.txt": "main moved\n"},
-        {},
-        add(NO_CI, "carry_over_main", "except:\n  - '*.py'\n"),
-        "the PR's changes since {since} touch app.py, a `carry_over_main.except` path",
-    ),
-    "a criss-cross merge": (
-        {"other.txt": "main moved\n"},
-        {"crossed": True},
-        CARRY,
-        "{head} and {base} have 2 merge bases",
-    ),
-    "a project without the line": (
-        {"app.py": CONFLICTED},
-        {"resolve": {"app.py": APP.replace("line 1\n", "line 1, both\n")}},
-        NO_CI,
-        None,
     ),
 }
 
 
-def test_a_submodule_bump_main_hides_with_ignore_all_still_meets_the_except_guard(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`ignore = all` in .gitmodules hides a submodule's bump from a plain git diff."""
-    who = ("-c", "commit.gpgsign=false", "-c", "user.name=Lead", "-c", "user.email=l@example.com")
-    git = lambda *args: sh("git", *who, *args, cwd=tmp_path)
-    git("init", "-q", "-b", "main")
-
-    def commit(text: str) -> None:
-        (tmp_path / "app").write_text(text)
-        git("add", "-A")
-        git("commit", "-qm", text)
-
-    commit("lib 1\n")
-    lib1 = git("rev-parse", "HEAD")
-    commit("lib 2\n")
-    lib2 = git("rev-parse", "HEAD")
-    (tmp_path / ".gitmodules").write_text(
-        '[submodule "deps/lib"]\n\tpath = deps/lib\n\turl = ./lib\n\tignore = all\n'
-    )
-    (tmp_path / "deps" / "lib").mkdir(parents=True)
-    git("update-index", "--add", "--cacheinfo", f"160000,{lib1},deps/lib")
-    commit("base\n")
-    git("switch", "-qc", "feature")
-    commit("feature\n")
-    head = git("rev-parse", "HEAD")
-    git("switch", "-q", "main")
-    git("update-index", "--cacheinfo", f"160000,{lib2},deps/lib")
-    git("commit", "-qm", "main bumps the dependency")
-    tip = git("rev-parse", "HEAD")
-    monkeypatch.chdir(tmp_path)
-    why = approvals.merged(head, tip, ["deps/**"], "main")
-    assert isinstance(why, str) and why.endswith("touch deps/lib, a `carry_over_main.except` path")
-
-
-def test_diff_relative_run_from_a_subdirectory_still_meets_the_except_guard(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`diff.relative` makes a porcelain diff drop what lies outside the current directory."""
-    who = ("-c", "commit.gpgsign=false", "-c", "user.name=Lead", "-c", "user.email=l@example.com")
-    git = lambda *args: sh("git", *who, *args, cwd=tmp_path)
-    git("init", "-q", "-b", "main")
-    git("config", "diff.relative", "true")
-    (tmp_path / "pkg").mkdir()
-
-    def commit(files: dict[str, str]) -> str:
-        for name, text in files.items():
-            (tmp_path / name).write_text(text)
-        git("add", "-A")
-        git("commit", "-qm", "commit")
-        return git("rev-parse", "HEAD")
-
-    commit({"guard.cfg": "a\n", "pkg/feature": "a\n"})
-    git("switch", "-qc", "feature")
-    head = commit({"pkg/feature": "b\n"})
-    git("switch", "-q", "main")
-    tip = commit({"guard.cfg": "b\n"})
-    monkeypatch.chdir(tmp_path / "pkg")
-    why = approvals.merged(head, tip, ["guard.cfg"], "main")
-    assert isinstance(why, str) and why.endswith("touch guard.cfg, a `carry_over_main.except` path")
-
-
-@pytest.mark.parametrize(("files", "merging", "loop", "why"), REFUSED.values(), ids=REFUSED.keys())
+@pytest.mark.parametrize(("files", "merging"), REFUSED.values(), ids=REFUSED.keys())
 def test_a_merge_that_may_have_changed_the_prs_code_carries_nothing(
     carrying: Callable[..., dict[str, str]],
-    capsys: pytest.CaptureFixture[str],
     files: dict[str, str],
     merging: dict[str, Any],
-    loop: str,
-    why: str | None,
 ) -> None:
     """Each falls back to today's proofs: a verifier pass on the merge."""
     case = carrying(files, **merging)
     head, merge_sha = case["head"], case["merge"]
-    assert merge(carried_pull(case), [approved(1, "area:web")], loop) == [
+    assert merge(carried_pull(case), [approved(1, "area:web")], LOOP) == [
         (
             f"PR #7: the newest verifier review is on {head}, not on the head {merge_sha}:"
             " every commit after a verdict needs a verdict of its own"
         ),
-    ]
-    said = (
-        []
-        if why is None
-        else [f"PR #7: {merge_sha} carries nothing from {head}: {why.format(**case)}"]
-    )
-    assert capsys.readouterr().out.splitlines() == said
-
-
-def test_a_merge_of_a_commit_not_on_the_base_carries_nothing(
-    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Another branch merged in is no merge of main, however disjoint: main's tip here never reached it."""
-    case = carrying({"other.txt": "not on main\n"})
-    pr = carried_pull(case)
-    pr["baseRefOid"] = case["since"]
-    assert merge(pr, [approved(1, "area:web")], CARRY)[0].startswith(
-        "PR #7: the newest verifier review is on"
-    )
-    assert capsys.readouterr().out.splitlines() == [
-        f"PR #7: {case['merge']} carries nothing from {case['head']}: its second parent {case['base']} is not on main"
-    ]
-
-
-def test_two_clean_merges_of_main_carry_the_verdict_from_before_both(
-    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Main merged in twice since the verdict: each merge carries its first parent's, down to the verified head."""
-    first = carrying({"other.txt": "main moved\n"})
-    second = carrying({"more.txt": "main moved again\n"}, onto=first["merge"], main=first["base"])
-    pr = carried_pull(first)
-    pr.update(headRefOid=second["merge"], baseRefOid=second["base"])
-    assert merge(pr, [approved(1, "area:web")], CARRY) == []
-    assert capsys.readouterr().out.splitlines() == [
-        f"PR #7: {carries(first['merge'], first['head'], first['base'], first['since'])}",
-        f"PR #7: {carries(second['merge'], first['merge'], second['base'], first['base'])}",
-    ]
-
-
-def test_a_pr_commit_after_a_clean_merge_carries_nothing(
-    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The commit on top of the merge is the PR's own, never reviewed: the head needs its own verdict. A rebased or
-    amended head is the same case, a commit of one parent where the walk looks for a merge."""
-    case = carrying(
-        {"other.txt": "main moved\n"}, then={"app.py": APP.replace("line 5\n", "line 5, new\n")}
-    )
-    assert merge(carried_pull(case), [approved(1, "area:web")], CARRY)[0].startswith(
-        "PR #7: the newest verifier review is on"
-    )
-    assert capsys.readouterr().out.splitlines() == [
-        f"PR #7: {case['merge']} carries nothing from {case['head']}: it is no merge of two parents"
-    ]
-
-
-def test_a_pr_commit_between_two_clean_merges_carries_nothing(
-    carrying: Callable[..., dict[str, str]], capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A clean merge on top hides no PR commit under it: the walk meets that commit before the verified one."""
-    first = carrying({"other.txt": "main moved\n"})
-    rewritten = carrying(
-        {"more.txt": "main moved again\n"}, then={"app.py": APP.replace("line 2\n", "line 2!\n")}
-    )
-    case = carrying(
-        {"third.txt": "main moved a third time\n"}, onto=rewritten["merge"], main=first["base"]
-    )
-    pr = carried_pull(first)
-    pr.update(headRefOid=case["merge"], baseRefOid=case["base"])
-    assert merge(pr, [approved(1, "area:web")], CARRY)[0].startswith(
-        "PR #7: the newest verifier review is on"
-    )
-    assert capsys.readouterr().out.splitlines() == [
-        f"PR #7: {case['merge']} carries nothing from {first['head']}: {rewritten['merge']} is no merge of two parents"
     ]
 
 
