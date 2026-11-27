@@ -116,7 +116,7 @@ Commit, push and rerun the gates.
 2. When the required `qualify` check passes, run `gh pr merge --squash --delete-branch`.
    If it fails, fix, commit and go back to step 4; a third failure is blocked. If main
    moved, update the branch and wait again. Never use `--admin`, and never push to main.
-3. For a release, follow [RELEASING.md](RELEASING.md): the pre-tag smoke run and `release-check` come before the tag.
+3. For a release, follow [RELEASING.md](RELEASING.md): `release-check` comes before the tag; the private-repository smoke run is on demand and gates nothing.
    The tag check re-qualifies the release and opens the consumer-sync PR, which step 1
    of the next run merges.
 

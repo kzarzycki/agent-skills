@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -1348,52 +1349,64 @@ SMOKE_REPOSITORY = "RELEASE_SMOKE_REPOSITORY"
 SMOKE_WORKFLOW = "RELEASE_SMOKE_WORKFLOW"
 
 
-def require_smoke_run(
+def run_smoke(
     head: str,
     environment: Mapping[str, str] | None = None,
     runner: Callable[[list[str]], str] | None = None,
-) -> str:
-    """The URL of a passing `workflow_dispatch` run, in the private organization repository the releaser's own
-    configuration names, for the release head; refuses without one. The repository (owner/name) and the workflow file
-    come from RELEASE_SMOKE_REPOSITORY and RELEASE_SMOKE_WORKFLOW, never from this repository. The workflow names its
-    runs after the ref it checked (`run-name`), so a run's title holds the head it passed for."""
+    sleep: Callable[[float], None] | None = None,
+    attempts: int = 60,
+) -> tuple[str, str]:
+    """On demand, never a release gate: dispatch the `workflow_dispatch` smoke workflow of the private organization
+    repository the caller's own configuration names, for `head`, wait for it, and return (run URL, conclusion).
+    The repository (owner/name) and the workflow file come from RELEASE_SMOKE_REPOSITORY and RELEASE_SMOKE_WORKFLOW,
+    never from this repository; RELEASE_SMOKE_PR, when set, is the workflow's `pr` input. The workflow names its runs
+    after the ref it checked (`run-name`), so a run's title holds the head it ran for."""
     environment = os.environ if environment is None else environment
     repository, workflow = environment.get(SMOKE_REPOSITORY), environment.get(SMOKE_WORKFLOW)
     if not repository or not workflow:
         raise ConfigurationError(
-            f"release smoke run: set {SMOKE_REPOSITORY} (owner/name of a private organization repository) and "
+            f"smoke run: set {SMOKE_REPOSITORY} (owner/name of a private organization repository) and "
             f"{SMOKE_WORKFLOW} (its workflow_dispatch workflow file)"
         )
     if not re.fullmatch(r"[0-9a-f]{40}", head):
-        raise ConfigurationError(f"release smoke run: not a full commit sha: {head}")
+        raise ConfigurationError(f"smoke run: not a full commit sha: {head}")
 
     def gh(arguments: list[str]) -> str:
         try:
             return subprocess.run(
-                ["gh", *arguments], check=True, text=True, capture_output=True, timeout=120
+                ["gh", *arguments], check=True, text=True, capture_output=True, timeout=3600
             ).stdout
         except (OSError, subprocess.SubprocessError) as error:
-            raise ConfigurationError(f"release smoke run: gh failed: {error}") from error
+            raise ConfigurationError(f"smoke run: gh failed: {error}") from error
 
-    out = (runner or gh)(
-        [
-            "run",
-            "list",
-            "--repo",
-            repository,
-            "--workflow",
-            workflow,
-            "--event",
-            "workflow_dispatch",
-            "--limit",
-            "100",
-            "--json",
-            "conclusion,displayTitle,url",
-        ]
-    )
-    for run in json.loads(out):
-        if run.get("conclusion") == "success" and head in (run.get("displayTitle") or ""):
-            return str(run["url"])
-    raise ConfigurationError(
-        f"release smoke run: no passing {workflow} run for {head} in the smoke repository"
-    )
+    run = runner or gh
+    wait = sleep or time.sleep
+    listing = [
+        "run", "list", "--repo", repository, "--workflow", workflow, "--event", "workflow_dispatch",
+        "--limit", "100", "--json", "databaseId,displayTitle",
+    ]  # fmt: skip
+
+    def known() -> set[int]:
+        return {item["databaseId"] for item in json.loads(run(listing)) if head in (item.get("displayTitle") or "")}
+
+    before = known()
+    inputs = ["-f", f"ref={head}"]
+    if environment.get("RELEASE_SMOKE_PR"):
+        inputs += ["-f", f"pr={environment['RELEASE_SMOKE_PR']}"]
+    run(["workflow", "run", workflow, "--repo", repository, *inputs])
+    identifier = None
+    for _ in range(attempts):
+        started = known() - before
+        if started:
+            identifier = max(started)
+            break
+        wait(10)
+    if identifier is None:
+        raise ConfigurationError(f"smoke run: the {workflow} run for {head} never started")
+    view = ["run", "view", str(identifier), "--repo", repository, "--json", "conclusion,url,status"]
+    try:
+        run(["run", "watch", str(identifier), "--repo", repository])
+    except ConfigurationError:
+        pass  # a failed run exits non-zero; its conclusion is read below
+    result = json.loads(run(view))
+    return str(result["url"]), str(result.get("conclusion") or result.get("status"))

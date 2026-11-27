@@ -93,7 +93,7 @@ def test_tag_workflow_is_package_scoped() -> None:
 
     assert workflow["on"]["push"]["tags"] == ["engineering-v*", "!engineering-v*-next"]
     assert "release-check engineering" in commands
-    assert "--skip-smoke" in commands  # CI cannot reach the private smoke repository
+    assert "--skip-smoke" not in commands  # the smoke run is on demand (#1454)
     assert "mise run vendor-engineering-check" in commands
     assert "mise run test-engineering-package" in commands
     assert (
