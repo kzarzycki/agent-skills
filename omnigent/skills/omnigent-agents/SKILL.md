@@ -280,7 +280,8 @@ runs in, read at runtime (Codex's rollout, Claude Code's `$CLAUDE_EFFORT` and tr
 however the session started. It reads the session's Omnigent record first (`llm_model` once the harness has
 reported it, and `reasoning_effort`), since a Codex child's rollout sits under a private `CODEX_HOME`. The
 `AGENT_SIGNATURE=` line `start` puts atop a brief names the model the server took for the session (its
-`model_override`, `?` for the harness default), never the id asked for.
+`model_override`, `?` for the harness default), never the id asked for. A lead's line ends `· Session: <its link>`, so the
+`Impl:` line it copies into its PR body names its session (`gatekeeper check session`, #2825).
 
 **Host steps over SSH.** Run a short read-only check or setup step on another host (a log, a status, a load
 check; never what orchestrating-agents' rule *Host work* lists) as `python3 scripts/omnigent_agent.py ssh <host>
