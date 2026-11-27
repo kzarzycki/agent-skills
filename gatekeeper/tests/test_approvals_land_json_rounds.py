@@ -120,3 +120,41 @@ def test_a_queue_merged_pr_names_the_landed_comment_it_posted(
         "merged",
         "https://github.com/o/r/pull/7#issuecomment-123",
     )
+
+
+def test_a_failed_label_write_keeps_the_bare_candidate_in_the_lines(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    head = queue["opened"](7)
+    original = approvals.label
+
+    def refused(number: int, name: str, *, add: bool) -> None:
+        if name == approvals.QUEUED and add:
+            raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: label refused")
+        return original(number, name, add=add)
+
+    monkeypatch.setattr(approvals, "label", refused)
+    code, lines = queue["land"]("--json")
+    assert code == 1, lines
+    found = line_of(lines, 7)
+    assert (found["head"], found["state"], found["cause"]) == (head, "refused", "github")
+
+
+def test_an_error_before_any_candidate_is_judged_names_every_ready_pr_of_a_bare_land(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seven, eight = queue["opened"](7), queue["opened"](8)
+
+    def refused(*_args: Any, **_kwargs: Any) -> None:
+        raise approvals.Refused("signing is not possible here")
+
+    monkeypatch.setattr(approvals, "signed", refused)
+    code, lines = queue["land"]("--json")
+    assert code == 1, lines
+    assert [
+        (each["pr"], each["head"], each["cause"])
+        for each in map(json.loads, (x for x in lines if x.startswith("{")))
+    ] == [
+        (7, seven, "github"),
+        (8, eight, "github"),
+    ]

@@ -6838,6 +6838,9 @@ loop_events = sibling("events")
 
 # `land --json`: each PR's outcome as the code that picks its exit left it (mark), one line per PR at the end of the land
 OUTCOMES: dict[int, dict[str, Any]] = {}
+JUDGED: dict[
+    int, dict[str, Any]
+] = {}  # the PRs candidates_of judged, for the line of one an error ends first
 WANT_JSON = [False]
 
 
@@ -6875,13 +6878,20 @@ def ready_pulls(base: str) -> list[dict[str, Any]]:
 
 
 def mark_unjudged(pr: int | Sequence[int] | None) -> None:
-    """A land that ended in an error names each PR it was asked to land that no step marked as `refused` for `github`,
-    the exit the error means for it, so no PR it judged is left without a line."""
-    for number in numbers_of(pr):
+    """A land that ended in an error names each PR it judged or was asked to land that no step marked as `refused` for
+    `github`, the exit the error means for it, so no PR it judged is left without a line. A bare land names the
+    candidates it judged (JUDGED), else those it would have: every ready PR into the default branch."""
+    pulls = {number: JUDGED.get(number) for number in numbers_of(pr)} | dict(JUDGED)
+    if not pulls:
+        try:
+            pulls = {pull["number"]: pull for pull in ready_pulls(default_branch())}
+        except Exception as exc:  # noqa: BLE001 -- no list of candidates, no lines
+            print(f"no outcome lines: {stderr_of(exc)}", file=sys.stderr)
+    for number, pull in pulls.items():
         if number in OUTCOMES:
             continue
         try:
-            pull = pull_request(number)
+            pull = pull or pull_request(number)
             if pull["state"] == "OPEN":
                 mark(pull, "refused", "github")
         except Exception as exc:  # noqa: BLE001 -- a PR that can't be read has no head to name
@@ -6991,6 +7001,7 @@ def land(
         return land_run(pr, wait, only)
     WANT_JSON[0] = True
     OUTCOMES.clear()
+    JUDGED.clear()
     try:
         code = land_run(pr, wait, only)
     except Refused as exc:  # said as main says it, before the lines
@@ -7634,6 +7645,7 @@ def landing(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int, bo
     RECORDS_DROPPED[0] = False
     merged_heads.clear()
     OUTCOMES.clear()  # a wait's last round alone says where each PR stands
+    JUDGED.clear()
     try:
         code, again = landing_run(pr, only)
     except Exception:
@@ -8668,6 +8680,7 @@ def candidates_of(
     for number in sorted(listed):
         pull = pulls.get(number) or pull_request(number)
         verdict = pull.get("verdict") or landable(pull, tracker, loop, required, number in pulls)
+        JUDGED[number] = pull
         # the board shows why a PR waits: flag its risk once its proofs hold, before it is refused for anything else
         if verdict.issues is not None and not pull.get("readied"):
             for line in flag(pull, verdict.issues, loop):
