@@ -1654,7 +1654,7 @@ def merge_refusal(number: int, stderr: str | None) -> str | None:
     if PROXY_PATH in text:
         return (
             f"PR #{number}: this cloud session's proxy refuses the merge call for this repo ({text}); it is a path rule"
-            " that may lift once the repo is attached with push access (`add_repo`, `access: \"push\"`). Attach it and land"
+            ' that may lift once the repo is attached with push access (`add_repo`, `access: "push"`). Attach it and land'
             " again, or run `land` from a host checkout of the repo (a clone of it on a machine whose own GitHub login"
             " merges), where the same PR lands at the same head"
         )
