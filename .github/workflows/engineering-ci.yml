@@ -51,6 +51,9 @@ jobs:
 
   qualify:
     runs-on: ubuntu-latest
+    # The scheduled full run's limit is gatekeeper.md's `timeouts.run` (60m), never a longer number here: `.mergify.yml`'s checks_timeout
+    # derives from it too. The full suite outgrew it run by run (51m in 4578 tests on 11-23, over 60m by 11-26) because the
+    # coverage run is serial (-n 0, #1610), so it runs as TEST_SHARDS serial pytest processes at once instead (tools/shard_plugin.py, #2804).
     timeout-minutes: 60 # timeouts.run
     outputs:
       selection: ${{ steps.selection.outputs.selection }}
@@ -174,6 +177,7 @@ jobs:
           # each test's time, across the run's pytest runs (tools/test_map_plugin.py), for the durations step below
           TEST_DURATIONS: ${{ github.workspace }}/.test-map/durations.log
           GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
+          TEST_SHARDS: "4" # one serial pytest per runner core, each on its share of the test files: the whole suite in a quarter of the time (#2804)
           PYTEST_ADDOPTS: -n 0 --cov=engineering --cov=tools --cov-context=test --cov-append --cov-report=
         run: mise run check
       # The nightly's per-test durations (#2445): the file `shards --durations` reads, kept beside the test map. Nothing in

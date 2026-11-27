@@ -35,6 +35,7 @@ SESSION = (
     "OMNIGENT_TERMINAL_LAUNCH_SESSION_ID",
     "LOOP_HEAVY_LOCK",
     "OMNIGENT_PERMISSION_MODE",
+    "OMNIGENT_RUNNER_TOKEN",  # cloud_verifier.py reads it; main's own test_env_reads was red on it (#2804)
     "CLAUDE_CODE_REMOTE",
 )
 SESSION_PREFIXES = ("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_")
@@ -49,6 +50,7 @@ HOST_NEUTRAL = (
     "CDP_URL",
     "CLAUDE_CDP_PORT",
     "CLAUDE_CLOUD_API_BASE",
+    "COVERAGE_FILE",  # the nightly's coverage data file, which tools/shard_plugin.py splits across its shards (#2804)
     "CODEX_CLOUD_HOME",
     "CODEX_CLOUD_USAGE",
     "CODEX_CLOUD_WS",
