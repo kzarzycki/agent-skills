@@ -8523,7 +8523,8 @@ ROUTES = [
         None,
         ("rule", "act"),
     ),
-    ("approval prompt", {"kind": "blocked"}, None, ("rule", "owner")),
+    ("approval prompt, steward mode on", {"kind": "blocked", "steward": True}, None, ("rule", "owner")),
+    ("approval prompt, steward mode off", {"kind": "blocked"}, None, ("rule", "record")),
     ("question", {"kind": "blocked", "question": True}, None, ("rule", "act")),
     (
         "owed report, outcome",
@@ -8558,7 +8559,10 @@ def test_each_row_of_the_routing_table_settles_its_event(
 
 @pytest.mark.parametrize("answer", ["none", "act", "owner"])
 def test_no_model_answer_routes_an_approval_prompt_anywhere_but_the_owner(answer: str) -> None:
-    for event in ({"kind": "blocked"}, {"kind": "terminal", "line": "a: blocked on a prompt: x"}):
+    for event in (
+        {"kind": "blocked", "steward": True},
+        {"kind": "terminal", "line": "a: blocked on a prompt: x"},
+    ):
         assert omnigent_agent.route(event, lambda: (answer, "x"))[1] == "owner"
 
 

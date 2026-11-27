@@ -50,7 +50,7 @@ def test_no_card_still_posts(tmp_path, monkeypatch):
     assert posts
 
 
-def remind(tmp_path, monkeypatch, pending):
+def remind(tmp_path, monkeypatch, pending, decisions=None):
     """The events and posts of a lead whose card stays ``pending`` past ``CARD_REMIND_SECONDS`` over four polls."""
     registry = following(tmp_path)
     monkeypatch.setattr(omnigent_agent, "PROMPT_CONFIRM_SECONDS", 0.0)
@@ -62,13 +62,16 @@ def remind(tmp_path, monkeypatch, pending):
     def later(poll):
         offset[0] = {1: 30.0, 2: past + 60.0, 3: past + 400.0}.get(poll, 2 * past + 900.0)
 
-    supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True)
+    extra = {"decisions": decisions} if decisions else {}
+    supervised(og, registry, monkeypatch, 4, later, notify="cos", console=True, **extra)
     return [(e["kind"], e["action"]) for e in events_of(registry)], posted(og)
 
 
 def test_a_card_unanswered_past_the_reminder_reaches_the_manager_once(tmp_path, monkeypatch):
     """#2170: the manager hears once, as act, so one the owner told to act in their name can answer the card."""
-    routed, posts = remind(tmp_path, monkeypatch, [CARD])
+    board = tmp_path / "board.md"
+    board.write_text("- **Steward mode**: **ON**, answer cards in the owner's name\n")
+    routed, posts = remind(tmp_path, monkeypatch, [CARD], board)
     assert routed.count(("card-waiting", "act")) == 1
     [post] = [p for p in posts if "waits unanswered" in p]
     assert "[act]" in post and "q1" in post

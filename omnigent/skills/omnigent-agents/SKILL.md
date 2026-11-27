@@ -845,7 +845,7 @@ read, a registry or children not read, and a wait no session answers (the owner,
 session titled so) leave the deadline as above. Each deadline is one event per
 lead and `progress_at`, so new progress starts a new chain. A lead whose registry line has the
 `direct` field (`start --top-level --direct` writes it at launch, `omnigent_agent.py direct <session>`
-later, `--off` clears it), one the owner drives in
+later, `--off` clears it; the supervisor also adds it once the owner writes in the session, and `--off` then holds until a newer owner message), one the owner drives in
 its own session, has no deadline at all, and nothing about it is posted: its turn ends, `DONE`
 included, its questions, prompts and failures are recorded, since the owner sees them there, and
 the `no event in <n>s` log line leaves it out. Its `DONE` still tells the leads registered `after=`
