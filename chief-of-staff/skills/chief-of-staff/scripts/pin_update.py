@@ -3,7 +3,8 @@
 
 A consumer repo pins the pack in its ``apm.yml`` (``ref: <tag_prefix>X.Y.Z``) and deploys it with
 ``apm install``. This script finds the newest tag with the prefix, and when it is newer than the
-pin, rewrites the pin, installs, then runs ``apm update`` so the sibling packages the lock holds (transitive ones
+pin, rewrites the pin (a `-next` pin follows tags of either line, a stable pin stable tags only, and no pin moves
+down; every other dependency pinned to a tag of the same repo moves by its own package prefix, #2772), installs, then runs ``apm update`` so the sibling packages the lock holds (transitive ones
 too, which ``apm install`` keeps at their locked refs) move to their newest release, and ``apm audit --ci
 --no-policy`` so a committed local edit to an installed skill fails the run. A clean run is committed, the
 message listing a compare link for each pin that moved, the direct one and every lock entry the update moved.
@@ -68,12 +69,25 @@ def git(repo: Path, *args: str, check: bool = True) -> str:
     return r.stdout
 
 
-def version_key(tag: str, prefix: str) -> tuple[int, ...] | None:
-    m = re.fullmatch(r"(\d+(?:\.\d+)*)", tag[len(prefix) :]) if tag.startswith(prefix) else None
-    return tuple(int(p) for p in m.group(1).split(".")) if m else None
+def version_key(tag: str, prefix: str) -> tuple[tuple[int, ...], int] | None:
+    """Sort key of `<prefix>X.Y.Z[-next]`: the numbers, then 0 for a -next tag, which is a
+    prerelease of the same version (below the stable tag), else 1."""
+    m = (
+        re.fullmatch(r"(\d+(?:\.\d+)*)(-next)?", tag[len(prefix) :])
+        if tag.startswith(prefix)
+        else None
+    )
+    return (tuple(int(p) for p in m.group(1).split(".")), 0 if m.group(2) else 1) if m else None
 
 
-def newest_tag(remote: str, prefix: str) -> str | None:
+def tag_prefix(ref: str) -> str | None:
+    """The package prefix of a release tag (`engineering-v` of `engineering-v0.35.13-next`)."""
+    m = re.fullmatch(r"(.+-v)\d+(?:\.\d+)*(?:-next)?", ref)
+    return m.group(1) if m else None
+
+
+def newest_tag(remote: str, prefix: str, next_line: bool = False) -> str | None:
+    """The newest tag with the prefix: of either line for a -next pin, stable only otherwise."""
     r = subprocess.run(
         ["git", "ls-remote", "--tags", "--refs", remote],
         capture_output=True,
@@ -84,7 +98,7 @@ def newest_tag(remote: str, prefix: str) -> str | None:
     if r.returncode:
         raise PinError(f"cannot list tags of {remote}: {r.stderr.strip()}")
     tags = [ln.split("refs/tags/", 1)[1] for ln in r.stdout.splitlines() if "refs/tags/" in ln]
-    keyed = [(k, t) for t in tags if (k := version_key(t, prefix))]
+    keyed = [(k, t) for t in tags if (k := version_key(t, prefix)) and (next_line or k[1])]
     return max(keyed)[1] if keyed else None
 
 
@@ -110,17 +124,21 @@ def bump_floor(remote: str, git_path: str, tag: str) -> tuple[tuple[int, ...], s
     data = yaml.safe_load(shown.stdout) or {}
     oldest = version_key("v" + str(data.get("oldest", "")), "v")
     via = str(data.get("via", ""))
-    return (oldest, via) if oldest and via else None
+    return (oldest[0], via) if oldest and via else None
 
 
 def pins(repo: Path, prefix: str) -> list[tuple[str, str]]:
-    """(``owner/repo[/path]``, ref) of each apm dependency pinned to a tag with the prefix."""
+    """(``owner/repo[/path]``, ref) of each apm dependency pinned to a tag of the repo that holds a
+    dependency pinned with the prefix: each package's own prefix is read from its tag."""
     data = yaml.safe_load((repo / "apm.yml").read_text()) or {}
-    out = []
-    for dep in (data.get("dependencies") or {}).get("apm") or []:
-        if isinstance(dep, dict) and str(dep.get("ref", "")).startswith(prefix) and dep.get("git"):
-            out.append((str(dep["git"]), str(dep["ref"])))
-    return out
+    deps = [
+        (str(d["git"]), str(d["ref"]))
+        for d in (data.get("dependencies") or {}).get("apm") or []
+        if isinstance(d, dict) and d.get("git") and d.get("ref") and tag_prefix(str(d["ref"]))
+    ]
+    own = lambda git_path: "/".join(git_path.split("/")[:2])
+    repos = {own(g) for g, r in deps if r.startswith(prefix)}
+    return [(g, r) for g, r in deps if own(g) in repos]
 
 
 def dirty(repo: Path) -> list[str]:
@@ -229,16 +247,18 @@ def run(args: argparse.Namespace) -> int:
         return 0
     say = lambda line: notify(values, line, args.omnigent)
     for git_path, old in found:
+        prefix = tag_prefix(old) or prefix
         remote = args.remote or "https://github.com/" + "/".join(git_path.split("/")[:2])
-        new = newest_tag(remote, prefix)
-        moved = not (new is None or version_key(new, prefix) <= (version_key(old, prefix) or ()))
+        old_key = version_key(old, prefix) or ((), 0)
+        new = newest_tag(remote, prefix, next_line=old.endswith("-next"))
+        moved = not (new is None or version_key(new, prefix) <= old_key)
         if not moved:
             # A sibling package can release on its own: `apm update` still runs.
             print(f"{git_path}: {old} is the newest `{prefix}` tag")
             new = old
         link = compare_link(git_path, old, new)
         floor = bump_floor(remote, git_path, new) if moved else None
-        if floor and (version_key(old, prefix) or ()) < floor[0]:
+        if floor and old_key[0] < floor[0]:
             say(
                 f"ACTION NEEDED: pin update {old} -> {new} refused in {repo.name}: {new} can be "
                 f"bumped only from {'.'.join(map(str, floor[0]))} or newer, since the base's own "
@@ -262,7 +282,8 @@ def run(args: argparse.Namespace) -> int:
             )
             continue
         text = (repo / "apm.yml").read_text()
-        if moved and text.count(f"ref: {old}") != 1:
+        ref_line = re.compile(rf"ref: {re.escape(old)}$", re.MULTILINE)
+        if moved and len(ref_line.findall(text)) != 1:
             say(
                 f"ACTION NEEDED: pin update {old} -> {new} skipped in {repo.name}: "
                 f"`ref: {old}` is not on exactly one line of apm.yml. Changes: {link}"
@@ -271,7 +292,7 @@ def run(args: argparse.Namespace) -> int:
         before, was_modified = untracked(repo), modified(repo)
         refs_before, files_before = lock_refs(repo), deployed(repo)
         if moved:
-            (repo / "apm.yml").write_text(text.replace(f"ref: {old}", f"ref: {new}"))
+            (repo / "apm.yml").write_text(ref_line.sub(f"ref: {new}", text))
         failure = ""
         for step in (["install"], ["update"], ["audit", "--ci", "--no-policy"]):
             done = subprocess.run(
