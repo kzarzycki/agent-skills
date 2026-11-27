@@ -6,14 +6,14 @@ description: Report Omnigent spend, tokens by model, session trees, scheduled-ta
 # Omnigent telemetry
 
 ```sh
-python3 scripts/omnigent_telemetry.py [--days N] [--server URL] [--json] [--html PATH] [--db-container NAME] [--split-tool NAME | --split-label KEY] [--values FILE]
+python3 scripts/omnigent_telemetry.py [--days N] [--server URL] [--max-sessions N] [--json] [--html PATH] [--split-tool NAME | --split-label KEY] [--values FILE]
 ```
 
 `scripts/omnigent_telemetry.py` is relative to this skill's folder. `scripts/__pycache__` is a file, not a folder, so running it leaves no bytecode in an installed copy. The window is the last
-`N` UTC days, today included (default 7), counted as `GET /v1/usage` counts its 7 and 30; the request carries `?days=N`, so the server builds only that window, and waits up to 180 s for it.
+`N` UTC days, today included (default 7), counted as `GET /v1/usage` counts its 7 and 30; each request carries the window, so the server builds only that, and the report waits up to 180 s for it.
 Outside an Omnigent session on a machine with several logins,
 `--server URL` names the server the API sections are read from; without it they are left out
-with the reason. It exits 0 whenever it prints a report. `--json` prints the report as data; `--html PATH`
+with the reason. `--max-sessions N` (default 500) caps the sessions the telemetry call returns. It exits 0 whenever it prints a report. `--json` prints the report as data; `--html PATH`
 also writes one page from the same data, with no script and nothing fetched, so it opens
 offline. The page holds the numbers, not a retro's narrative.
 
@@ -21,17 +21,20 @@ offline. The page holds the numbers, not a retro's narrative.
 
 | Source | Where it answers | Gives |
 |---|---|---|
-| Omnigent API, `GET /v1/usage` | any host logged in to the server (`omnigent-agents`' `scripts/omnigent_agent.py` does the login and token refresh) | spend today, over 7 and 30 days; each top-level session tree's cost by model |
-| Server Postgres, `docker exec <container> psql` (default `omnigent-postgres-1`) | the server host only | daily cost, tokens by model, each tree's sub-agents, nested Codex sub-agents, compactions and forked items, live subscriptions, scheduled-task runs, all flags |
+| `GET /v1/usage/telemetry?since=&until=&max_sessions=` | any host logged in to the server (`omnigent-agents`' `scripts/omnigent_agent.py` does the login and token refresh) | `daily_cost`, `models`, `sessions` (labels, turns, tool calls, usage by model, `subscribes_to`), `scheduled_tasks`, `sidebar` and a `truncated` list of strings; every flag and the split read this |
+| `GET /v1/usage?days=N` | the same | spend today, over 7 and 30 days; each top-level session tree's cost by model; each session's `child_usage[]` |
 | Codex rollouts, `~/.omnigent/codex-native/*/codex-home/sessions/` | each host that ran Codex | the newest rate-limit snapshot, per window (5h, weekly) |
 
-A source that does not answer leaves its sections out, and the report's `Left out` lists
-each one with why. Run it on the server host for the full report, and on another host for
-its own Codex limits. Tokens and per-model numbers are each session's lifetime totals for
-the trees active in the window; Claude harnesses record cost but no tokens. A tree's cost
-is the API's subtree sum, and its root cost the root session alone. The API lists only
-unarchived top-level sessions, so an archived tree's cost is its sessions' sum from the
-database, and without the database an archived tree is missing.
+There is no database route: the report runs from any logged-in host and holds no SQL and no
+credentials. A source that does not answer leaves its sections out, and the report's `Left out`
+lists each one with why. A section the server cut at `--max-sessions` comes back in `truncated`
+and prints under "Truncated by the server" as a gap, never as zeros: raise the cap or narrow
+`--days`. Tokens and per-model numbers are each session's lifetime totals for the sessions the
+server returned; Claude harnesses record cost but no tokens. A tree's cost is the API's subtree
+sum, and the API lists only unarchived top-level sessions, so an archived tree is missing.
+`SUBSCRIPTION_AMPLIFICATION` is computed from each session's `subscribes_to` among the returned
+sessions, and `SIDEBAR_NOISE` from `sidebar.from_scheduled_tasks`. `--days` is 1 to 90, the longest
+window the server serves.
 
 ## Splitting sessions
 
@@ -42,16 +45,17 @@ label key (and by each value when there are several). `--values FILE` takes the 
 worker, verifier, from the `omni.role` label or a word of the title), shows sessions, cost, tokens
 where recorded, turns, wall time, tool calls and the share of calls that went to the split's tool.
 One call of a tool that runs code can do the work of several direct calls, so raw call counts are not
-comparable across sides. Needs the database: without it the split is left out.
+comparable across sides. Needs the telemetry call: without it the split is left out.
 
 ## Cloud sessions, children and unpriced tokens
 
 `claude-cloud` sessions are their own table: cost, models, status (a failed session still counts what
-the server recorded) and, under each, the usage its `codex` or `agy` children posted
-(`usage.child_usage`, written by `cloud_verifier.py` where the deployment sets
-`OMNIGENT_CHILD_USAGE_URL`). A Gemini (`antigravity-native`) session with tokens and no cost is listed
-under "Tokens with no price" instead of showing a bare $0. The SQL for labels, tool calls and turns
-reads columns and enum codes taken from the server's source, not checked on a live server.
+the server recorded) and, under each, the usage its `codex` or `agy` children posted. That is read
+back from `GET /v1/usage` `sessions[].child_usage[]`, which `cloud_verifier.py` fills by posting to
+`POST /v1/sessions/{id}/child-usage` where the deployment sets `OMNIGENT_SERVER_URL`. The server adds
+child usage into neither cost nor models, and the report does not either, so nothing is counted
+twice: the table shows it beside its parent. A Gemini (`antigravity-native`) session with tokens and
+no cost is listed under "Tokens with no price" instead of showing a bare $0.
 
 ## Flags
 

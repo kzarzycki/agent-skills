@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
-"""Omnigent spend, tokens and anomaly flags over the last N days, from three sources.
+"""Omnigent spend, tokens and anomaly flags over the last N days, from the server's API.
 
-    python3 scripts/omnigent_telemetry.py [--days N] [--json] [--html PATH] [--db-container NAME]
+    python3 scripts/omnigent_telemetry.py [--days N] [--max-sessions N] [--json] [--html PATH]
 
-- The Omnigent API (any logged-in host): ``GET /v1/usage?days=N`` gives spend today, over 7 and 30
-  days, and each top-level session tree's cost by model. Login and token refresh are
-  ``omnigent-agents``' ``omnigent_agent.py``, a sibling skill in this package.
-- The server's Postgres, through ``docker exec <container> psql`` (default container
-  ``omnigent-postgres-1``): daily cost, tokens by model, each root tree's sub-agents, nested
-  Codex sub-agents, compactions and items inherited from a fork, live subscriptions and
-  scheduled-task runs. Unreachable, the report names the sections it left out and why.
+- ``GET /v1/usage/telemetry?since=&until=&max_sessions=``: daily cost, models, sessions (labels, turns,
+  tool calls, usage by model, sub-agent and fork counts) and scheduled tasks, as the server counted
+  them. A section it cut at ``max_sessions`` comes back in ``truncated`` and is shown as a gap, never
+  as zeros.
+- ``GET /v1/usage?days=N``: spend today, over 7 and 30 days, each top-level tree's cost by model, and
+  each session's ``child_usage[]`` (what a verifier's ``codex`` or ``agy`` posted). The server adds
+  child usage into neither cost nor models, and the report shows it beside its parent session only.
 - Local Codex rollout files: the newest rate-limit snapshot.
 
-The window is the last N UTC days, today included, as ``/v1/usage`` counts its 7 and 30 days.
-Token and per-model numbers are each session's lifetime totals, for the sessions of the trees
-active in the window. Exit 0 whenever a report is printed. Stdlib only; ``session_usage``
-blobs decode with ``zstandard`` when importable, else the ``zstd`` CLI.
+Login and token refresh are ``omnigent-agents``' ``omnigent_agent.py``, a sibling skill in this
+package. There is no SQL and no database credential. The window is the last N UTC days, today
+included. Exit 0 whenever a report is printed. Stdlib only.
 """
 
 from __future__ import annotations
@@ -26,7 +25,6 @@ import html
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -37,25 +35,14 @@ sys.dont_write_bytecode = True  # no __pycache__ left in the sibling skill's fol
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "omnigent-agents" / "scripts"))
 from omnigent_agent import Fail, Omnigent
 
-DB_CONTAINER = "omnigent-postgres-1"
-# /v1/usage builds its window on request: slower than the 30 s of any other call
+# /v1/usage and /v1/usage/telemetry build their window on request: slower than the 30 s of any other call
 USAGE_SECONDS = 180.0
+MAX_DAYS = 90  # the longest window GET /v1/usage/telemetry serves
+MAX_SESSIONS = 500  # sessions the telemetry call returns before it reports the rest as truncated
 ROLLOUTS = "~/.omnigent/codex-native/*/codex-home/sessions/*/*/*/rollout-*.jsonl"
 ROLLOUT_FILES = 15  # newest rollouts scanned for a populated rate-limit snapshot
 TOP_TREES = 15  # trees in the text and HTML tables; --json has all
 
-# Enum codes from Omnigent's omnigent/db/enum_codecs.py.
-COMPACTION = 6  # conversation_items.type
-# conversation_items.type, ITEM_TYPE in the server's enum_codecs.py (as its reviewer read it: not
-# checked here against a server): message 1, function_call 2, reasoning 4, native_tool 7.
-MESSAGE, FUNCTION_CALL, NATIVE_TOOL = 1, 2, 7
-CALL_CODES = f"{FUNCTION_CALL}, {NATIVE_TOOL}"
-# A function_call's `name` is top level; a native_tool is {"item": {"type": ...}} with none. A row with
-# neither is left out, since json_object_agg refuses a NULL key.
-TOOL_NAME = "coalesce(i.data::json->>'name', i.data::json->'item'->>'type')"
-FAILED_SESSION = 4  # omnigent_conversation_metadata.live_status
-RUN_SUCCEEDED, RUN_FAILED, RUN_SKIPPED = 3, 4, 5  # scheduled_task_runs.status
-LIVE = {1: "idle", 2: "running", 3: "waiting", 4: "failed"}
 
 # Flag thresholds: a flag fires at its threshold and stays quiet below it.
 SUBAGENTS = 25  # sub-agents in one root tree
@@ -70,11 +57,10 @@ GEMINI_AGENT = "antigravity-native"
 ROLES = ("lead", "worker", "verifier")  # `omni.role` label values, else a word of the title
 PASS = re.compile(r"(?:-p|\bpass\s*)(\d+)\b", re.IGNORECASE)
 
-DB_SECTIONS = (
+API_SECTIONS = (
     "daily cost",
     "tokens by model",
     "session trees' sub-agents, nested Codex sub-agents, compactions and forked items",
-    "subscriptions",
     "scheduled tasks",
     "anomaly flags",
 )
@@ -83,114 +69,42 @@ DB_SECTIONS = (
 # --- sources ---------------------------------------------------------------------------------
 
 
-def psql(container: str, sql: str) -> list:
-    """One query's rows as a JSON list, so no row is split on a delimiter."""
-    out = subprocess.run(
-        ["docker", "exec", container, "psql", "-U", "omnigent", "-d", "omnigent", "-At"]
-        + ["-v", "ON_ERROR_STOP=1", "-c", f"SELECT coalesce(json_agg(t), '[]') FROM ({sql}) t"],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
+def fetch_telemetry(client: Omnigent, since: int, until: int, max_sessions: int) -> dict:
+    """``GET /v1/usage/telemetry`` for the window, as the report's rows. No row is computed here."""
+    got = client.call(
+        "GET",
+        f"/v1/usage/telemetry?since={since}&until={until}&max_sessions={max_sessions}",
+        timeout=USAGE_SECONDS,
     )
-    if out.returncode:
-        raise Fail(out.stderr.strip() or f"psql exited {out.returncode}")
-    return json.loads(out.stdout)
-
-
-def unzstd(blob: bytes) -> bytes:
-    try:
-        import zstandard
-    except ImportError:
-        return subprocess.run(
-            ["zstd", "-d", "-q", "-c"], input=blob, capture_output=True, check=True
-        ).stdout
-    return zstandard.ZstdDecompressor().decompressobj().decompress(blob)
-
-
-def decode_usage(hex_blob: str | None) -> dict:
-    """A ``session_usage`` blob: NUL, a codec byte (0 raw, 1 zstd), then JSON; or legacy plain JSON."""
-    if not hex_blob:
-        return {}
-    raw = bytes.fromhex(hex_blob)
-    if raw[:1] != b"\x00":
-        return json.loads(raw)
-    return json.loads(unzstd(raw[2:]) if raw[1:2] == b"\x01" else raw[2:])
-
-
-def fetch_db(container: str, since: int) -> dict:
-    trees = f"SELECT root_conversation_id FROM conversations WHERE updated_at >= {since}"
-    db = {
-        "sessions": psql(
-            container,
-            f"""SELECT encode(c.id, 'hex') AS id, encode(c.parent_conversation_id, 'hex') AS parent_id,
-              encode(c.root_conversation_id, 'hex') AS root_id, c.title, c.created_at, c.updated_at,
-              c.archived, c.next_position AS items, a.name AS agent, h.name AS host,
-              m.workspace, m.live_status, m.sub_agent_name,
-              (SELECT coalesce(json_object_agg(l.key, l.value), '{{}}') FROM conversation_labels l
-                 WHERE l.conversation_id = c.id AND l.workspace_id = c.workspace_id) AS labels,
-              (SELECT coalesce(json_object_agg(n, k), '{{}}') FROM (
-                 SELECT {TOOL_NAME} AS n, count(*) AS k FROM conversation_items i
-                 WHERE i.conversation_id = c.id AND i.workspace_id = c.workspace_id
-                   AND i.type IN ({CALL_CODES}) AND {TOOL_NAME} IS NOT NULL GROUP BY 1) q) AS tool_calls,
-              (SELECT count(*) FROM conversation_items i WHERE i.conversation_id = c.id
-                 AND i.workspace_id = c.workspace_id AND i.type = {MESSAGE}
-                 AND i.data::json->>'role' = 'user') AS turns,
-              encode(m.session_usage, 'hex') AS usage,
-              (SELECT count(*) FROM conversation_items i WHERE i.conversation_id = c.id
-                 AND i.workspace_id = c.workspace_id AND i.type = {COMPACTION}) AS compactions,
-              (SELECT count(*) FROM conversation_items i WHERE i.conversation_id = c.id
-                 AND i.workspace_id = c.workspace_id AND i.created_at < c.created_at) AS inherited
-            FROM conversations c
-            JOIN omnigent_conversation_metadata m ON m.id = c.id AND m.workspace_id = c.workspace_id
-            LEFT JOIN agents a ON a.id = c.agent_id AND a.workspace_id = c.workspace_id
-            LEFT JOIN hosts h ON h.host_id = m.host_id
-            WHERE c.root_conversation_id IN ({trees})""",
-        ),
-        "subscriptions": psql(
-            container,
-            """SELECT encode(s.subscriber_id, 'hex') AS subscriber_id, cs.title AS subscriber_title,
-              encode(s.target_id, 'hex') AS target_id, ct.title AS target_title
-            FROM session_subscriptions s
-            LEFT JOIN conversations cs ON cs.id = s.subscriber_id AND cs.workspace_id = s.workspace_id
-            LEFT JOIN conversations ct ON ct.id = s.target_id AND ct.workspace_id = s.workspace_id""",
-        ),
-        "tasks": psql(
-            container,
-            f"""SELECT encode(t.id, 'hex') AS id, t.name, t.state, t.workspace,
-              count(r.id) AS runs,
-              count(r.id) FILTER (WHERE r.status = {RUN_SUCCEEDED}
-                AND coalesce(m.live_status, 0) <> {FAILED_SESSION}) AS ok,
-              count(r.id) FILTER (WHERE r.status = {RUN_FAILED}
-                OR m.live_status = {FAILED_SESSION}) AS failed,
-              count(r.id) FILTER (WHERE r.status = {RUN_SKIPPED}) AS skipped,
-              (array_agg(r.error_code ORDER BY r.scheduled_at DESC)
-                FILTER (WHERE r.error_code IS NOT NULL))[1] AS last_error
-            FROM scheduled_tasks t
-            LEFT JOIN scheduled_task_runs r ON r.scheduled_task_id = t.id
-              AND r.workspace_id = t.workspace_id AND r.scheduled_at >= {since}
-            LEFT JOIN omnigent_conversation_metadata m ON m.id = r.conversation_id
-              AND m.workspace_id = r.workspace_id
-            GROUP BY t.id, t.name, t.state, t.workspace""",
-        ),
-        "sidebar": psql(
-            container,
-            """SELECT count(*) AS unarchived, count(*) FILTER (WHERE EXISTS (
-                SELECT 1 FROM scheduled_task_runs r
-                WHERE r.conversation_id = c.id AND r.workspace_id = c.workspace_id)) AS from_tasks
-            FROM conversations c WHERE NOT c.archived AND c.parent_conversation_id IS NULL""",
-        )[0],
-    }
-    for s in db["sessions"]:  # ponytail: one decode per blob; batch them if this gets slow
-        s["usage"] = decode_usage(s["usage"])
+    if not isinstance(got, dict):
+        raise Fail("the telemetry response is not a JSON object")
+    sessions = got.get("sessions") or []
+    for s in sessions:
+        s["usage"] = s.get("usage") or {}
         s["labels"] = s["labels"] if isinstance(s.get("labels"), dict) else {}
-    # Last, and the API right after it (main): today's row grows by the second while sessions run.
-    db["daily"] = psql(
-        container,
-        "SELECT day_utc AS day, sum(cost_usd) AS cost_usd FROM user_daily_cost"
-        f" WHERE day_utc >= '{day(since)}' GROUP BY day_utc ORDER BY day_utc",
-    )
-    return db
+        s["tool_calls"] = s["tool_calls"] if isinstance(s.get("tool_calls"), dict) else {}
+    models = [
+        {**m, "cache_read_tokens": m.get("cache_read_input_tokens") or 0}
+        for m in got.get("models") or []
+    ]
+    return {
+        "sessions": sessions,
+        "daily": got.get("daily_cost") or [],
+        "models": models,
+        "tasks": got.get("scheduled_tasks") or [],
+        "subscriptions": sum(len(s.get("subscribes_to") or []) for s in sessions),
+        "sidebar": got.get("sidebar"),
+        "truncated": got.get("truncated") or [],
+    }
+
+
+def child_usage_of(usage: dict | None) -> dict[str, list[dict]]:
+    """Each session's posted child usage from ``/v1/usage`` ``sessions[].child_usage[]``."""
+    return {
+        s["id"]: s["child_usage"]
+        for s in (usage or {}).get("sessions") or []
+        if isinstance(s.get("child_usage"), list) and s["child_usage"]
+    }
 
 
 def codex_rate_limits(pattern: str = ROLLOUTS) -> dict | None:
@@ -230,8 +144,13 @@ def window_start(days: int, now: float) -> int:
     return int((today - timedelta(days=days - 1)).timestamp())
 
 
+def num(x: float | None) -> float:
+    """A server cost for arithmetic: `null` (unpriced) is 0 here, and stays `None` in the rows shown."""
+    return float(x or 0.0)
+
+
 def cost(usage: dict) -> float:
-    return float(usage.get("total_cost_usd") or 0.0)
+    return float(usage.get("cost_usd") or 0.0)
 
 
 def role_of(s: dict) -> str:
@@ -243,15 +162,19 @@ def role_of(s: dict) -> str:
     return next((r for r in ROLES if r in words), "")
 
 
+def has_tokens(usage: dict) -> bool:
+    return usage.get("input_tokens") is not None or usage.get("output_tokens") is not None
+
+
 def tokens_of(usage: dict) -> int:
-    return int(usage.get("total_tokens") or 0)
+    return int((usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0))
 
 
 def side_metrics(members: list[dict], tool: str | None) -> dict:
     """One side's numbers. `tool_calls` is {name: count} per session; `tool` the split's tool, if any."""
     calls = sum(sum((s.get("tool_calls") or {}).values()) for s in members)
     own = sum((s.get("tool_calls") or {}).get(tool, 0) for s in members) if tool else 0
-    priced = [s for s in members if s["usage"].get("total_tokens") is not None]
+    priced = [s for s in members if has_tokens(s["usage"])]
     return {
         "sessions": len(members),
         "cost_usd": sum(cost(s["usage"]) for s in members),
@@ -317,15 +240,13 @@ def split_of(sessions: list[dict], tool: str | None, label: str | None) -> dict 
     return {"kind": kind, "key": key, "sides": out}
 
 
-def cloud_of(sessions: list[dict]) -> dict:
-    """Cloud sessions as their own group: cost, models and the usage their child CLIs reported."""
+def cloud_of(sessions: list[dict], kids: dict[str, list[dict]]) -> dict:
+    """Cloud sessions as their own group: cost, models and the usage their child CLIs posted.
+
+    `kids` is `/v1/usage`'s child usage by parent id. It is shown beside the parent and never added to
+    its cost, as the server adds it to nothing.
+    """
     group = [s for s in sessions if s.get("agent") == CLOUD_AGENT]
-    kids: dict[str, list[dict]] = defaultdict(list)
-    for (
-        s
-    ) in sessions:  # child usage posted under a parent: usage.child_usage = [{harness, model, ...}]
-        for c in s["usage"].get("child_usage") or []:
-            kids[s["id"]].append(c)
     rows = []
     for s in group:
         by = s["usage"].get("by_model") or {}
@@ -334,9 +255,9 @@ def cloud_of(sessions: list[dict]) -> dict:
             {
                 "id": s["id"],
                 "title": s["title"] or "",
-                "cost_usd": cost(s["usage"]),
+                "cost_usd": s["usage"].get("cost_usd"),
                 "models": sorted(by),
-                "status": LIVE.get(s.get("live_status"), ""),
+                "status": s.get("live_status") or "",
                 "children": [
                     {
                         "harness": c.get("harness") or "?",
@@ -346,14 +267,14 @@ def cloud_of(sessions: list[dict]) -> dict:
                     }
                     for c in children
                 ],
-                "child_cost_usd": sum(float(c.get("cost_usd") or 0) for c in children),
+                "child_cost_usd": sum(num(c.get("cost_usd")) for c in children),
             }
         )
     return {
         "sessions": len(rows),
-        "cost_usd": sum(r["cost_usd"] for r in rows),
+        "cost_usd": sum(num(r["cost_usd"]) for r in rows),
         "child_cost_usd": sum(r["child_cost_usd"] for r in rows),
-        "rows": sorted(rows, key=lambda r: -r["cost_usd"]),
+        "rows": sorted(rows, key=lambda r: -num(r["cost_usd"])),
     }
 
 
@@ -379,18 +300,21 @@ def models_of(sessions: list[dict]) -> list[dict]:
         for name, u in (s["usage"].get("by_model") or {}).items():
             row = rows[name]
             row["sessions"] += 1
-            row["cost_usd"] += cost(u)
+            if u.get("cost_usd") is not None:
+                row["cost_usd"] = num(row["cost_usd"]) + cost(u)
+            elif not row["sessions"] - 1:  # first sighting of an unpriced model stays unpriced
+                row["cost_usd"] = None
             row["input_tokens"] += u.get("input_tokens") or 0
             row["cache_read_tokens"] += u.get("cache_read_input_tokens") or 0
             row["output_tokens"] += u.get("output_tokens") or 0
     return sorted(
         ({"model": m, **r} for m, r in rows.items()),
-        key=lambda r: (-r["cost_usd"], -r["cache_read_tokens"]),
+        key=lambda r: (-num(r["cost_usd"]), -r["cache_read_tokens"]),
     )
 
 
 def trees_of(api_sessions: list[dict], sessions: list[dict] | None, since: int) -> list[dict]:
-    """One row per root tree: cost from the API (summed over its subtree), counts from the DB."""
+    """One row per root tree: cost from the API (summed over its subtree), counts from the telemetry call."""
     by_root: dict[str, list[dict]] = defaultdict(list)
     for s in sessions or []:
         by_root[s["root_id"] or s["id"]].append(s)
@@ -404,8 +328,10 @@ def trees_of(api_sessions: list[dict], sessions: list[dict] | None, since: int) 
         row = {
             "id": rid,
             "title": a.get("title") or root.get("title") or "",
-            "updated_at": max([a.get("updated_at") or 0] + [s["updated_at"] for s in members]),
-            "cost_usd": a["cost_usd"] if a else sum(cost(s["usage"]) for s in members),
+            "updated_at": max(
+                [a.get("updated_at") or 0] + [s.get("updated_at") or 0 for s in members]
+            ),
+            "cost_usd": a.get("cost_usd") if a else sum(cost(s["usage"]) for s in members),
             "models": a.get("models") or {},
         }
         if sessions is not None:
@@ -413,20 +339,20 @@ def trees_of(api_sessions: list[dict], sessions: list[dict] | None, since: int) 
                 host=root.get("host") or "",
                 agent=root.get("agent") or "",
                 workspace=root.get("workspace") or "",
-                status=LIVE.get(root.get("live_status"), ""),
-                root_cost_usd=cost(root.get("usage") or {}),
+                status=root.get("live_status") or "",
+                root_cost_usd=(root.get("usage") or {}).get("cost_usd"),
                 subagents=len(children),
                 nested_codex=sum(1 for s in children if s.get("sub_agent_name") == "Codex"),
-                items=sum(s["items"] or 0 for s in members),
-                inherited=root.get("inherited") or 0,
-                compactions=sum(s["compactions"] for s in members),
-                tokens=sum(s["usage"].get("total_tokens") or 0 for s in members),
+                items=sum(s.get("items") or 0 for s in members),
+                inherited=root.get("inherited_items") or 0,
+                compactions=sum(s.get("compactions") or 0 for s in members),
+                tokens=sum(tokens_of(s["usage"]) for s in members),
                 late_verifiers=sorted(
                     s["title"] for s in children if verifier_pass(s["title"]) >= VERIFIER_PASS
                 ),
             )
         rows.append(row)
-    return sorted(rows, key=lambda r: -r["cost_usd"])
+    return sorted(rows, key=lambda r: -num(r["cost_usd"]))
 
 
 def flags_of(db: dict, trees: list[dict], since: int) -> list[str]:
@@ -436,7 +362,7 @@ def flags_of(db: dict, trees: list[dict], since: int) -> list[str]:
         if t["subagents"] >= SUBAGENTS or t["nested_codex"] >= NESTED_CODEX:
             flags.append(
                 f"SUBAGENT_EXPLOSION {name}: {t['subagents']} sub-agents, {t['nested_codex']}"
-                f" nested Codex, ${t['cost_usd']:.2f}"
+                f" nested Codex, {usd(t['cost_usd'])}"
             )
         if t["late_verifiers"]:
             flags.append(
@@ -444,33 +370,37 @@ def flags_of(db: dict, trees: list[dict], since: int) -> list[str]:
                 f" >= {VERIFIER_PASS} ({', '.join(t['late_verifiers'][:3])})"
             )
     for s in db["sessions"]:
-        if s["created_at"] >= since and (s["inherited"] or 0) >= INHERITED_ITEMS:
+        if (s.get("created_at") or 0) >= since and (
+            s.get("inherited_items") or 0
+        ) >= INHERITED_ITEMS:
             flags.append(
                 f"FORK_BLOAT {s['id'][:8]} '{(s['title'] or '')[:40]}': started with"
-                f" {s['inherited']} inherited items, {(s['items'] or 0) - s['inherited']} its own"
+                f" {s['inherited_items']} inherited items, {(s.get('items') or 0) - s['inherited_items']} its own"
             )
+    titles = {s["id"]: s.get("title") or "" for s in db["sessions"]}
     by_target: dict[str, list[dict]] = defaultdict(list)
-    for e in db["subscriptions"]:
-        by_target[e["target_id"]].append(e)
+    for s in db[
+        "sessions"
+    ]:  # `subscribes_to`: the sessions this one wakes on, when they end a turn
+        for target in s.get("subscribes_to") or []:
+            by_target[target].append(s)
     for target, edges in by_target.items():
         if len(edges) >= SUBSCRIBERS:
-            subs = ", ".join(
-                f"{e['subscriber_id'][:8]} '{(e['subscriber_title'] or '')[:24]}'" for e in edges
-            )
+            subs = ", ".join(f"{e['id'][:8]} '{(e.get('title') or '')[:24]}'" for e in edges)
             flags.append(
-                f"SUBSCRIPTION_AMPLIFICATION {target[:8]} '{(edges[0]['target_title'] or '')[:40]}'"
+                f"SUBSCRIPTION_AMPLIFICATION {target[:8]} '{titles.get(target, '')[:40]}'"
                 f" wakes {len(edges)} subscribers: {subs}"
             )
     for t in db["tasks"]:
-        if t["failed"] >= CRON_FAILURES:
+        if t.get("failed", 0) >= CRON_FAILURES:
             flags.append(
-                f"CRON_FAIL_LOOP {t['id'][:8]} '{t['name']}': {t['failed']}/{t['runs']} runs failed"
-                f" (last error {t['last_error'] or 'none recorded'})"
+                f"CRON_FAIL_LOOP {t['id'][:8]} '{t['name']}': {t['failed']}/{t.get('runs', 0)} runs failed"
+                f" (last error {t.get('last_error') or 'none recorded'})"
             )
-    side = db["sidebar"]
-    if side["from_tasks"] >= SIDEBAR_SESSIONS:
+    side = db["sidebar"] or {"from_scheduled_tasks": 0, "unarchived": 0}
+    if side["from_scheduled_tasks"] >= SIDEBAR_SESSIONS:
         flags.append(
-            f"SIDEBAR_NOISE {side['from_tasks']} of {side['unarchived']} unarchived top-level"
+            f"SIDEBAR_NOISE {side['from_scheduled_tasks']} of {side['unarchived']} unarchived top-level"
             " sessions were created by scheduled-task runs"
         )
     return flags
@@ -492,14 +422,15 @@ def build(
     api_sessions = (usage or {}).get("sessions") or []
     trees = trees_of(api_sessions, db["sessions"] if db else None, since)
     if db:
-        models = models_of(db["sessions"])
+        models = db.get("models") or models_of(db["sessions"])
     else:  # cost only: the API carries no tokens
-        totals: dict[str, float] = defaultdict(float)
+        totals: dict[str, float | None] = {}
         for t in trees:
             for m, c in t["models"].items():
-                totals[m] += c
+                if c is not None or m not in totals:
+                    totals[m] = None if c is None else num(totals.get(m)) + c
         models = [
-            {"model": m, "cost_usd": c} for m, c in sorted(totals.items(), key=lambda x: -x[1])
+            {"model": m, "cost_usd": c} for m, c in sorted(totals.items(), key=lambda x: -num(x[1]))
         ]
     if rate_limits is None:
         left_out.setdefault("Codex rate limits", "no Codex rollout with a rate-limit snapshot here")
@@ -512,12 +443,15 @@ def build(
         "rate_limits": rate_limits,
         "models": models,
         "trees": trees,
-        "tasks": sorted(db["tasks"], key=lambda t: (-t["failed"], -t["runs"])) if db else None,
-        "subscriptions": len(db["subscriptions"]) if db else None,
-        "sidebar": db["sidebar"] if db else None,
+        "tasks": sorted(db["tasks"], key=lambda t: (-t.get("failed", 0), -t.get("runs", 0)))
+        if db
+        else None,
+        "subscriptions": db["subscriptions"] if db else None,
+        "sidebar": db.get("sidebar") if db else None,
         "flags": flags_of(db, trees, since) if db else None,
         "split": split_of(db["sessions"], split_tool, split_label) if db else None,
-        "cloud": cloud_of(db["sessions"]) if db else None,
+        "cloud": cloud_of(db["sessions"], child_usage_of(usage)) if db else None,
+        "truncated": [str(t) for t in (db or {}).get("truncated") or []],
         "unpriced": [
             {"id": s["id"], "title": s["title"], "note": n}
             for s in (db["sessions"] if db else [])
@@ -563,7 +497,7 @@ def model_cells(m: dict) -> list[str]:
 MODEL_HEAD = ["model", "sessions", "cost", "uncached in", "cache read", "output"]
 TREE_HEAD = ["root", "updated", "host", "harness", "sub-agents (nested Codex)", "items (forked)"]
 TREE_HEAD += ["compactions", "cost (root)", "title"]
-TASK_HEAD = ["task", "name", "runs", "ok", "failed", "skipped", "last error", "workspace"]
+TASK_HEAD = ["task", "name", "runs", "succeeded", "failed", "skipped", "last error", "workspace"]
 
 
 def tree_cells(t: dict) -> list[str]:
@@ -584,8 +518,12 @@ def tree_cells(t: dict) -> list[str]:
 
 
 def task_cells(t: dict) -> list[str]:
-    cells = [t["id"][:8], t["name"], t["runs"], t["ok"], t["failed"], t["skipped"]]
-    return [str(c) for c in cells] + [t["last_error"] or "", t["workspace"] or ""]
+    cells = [
+        t["id"][:8],
+        t["name"],
+        *(t.get(k, 0) for k in ("runs", "succeeded", "failed", "skipped")),
+    ]
+    return [str(c) for c in cells] + [t.get("last_error") or "", t.get("workspace") or ""]
 
 
 def split_rows(r: dict) -> list[list[str]]:
@@ -643,7 +581,7 @@ def cloud_rows(r: dict) -> list[list[str]]:
 
 
 def daily_total(r: dict) -> float:
-    return sum(d["cost_usd"] for d in r["daily"])
+    return sum(num(d["cost_usd"]) for d in r["daily"])
 
 
 def text(r: dict) -> str:
@@ -656,7 +594,7 @@ def text(r: dict) -> str:
             f" 30 days {usd(s['cost_last_30d'])}"
         )
     if r["daily"] is not None:
-        out.append(f"Daily cost (DB), window total {usd(daily_total(r))}:")
+        out.append(f"Daily cost (telemetry), window total {usd(daily_total(r))}:")
         out += [f"  {d['day']}  {usd(d['cost_usd']):>10}" for d in r["daily"]]
     if r["rate_limits"]:
         rl = r["rate_limits"]
@@ -691,14 +629,18 @@ def text(r: dict) -> str:
         out += ["", "Tokens with no price (not $0):"]
         out += [f"  {u['id'][:8]} {u['title'][:40]}: {u['note']}" for u in r["unpriced"]]
     if r["tasks"] is not None:
-        table("Scheduled tasks", TASK_HEAD, [task_cells(t) for t in r["tasks"] if t["runs"]])
-        out.append(
-            f"\nLive subscriptions: {r['subscriptions']}. Unarchived top-level sessions:"
-            f" {r['sidebar']['unarchived']}, {r['sidebar']['from_tasks']} from scheduled runs."
-        )
+        table("Scheduled tasks", TASK_HEAD, [task_cells(t) for t in r["tasks"] if t.get("runs")])
+        if r["subscriptions"] is not None and r["sidebar"]:
+            out.append(
+                f"\nLive subscriptions: {r['subscriptions']}. Unarchived top-level sessions:"
+                f" {r['sidebar']['unarchived']}, {r['sidebar']['from_scheduled_tasks']} from scheduled runs."
+            )
     if r["flags"] is not None:
         out.append(f"\nFlags ({len(r['flags'])}):")
         out += [f"  {f}" for f in r["flags"]] or ["  none"]
+    if r.get("truncated"):
+        out.append("\nTruncated by the server (a gap in the numbers above, not zeros):")
+        out += [f"  {t}" for t in r["truncated"]]
     if r["left_out"]:
         out.append("\nLeft out:")
         out += [f"  {k}: {why}" for k, why in r["left_out"].items()]
@@ -734,7 +676,7 @@ def page(r: dict) -> str:
         cards += [("Today", s["cost_today"]), ("7 days", s["cost_last_7d"])]
         cards.append(("30 days", s["cost_last_30d"]))
     if r["daily"] is not None:
-        cards.append((f"{w['days']}-day window (DB)", daily_total(r)))
+        cards.append((f"{w['days']}-day window", daily_total(r)))
     body = [
         f"<h1>Omnigent telemetry, last {w['days']} days</h1>",
         f"<div class=muted>{e(w['from'])} to {e(w['to'])} UTC</div>",
@@ -753,11 +695,11 @@ def page(r: dict) -> str:
         )
         body.append(f"<p>Codex rate limits ({e(str(rl['timestamp']))}): {e(windows)}</p>")
     if r["daily"]:
-        top = max(d["cost_usd"] for d in r["daily"]) or 1
+        top = max(num(d["cost_usd"]) for d in r["daily"]) or 1
         body.append("<h2>Daily spend</h2><div class=bars>")
         for d in r["daily"]:
             body.append(
-                f"<span>{e(d['day'])}</span><div class=bar style='width:{100 * d['cost_usd'] / top:.1f}%'>"
+                f"<span>{e(d['day'])}</span><div class=bar style='width:{100 * num(d['cost_usd']) / top:.1f}%'>"
                 f"</div><span>{usd(d['cost_usd'])}</span>"
             )
         body.append("</div>")
@@ -796,6 +738,10 @@ def page(r: dict) -> str:
         body.append("</ul>")
     if r["tasks"] is not None:
         table("Scheduled tasks", TASK_HEAD, [task_cells(t) for t in r["tasks"] if t["runs"]])
+    if r.get("truncated"):
+        body.append("<h2>Truncated by the server (a gap, not zeros)</h2><ul>")
+        body += [f"<li>{e(t)}</li>" for t in r["truncated"]]
+        body.append("</ul>")
     if r["left_out"]:
         body.append("<h2>Left out</h2><ul>")
         body += [f"<li>{e(k)}: {e(why)}</li>" for k, why in r["left_out"].items()]
@@ -825,7 +771,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true", help="print the report as JSON")
     p.add_argument("--html", metavar="PATH", help="also write a self-contained HTML page")
     p.add_argument(
-        "--db-container", default=DB_CONTAINER, help=f"Postgres container ({DB_CONTAINER})"
+        "--max-sessions",
+        type=int,
+        default=MAX_SESSIONS,
+        help=f"sessions the server returns before it truncates ({MAX_SESSIONS})",
     )
     p.add_argument(
         "--split-tool", help="compare sessions that called this tool with those that did not"
@@ -843,20 +792,19 @@ def main(argv: list[str] | None = None) -> int:
         args.split_label = args.split_label or vals.get("split_label")
     if args.split_tool and args.split_label:
         p.error("--split-tool and --split-label are one split each: pick one")
-    if args.days < 1:
-        p.error("--days must be at least 1")
+    if not 1 <= args.days <= MAX_DAYS:
+        p.error(f"--days must be 1 to {MAX_DAYS}: the server serves at most {MAX_DAYS} days")
     now = time.time()
     left_out: dict[str, str] = {}
     usage = db = None
-    try:  # first: its daily cost and the API's are read under a second apart
-        db = fetch_db(args.db_container, window_start(args.days, now))
-    except (Fail, OSError, ValueError, subprocess.SubprocessError) as e:
-        reason = f"Postgres via `docker exec {args.db_container}` unreachable: {str(e)[:200]}"
-        left_out.update(dict.fromkeys(DB_SECTIONS, reason))
+    client = Omnigent(args.server)
+    try:  # first: its daily cost and /v1/usage's are read under a second apart
+        db = fetch_telemetry(client, window_start(args.days, now), int(now), args.max_sessions)
+    except (Fail, OSError, ValueError) as e:
+        why = f"GET /v1/usage/telemetry failed: {str(e)[:200]}"
+        left_out.update(dict.fromkeys(API_SECTIONS, why))
     try:
-        usage = Omnigent(args.server).call(
-            "GET", f"/v1/usage?days={args.days}", timeout=USAGE_SECONDS
-        )
+        usage = client.call("GET", f"/v1/usage?days={args.days}", timeout=USAGE_SECONDS)
     except (Fail, OSError, ValueError) as e:
         left_out["spend and session-tree cost (API)"] = str(e)
     r = build(
