@@ -178,7 +178,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    owner as a scope change (SKILL.md, Approvals and proof: rewrite the issue, then
    `needs-owner`), since a verifier pass on a narrowed spec only finds what the report
    already said. Then write the PR body's `Spec deviations:` line: `none`, or each deviation
-   with a link to the owner's decision (an issue comment URL or `#n`). Before each pass, rerun on the head every
+   with a link to the owner's decision (an issue comment URL or `#n`); `loop.py brief` refuses a PR body without that line, or with a deviation that has no link. Before each pass, rerun on the head every
    proof the spec's acceptance needs whose inputs the round changed, since the verifier
    counts it as missing and the pass is spent on it; a proof is stale by its inputs, not
    because its log names another commit (SKILL.md, A check runs only if it can fail because of the change, R4).
