@@ -8942,8 +8942,7 @@ def pair(text: str) -> tuple[str, Path]:
 
 
 def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = None) -> list[str]:
-    """The registry's lines, read under an exclusive lock; with ``edit``, rewritten to
-    ``edit(lines)`` under the same lock, so a ``run`` arming while the supervisor drops another
+    """The registry's lines; with ``edit``, rewritten to ``edit(lines)`` under an exclusive lock, so a ``run`` arming while the supervisor drops another
     session loses neither line. The lock is on a sidecar ``<registry>.lock`` file, since the
     registry itself is replaced, and the new text goes to a temp file beside it, then
     ``os.replace``: a writer that dies or fails mid-write leaves the old file whole, never a
@@ -8953,6 +8952,7 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
             return path.read_text().splitlines()  # a replace is atomic: a read sees a whole file
         except FileNotFoundError:
             return []
+    path = path.resolve()  # a replace of a symlink would swap the link, not its target
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path.with_name(path.name + ".lock"), "a") as lock:  # closing releases the lock
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -8964,6 +8964,8 @@ def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = No
         tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         try:
             tmp.write_text("".join(line + "\n" for line in lines))
+            if path.exists():
+                tmp.chmod(path.stat().st_mode & 0o7777)
             os.replace(tmp, path)
         finally:
             tmp.unlink(missing_ok=True)

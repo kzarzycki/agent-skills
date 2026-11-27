@@ -15632,20 +15632,42 @@ def test_parallel_registry_writers_keep_every_entry_in_a_file_that_parses_2406(
     tmp_path: Path,
 ) -> None:
     registry = tmp_path / "registry"
+    go = tmp_path / "go"
+    # every worker imports first, then waits for `go`, so their writes really overlap
     code = (
-        "import importlib.util,sys;from pathlib import Path;"
+        "import importlib.util,sys,time;from pathlib import Path;"
         f"s=importlib.util.spec_from_file_location('o',{str(spec.origin)!r});"
         "m=importlib.util.module_from_spec(s);sys.modules['o']=m;s.loader.exec_module(m);"
-        "m.arm(Path(sys.argv[1]),'s'+sys.argv[2],Path('r'+sys.argv[2]+'.md'))"
+        "g=Path(sys.argv[3]);"
+        "[time.sleep(0.001) for _ in iter(lambda: not g.exists(), False)];"
+        "[m.arm(Path(sys.argv[1]),f's{sys.argv[2]}_{k}',Path(f'r{sys.argv[2]}_{k}.md'))"
+        " for k in range(8)]"
     )
-    n = 12
+    n = 8
     procs = [
-        subprocess.Popen([sys.executable, "-c", code, str(registry), str(i)]) for i in range(n)
+        subprocess.Popen([sys.executable, "-c", code, str(registry), str(i), str(go)])
+        for i in range(n)
     ]
+    time.sleep(1.5)
+    go.write_text("")
     assert [p.wait() for p in procs] == [0] * n
     owed, bad = omnigent_agent.registered(registry)
     assert bad == []
-    assert sorted(owed) == sorted(f"s{i}" for i in range(n))
+    assert sorted(owed) == sorted(f"s{i}_{k}" for i in range(n) for k in range(8))
+
+
+def test_a_registry_write_goes_through_a_symlink_and_keeps_the_file_mode_2406(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    omnigent_agent.arm(target, "s0", Path("r0.md"))
+    target.chmod(0o600)
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    omnigent_agent.arm(link, "s1", Path("r1.md"))
+    assert link.is_symlink()
+    assert "s1=" in target.read_text()
+    assert target.stat().st_mode & 0o777 == 0o600
 
 
 def test_a_registry_write_that_fails_midway_leaves_the_old_file_whole_2406(
