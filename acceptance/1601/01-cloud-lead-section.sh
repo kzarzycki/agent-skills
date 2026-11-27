@@ -48,4 +48,22 @@ before=${p3%%reaches only*}
 if printf '%s\n' "$before" | grep -q -F 'sys_session_send'; then
   miss "point 3: sys_session_send named as the tool to send the worker (a sibling is not a child)"
 fi
+
+# Point 3 names the verifier brief command that exists (loop.py brief), not the retired approvals.py one.
+printf '%s\n' "$p3" | grep -q -F 'loop.py brief' || miss "point 3: 'loop.py brief' is missing"
+if printf '%s\n' "$p3" | grep -q -F 'approvals.py brief'; then miss "point 3: names approvals.py brief, which no longer exists"; fi
+
+# The opening paragraph must not tell a cloud lead to end a sibling worker with sys_session_close
+# (point 2: it refuses a sibling); it may name it only with that refusal.
+if head -n 20 "$f" | grep -F 'sys_session_close' | grep -q -v -F 'refuses'; then
+  miss "opening paragraph: sys_session_close named without saying it refuses a sibling"
+fi
+
+# "replaces *Waiting* <above|below>" must point the way the **Waiting.** paragraph really lies.
+wl=$(grep -n -m1 '^\*\*Waiting\.\*\*' "$f" | cut -d: -f1 || true)
+sl=$(grep -n -x -F '## Cloud lead' "$f" | cut -d: -f1 || true)
+if [ -n "$wl" ] && [ -n "$sl" ]; then
+  want=below; [ "$wl" -lt "$sl" ] && want=above
+  printf '%s\n' "${points[3]:-}" | grep -q -F "*Waiting* $want" || miss "point 4: must say '*Waiting* $want' (the **Waiting.** paragraph is $want the section)"
+fi
 exit "$fail"
