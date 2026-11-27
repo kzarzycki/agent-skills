@@ -18,6 +18,9 @@ a subfolder are not checks and are skipped. Each check's own output passes throu
     PASS acceptance/7/01-ok.sh (0.1s)
     FAIL acceptance/7/02-broken.sh (2.3s)
 
+A check whose first lines say `# acceptance: live` needs a live environment (a cloud session, a server) and is
+skipped by `--all` with a `SKIP` line; run by its issue number it runs as any other.
+
 A file that cannot be started (no shebang, say) is a FAIL with the reason. `--all` runs every
 `acceptance/*/` folder in issue order, for the nightly. The last line is the total:
 `TOTAL <n> checks, <passed> passed, <failed> failed (<s>s)`.
@@ -91,6 +94,18 @@ def checks(folder: Path) -> list[Path]:
     )
 
 
+LIVE = re.compile(r"^#\s*acceptance:\s*live\b", re.IGNORECASE | re.MULTILINE)
+
+
+def live(check: Path) -> bool:
+    """Whether the check's first lines carry `# acceptance: live`: it needs a live environment (a cloud session, an
+    Omnigent server) that a scheduled run has not, so `--all` skips it. Run by its issue number, it runs as any other."""
+    try:
+        return bool(LIVE.search(check.read_text(errors="replace")[:1000]))
+    except OSError:
+        return False
+
+
 def issue_order(folder: Path) -> tuple[int, int, str]:
     """Numbered folders first, by number, then any other by name."""
     name = folder.name
@@ -157,6 +172,13 @@ def main(argv: list[str] | None = None) -> int:
         if not found:
             empty.append(folder)
             print(f"NONE {folder.relative_to(root).as_posix()}/ (no executable file)", flush=True)
+        if args.all:
+            for check in (c for c in found if live(c)):
+                print(
+                    f"SKIP {check.relative_to(root).as_posix()} (needs a live environment)",
+                    flush=True,
+                )
+            found = [c for c in found if not live(c)]
         for check in found:
             if run(check, root):
                 passed += 1

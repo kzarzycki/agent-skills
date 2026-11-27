@@ -4,4 +4,4 @@
 # is told to the lead once and a `needs-owner` question goes to the owner ahead of news; a branch with no events behaves
 # as before.
 set -e
-exec uv run pytest -q -p no:cacheprovider engineering/tests/test_omnigent_agent_events.py
+exec uv run pytest -q -p no:cacheprovider omnigent/tests/test_omnigent_agent_events.py

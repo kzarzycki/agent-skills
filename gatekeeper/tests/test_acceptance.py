@@ -134,6 +134,18 @@ def test_all_runs_every_folder_in_issue_order_and_exits_1_when_one_fails(repo: P
     ]
 
 
+def test_all_skips_a_live_check_and_a_named_issue_runs_it(repo: Path) -> None:
+    """#1386: the nightly has no live environment, so `--all` skips a `# acceptance: live` check, and a folder holding
+    only such checks is not an empty one; run by its number the check runs."""
+    check(repo, "acceptance/5/01-ok.sh", PASSING)
+    check(repo, "acceptance/6/live.sh", "#!/bin/sh\n# acceptance: live\nexit 3\n")
+    everything = acceptance(repo, "--all")
+    assert everything.returncode == 0, everything.stdout + everything.stderr
+    assert "SKIP acceptance/6/live.sh" in everything.stdout
+    assert verdicts(everything.stdout) == ["PASS acceptance/5/01-ok.sh"]
+    assert acceptance(repo, "6").returncode == 1
+
+
 def test_all_exits_0_when_every_folder_passes(repo: Path) -> None:
     check(repo, "acceptance/9/ok.sh", PASSING)
     check(repo, "acceptance/10/ok.sh", PASSING)

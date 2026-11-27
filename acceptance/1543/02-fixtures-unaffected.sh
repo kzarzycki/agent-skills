@@ -10,7 +10,7 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 probe=$(mktemp -d)
 trap 'rm -rf "$probe"' EXIT
-ln -s "$root/engineering/tests/conftest.py" "$probe/conftest.py"
+ln -s "$root/conftest.py" "$probe/conftest.py"
 
 cat > "$probe/test_environ_probe.py" <<'PY'
 import os
@@ -175,6 +175,7 @@ PY
 
 cd "$root"
 export PYTHONPATH="$root/engineering/tests${PYTHONPATH:+:$PYTHONPATH}" PROBE_1543_INHERITED=caller PYTEST_ADDOPTS=
+export PYTHONPATH="$root/gatekeeper/tests"
 pytest=(uv run env -u VIRTUAL_ENV python -m pytest -q --tb=short -p no:cacheprovider --rootdir "$probe")
-"${pytest[@]}" -p no:xdist "$probe/test_environ_probe.py"
+"${pytest[@]}" -n 0 "$probe/test_environ_probe.py"
 "${pytest[@]}" -n 2 --dist loadfile "$probe/test_environ_probe.py"

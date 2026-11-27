@@ -16,6 +16,6 @@ PY
 
 cd "$root"
 GIT_CONFIG_GLOBAL="$probe/gitconfig" PROBE_1543_GIT_CONFIG="$probe/gitconfig" \
-  PYTEST_ADDOPTS= uv run pytest -q --tb=short -p no:cacheprovider -p no:xdist \
-    engineering/tests/test_approvals.py::test_the_head_was_pushed_when_the_branchs_activity_last_names_it \
+  PYTEST_ADDOPTS= uv run pytest -q --tb=short -p no:cacheprovider -o addopts= \
+    gatekeeper/tests/test_approvals.py::test_the_head_was_pushed_when_the_branchs_activity_last_names_it \
     "$probe/test_env_after_undo.py"
