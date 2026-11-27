@@ -58,11 +58,14 @@ if printf '%s\n' "$p3" | grep -q -F 'approvals.py brief'; then miss "point 3: na
 if head -n 20 "$f" | grep -F 'sys_session_close' | grep -q -v -F 'refuses'; then
   miss "opening paragraph: sys_session_close named without saying it refuses a sibling"
 fi
+head -n 20 "$f" | grep -q -F 'sys_session_update(archived: true)' || miss "opening paragraph: the archive instruction 'sys_session_update(archived: true)' is missing"
 
 # "replaces *Waiting* <above|below>" must point the way the **Waiting.** paragraph really lies.
 wl=$(grep -n -m1 '^\*\*Waiting\.\*\*' "$f" | cut -d: -f1 || true)
 sl=$(grep -n -x -F '## Cloud lead' "$f" | cut -d: -f1 || true)
-if [ -n "$wl" ] && [ -n "$sl" ]; then
+if [ -z "$wl" ]; then
+  miss "point 4 points to the **Waiting.** paragraph, which is missing"
+elif [ -n "$sl" ]; then
   want=below; [ "$wl" -lt "$sl" ] && want=above
   printf '%s\n' "${points[3]:-}" | grep -q -F "*Waiting* $want" || miss "point 4: must say '*Waiting* $want' (the **Waiting.** paragraph is $want the section)"
 fi
