@@ -73,6 +73,7 @@ def rest_answers(**more: Any) -> dict[str, Any]:
             "committer": {"date": "2026-01-01T10:00:00Z"},
         },
         f"repos/o/r/git/matching-refs/heads/loop-gate/{TREE}-": [],
+        f"repos/o/r/git/matching-refs/loop/gate/{TREE}-": [],
         f"repos/o/r/commits/{HEAD}/statuses?per_page=100": [],
         f"repos/o/r/commits/{HEAD}/check-runs?per_page=100": {
             "check_runs": [{"name": "ci", "status": "queued"}]

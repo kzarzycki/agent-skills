@@ -1,0 +1,38 @@
+name: Loop refs
+
+# A cloud session's proxy lets a VM push a branch but no ref outside `refs/heads/`, and deletes nothing, so it pushes
+# a gate record as `loop-gate/<tree>-<key>` and a loop event as `loop-event/<kind>/<branch>` (or
+# `claude/loop-event/...`). This job moves each to the `refs/loop/` name every reader reads first, and deletes the
+# branch, so no branch list, banner or picker shows it (#2821). The Actions token has neither limit. A push made
+# with it starts no other workflow, so the move does not loop. It checks out no code and runs none of it: it pushes the
+# commit the push brought, and the branch name reaches the shell only through `env`.
+on:
+  push:
+    branches: [loop-gate/**, loop-event/**, claude/loop-event/**]
+
+permissions:
+  contents: write
+
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+      - name: Move the branch to its refs/loop/ name and delete it
+        env:
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          case "$BRANCH" in
+            loop-gate/*) dest="refs/loop/gate/${BRANCH#loop-gate/}" ;;
+            loop-event/*) dest="refs/loop/${BRANCH#loop-event/}" ;;
+            claude/loop-event/*) dest="refs/loop/${BRANCH#claude/loop-event/}" ;;
+            *) echo "not a loop ref: $BRANCH"; exit 0 ;;
+          esac
+          # an event is rewritten as a new parentless commit on every beat, so the move replaces what is there
+          git push --force origin "$SHA:$dest"
+          git push origin ":refs/heads/$BRANCH"

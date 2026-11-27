@@ -50,6 +50,8 @@ CLOUD = "CLAUDE_CODE_REMOTE"
 # it refuses `refs/loop/` (events.md, Cloud sessions). `emit` writes the first prefix, the bare one a probe from a
 # cloud VM found the proxy accepts; `read`, `wait` and `clear` take both, so a `claude/loop-event/` branch counts too
 BRANCH_PREFIXES = ("loop-event", "claude/loop-event")
+# a gate record's name under refs/loop/gate/, `<tree>-<gate key>`, which no event's branch is
+RECORD_NAME = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?-[0-9a-f]{12}")
 # the seen-sha file `read` keeps, in the git dir: {ref: {"sha": ..., "changed": <epoch seconds>}}
 SEEN = "loop-events-seen.json"
 # seconds one git call that reaches origin may take before it counts as a failed push or read
@@ -276,8 +278,10 @@ def emit(
         env=IDENTITY,
     ).strip()
     run(cwd, "update-ref", ref, commit)
-    # a cloud session's proxy refuses the ref but takes a branch, so the commit goes to both there; each push fails alone
-    for target in [ref, *(branch_refs(kind, branch)[:1] if in_cloud() else [])]:
+    # the ref first; a cloud session's proxy refuses it but takes a branch, which the record workflow moves to the
+    # ref and deletes (#2821), so a refused push falls back to the branch
+    first: Exception | None = None
+    for target in [ref, *branch_refs(kind, branch)[:1]]:
         try:
             # the lease is the sha origin holds now: this writer rewrites its own ref, and only a push that races
             # another writer between the two calls is refused
@@ -286,7 +290,17 @@ def emit(
             held = remote_refs(cwd, target).get(target, "")
             push(cwd, f"{commit}:{target}", lease=f"{target}:{held}")
         except UNREACHABLE as exc:
-            warn(f"{target} written here, not pushed", exc)
+            text = str(getattr(exc, "stderr", ""))
+            if (
+                "stale info" in text
+            ):  # a lost race is no refusal: a branch would only be a stale copy
+                warn(f"{ref} written here, not pushed", exc)
+                break
+            first = first or exc
+            continue
+        break
+    else:
+        warn(f"{ref} written here, not pushed", first or RuntimeError("no push made"))
     return commit
 
 
@@ -350,7 +364,9 @@ def read(kind: str | None = None, *, cwd: Path | str | None = None) -> list[dict
         str, list[tuple[str, str]]
     ] = {}  # the event's refs/loop/ name -> (ref on origin, sha) of each form
     for ref, sha in sorted(shas.items()):
-        if split(ref)[0] in BEATS:
+        kind_of, branch_of = split(ref)
+        # refs/loop/gate/ also holds the gate's records, named `<tree>-<key>` (gatekeeper.py's RECORD_REF)
+        if kind_of in BEATS and not (kind_of == "gate" and RECORD_NAME.fullmatch(branch_of)):
             sources.setdefault(canonical(ref), []).append((ref, sha))
     seen = load_seen(cwd)
     found = []

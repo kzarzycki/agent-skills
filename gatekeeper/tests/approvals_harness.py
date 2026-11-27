@@ -146,7 +146,7 @@ def refs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
     def push(record: dict[str, Any]) -> str:
         name = approvals.record_name(record["tree"], record["command"])
         pushed[name] = {**record, "env": record.get("env", approvals.gate()[2])}
-        return approvals.RECORD_BRANCH.format(name)
+        return approvals.RECORD_REF.format(name)
 
     def read(
         held: str, command: str, env: dict[str, str], _why: list[str] | None = None
@@ -154,12 +154,14 @@ def refs(monkeypatch: pytest.MonkeyPatch) -> dict[str, dict[str, Any]]:
         found = pushed.get(approvals.record_name(held, command))
         if found is None or (found["tree"], found["command"], found["env"]) != (held, command, env):
             return None
-        ref = approvals.RECORD_BRANCH.format(approvals.record_name(held, command))
+        ref = approvals.RECORD_REF.format(approvals.record_name(held, command))
         return {**found, "exit": 0, "published": True, "ref": ref}
 
     monkeypatch.setattr(approvals, "record_ref", read)
     monkeypatch.setattr(approvals, "push_record", push)
     monkeypatch.setattr(approvals, "drop_records", lambda _heads: None)
+    # the upgrade sweep reaches origin and GitHub: only its own tests run it, on a fixture origin (#2821)
+    monkeypatch.setattr(approvals, "upgrade_sweep", lambda force=False: None)
     return pushed
 
 

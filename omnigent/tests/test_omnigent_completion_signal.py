@@ -36,7 +36,14 @@ def rest(
             "committer": {"date": "2026-01-01T10:00:00Z"},
         },
         f"repos/{{owner}}/{{repo}}/git/matching-refs/heads/loop-gate/{TREE}-": [
-            {"ref": r["ref"], "object": {"sha": r["sha"]}} for r in refs or []
+            {"ref": r["ref"], "object": {"sha": r["sha"]}}
+            for r in refs or []
+            if r["ref"].startswith("refs/heads/")
+        ],
+        f"repos/{{owner}}/{{repo}}/git/matching-refs/loop/gate/{TREE}-": [
+            {"ref": r["ref"], "object": {"sha": r["sha"]}}
+            for r in refs or []
+            if r["ref"].startswith("refs/loop/")
         ],
         f"repos/{{owner}}/{{repo}}/commits/{HEAD}/statuses?per_page=100": statuses or [],
     }
@@ -93,6 +100,16 @@ def test_gate_passes_on_a_record_branch_newer_than_a_failure(
     assert wait("gate") == 0
     assert capsys.readouterr().out == f"PR #7 head {HEAD}: passed, record branch {rec['ref']}\n"
     assert all("--paginate" not in call for call in calls)  # REST alone, no checkout read
+
+
+def test_gate_passes_on_a_record_under_refs_loop_gate(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#2821: a record a host pushed to refs/loop/gate/ is the gate signal, with no loop-gate/ branch."""
+    rec = {**record("2026-01-01T12:00:00Z"), "ref": f"refs/loop/gate/{TREE}-k"}
+    rest(monkeypatch, refs=[rec])
+    assert wait("gate") == 0
+    assert capsys.readouterr().out == f"PR #7 head {HEAD}: passed, record branch {rec['ref']}\n"
 
 
 def test_gate_fails_on_a_failure_newer_than_a_record_branch(

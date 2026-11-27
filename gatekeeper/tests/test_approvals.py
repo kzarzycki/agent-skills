@@ -129,6 +129,7 @@ OPEN_PULLS = getattr(approvals, "open_pulls", list)
 RECORD_REF = approvals.record_ref
 PUSH_RECORD = approvals.push_record
 DROP_RECORDS = approvals.drop_records
+UPGRADE_SWEEP = approvals.upgrade_sweep
 
 
 def pushed_pass(
@@ -5911,7 +5912,7 @@ def test_local_ci_with_no_record_refuses_without_running_the_gate(
 ) -> None:
     assert approvals.main(["local-ci", "7"]) == 1
     out = capsys.readouterr().out
-    name = approvals.RECORD_BRANCH.format(approvals.record_name(TREE, "mise run check:all"))
+    name = approvals.RECORD_REF.format(approvals.record_name(TREE, "mise run check:all"))
     assert (checkout["runs"], github) == (0, [])
     assert HEAD in out and TREE in out and name in out and "--run" in out
 
@@ -6581,7 +6582,7 @@ def test_without_github_or_origin_the_pass_is_recorded_here_and_says_what_was_no
     monkeypatch.setattr(approvals, "post_status", offline)
     assert approvals.main(["local-ci", "--record"]) == 0
     out = capsys.readouterr().out
-    assert "published in origin as the record branch refs/heads/loop-gate/" in out
+    assert "published in origin as the record branch refs/loop/gate/" in out
     assert (
         "the `gate` status, which only shows the pass on the PR, was not written: error connecting"
         in out
@@ -8905,6 +8906,12 @@ def name_of(head: str, command: str = "true") -> str:
 
 
 def branch_of(head: str, command: str = "true") -> str:
+    """The ref a host publishes a record at (#2821): outside refs/heads/, so no branch list shows it."""
+    return f"refs/loop/gate/{name_of(head, command)}"
+
+
+def loop_branch_of(head: str, command: str = "true") -> str:
+    """The branch a cloud session pushes a record to, where origin refuses the ref."""
     return f"refs/heads/loop-gate/{name_of(head, command)}"
 
 
@@ -8929,7 +8936,7 @@ def test_a_pass_from_a_host_or_a_cloud_session_is_pushed_and_reused_by_another_c
     message = git_in(tmp_path / "origin.git", "log", "-1", "--format=%B", branch)
     assert message.splitlines()[0] == line
     assert git_in(tmp_path / "origin.git", "for-each-ref", "--format=%(refname)") == (
-        f"refs/heads/feature\n{branch}\nrefs/heads/main\nrefs/loop/gate/master\n"
+        f"refs/heads/feature\nrefs/heads/main\n{branch}\nrefs/loop/gate/master\n"
     )
     if where == "host":
         assert [s["description"] for s in hub.pop(head)] == [line]
@@ -9062,7 +9069,7 @@ def forged(
     a = tmp_path / "a"
     parents = [arg for parent in (head, *more) for arg in ("-p", parent)]
     commit = git_in(a, "commit-tree", tree, *parents, "-m", f"{line}\n\nEnv: {env}\n").strip()
-    git_in(a, "push", "-q", "-f", "origin", f"{commit}:refs/heads/loop-gate/{name}")
+    git_in(a, "push", "-q", "-f", "origin", f"{commit}:refs/loop/gate/{name}")
 
 
 @pytest.mark.parametrize(
@@ -9221,10 +9228,8 @@ def test_a_record_on_the_prs_fork_does_not_count(
     monkeypatch.setattr(approvals, "post_status", no_status)
     monkeypatch.chdir(a)
     assert approvals.main(["local-ci", "--record"]) == 0
-    assert (
-        "published in origin as the record branch refs/heads/loop-gate/" in capsys.readouterr().out
-    )
-    assert git_in(fork, "for-each-ref", "refs/heads/loop-gate/")
+    assert "published in origin as the record branch refs/loop/gate/" in capsys.readouterr().out
+    assert git_in(fork, "for-each-ref", "refs/loop/gate/")
     monkeypatch.chdir(b)
     assert approvals.reusable(head) is None
     ref = branch_of(head)
@@ -9249,8 +9254,9 @@ def test_origin_refusing_refs_outside_branches_still_takes_the_record(
     )
     hook.chmod(0o755)
     head, out = pushed_from_a_cloud(tmp_path, monkeypatch, capsys)
-    assert f"published in origin as the record branch {branch_of(head)}" in out
-    assert approvals.reusable(head)["ref"] == branch_of(head)
+    assert f"published in origin as the record branch {loop_branch_of(head)}" in out
+    assert approvals.reusable(head)["ref"] == loop_branch_of(head)
+    assert git_in(origin, "for-each-ref", "refs/loop/gate/") == ""
 
 
 def recorded_in_origin(b: Path, tree_of_commit: str, when: str) -> str:
@@ -9281,9 +9287,11 @@ def open_prs(*heads: str) -> Any:
 
 
 def loop_gate_branches(origin: Path) -> set[str]:
-    return set(
-        git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/loop-gate/").split()
-    )
+    """Origin's gate records under both names (#2821): refs/loop/gate/ also holds the gate's events, which are none."""
+    found = git_in(
+        origin, "for-each-ref", "--format=%(refname)", "refs/loop/gate/", "refs/heads/loop-gate/"
+    ).split()
+    return {ref for ref in found if approvals.RECORD_NAME.fullmatch(ref.rsplit("/", 1)[1])}
 
 
 def test_land_deletes_the_records_it_landed_and_old_ones_no_open_pr_needs(
@@ -9319,9 +9327,7 @@ def test_land_deletes_the_records_it_landed_and_old_ones_no_open_pr_needs(
     monkeypatch.setattr(approvals.github, "gh", open_prs(commits["open"]))
     capsys.readouterr()
     approvals.drop_records([head])
-    left = set(
-        git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/loop-gate/").split()
-    )
+    left = loop_gate_branches(origin)
     assert left == kept
     assert not {branch_of(head), replaced, landed_other} & left
     assert capsys.readouterr().out == ""
@@ -9350,8 +9356,8 @@ def test_a_refused_delete_is_said_and_without_the_open_prs_only_landed_records_g
     )
     hook.unlink()
     approvals.drop_records([head])
-    left = git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/loop-gate/").split()
-    assert left == [other]  # old, but whether an open PR needs it is unknown
+    left = loop_gate_branches(origin)
+    assert left == {other}  # old, but whether an open PR needs it is unknown
 
 
 def test_an_old_record_goes_while_a_pr_is_open_reading_the_open_prs_as_gh_prints_them(
@@ -10492,3 +10498,108 @@ def test_bare_lands_queue_trail_collects_the_heads_of_the_prs_a_queue_merged(
     approvals.queue_trail("main")
     assert approvals.merged_heads == ["c" * 40]
     approvals.merged_heads.clear()
+
+
+def test_a_host_publishes_the_record_under_refs_loop_gate_and_makes_no_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#2821 acceptance 1: a host's record lands at refs/loop/gate/<tree>-<key>, and no refs/heads/ ref is made for it."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    origin = tmp_path / "origin.git"
+    assert loop_gate_branches(origin) == {branch_of(head)}
+    assert git_in(origin, "for-each-ref", "--format=%(refname)", "refs/heads/").split() == [
+        "refs/heads/feature",
+        "refs/heads/main",
+    ]
+
+
+def record_on_branch(b: Path, commit: str, when: str) -> str:
+    """Push from clone `b` a record of `true` on `commit`'s tree as a loop-gate/ branch, as a cloud session does."""
+    held = approvals.tree_of(commit)
+    record = {"head": commit, "tree": held, "command": "true", "env": {}, "time": when}
+    ref = loop_branch_of(commit)
+    git_in(b, "push", "-q", "origin", f"{approvals.record_commit(record)}:{ref}")
+    return ref
+
+
+def test_the_sweep_deletes_stale_records_under_both_names_and_keeps_young_and_open_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#2821 acceptance 3 (the sweep of #2785 over both names): a record over a day old whose tree is no open PR's head
+    is deleted whether it is a refs/loop/gate/ ref or a loop-gate/ branch; a young one and an open PR's stay."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    a, b, origin = tmp_path / "a", tmp_path / "b", tmp_path / "origin.git"
+    commits = {}
+    for name in ("old-ref", "old-branch", "young-ref", "young-branch", "open-ref", "open-branch"):
+        (a / "app.py").write_text(f"value = {name!r}\n")
+        git_in(a, "commit", "-qam", name)
+        commits[name] = git_in(a, "rev-parse", "HEAD").strip()
+        git_in(a, "push", "-q", "origin", f"HEAD:refs/heads/{name}")
+    git_in(b, "fetch", "-q", "origin")
+    old, fresh = "2026-01-01T00:00:00Z", approvals.now()
+    kept = {
+        recorded_in_origin(b, commits["young-ref"], fresh),
+        record_on_branch(b, commits["young-branch"], fresh),
+        recorded_in_origin(b, commits["open-ref"], old),
+        record_on_branch(b, commits["open-branch"], old),
+    }
+    gone = {
+        recorded_in_origin(b, commits["old-ref"], old),
+        record_on_branch(b, commits["old-branch"], old),
+    }
+    monkeypatch.setattr(
+        approvals.github, "gh", open_prs(commits["open-ref"], commits["open-branch"])
+    )
+    capsys.readouterr()
+    approvals.drop_records([head])
+    left = loop_gate_branches(origin)
+    assert left == kept
+    assert not gone & left and branch_of(head) not in left
+    assert "refs/loop/gate/master" in git_in(
+        origin, "for-each-ref", "--format=%(refname)"
+    )  # an event stays
+
+
+def git_ref_names(repo: Path, *patterns: str) -> list[str]:
+    return git_in(repo, "for-each-ref", "--format=%(refname)", *patterns).split()
+
+
+def test_the_upgrade_sweep_moves_old_branches_and_deletes_only_finished_claude_branches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#2821 item 6: every loop-gate/ and loop-event/ branch moves to its refs/loop/ name; a claude/ branch that is no
+    open PR's head and whose PR is merged or closed is deleted; one with an open PR, or none, stays; and a land after
+    the sweep, which wrote its marker, does nothing."""
+    head = published_on_a_with(tmp_path, monkeypatch, approvals.post_status)
+    a, b, origin = tmp_path / "a", tmp_path / "b", tmp_path / "origin.git"
+    record = record_on_branch(b, head, "2026-01-01T00:00:00Z")
+    git_in(a, "push", "-q", "origin", f"{head}:refs/heads/loop-event/lead/feat/x")
+    for name in ("claude/merged", "claude/closed", "claude/open", "claude/no-pr"):
+        git_in(a, "push", "-q", "origin", f"{head}:refs/heads/{name}")
+    git_in(a, "push", "-q", "origin", f"{head}:refs/heads/claude/loop-event/lead/feat/y")
+    monkeypatch.chdir(a)
+    asked: list[tuple[str, ...]] = []
+
+    def gh(*args: str) -> str:
+        asked.append(args)
+        pulls = [("closed", "claude/merged"), ("closed", "claude/closed"), ("open", "claude/open")]
+        return "".join(json.dumps({"state": s, "ref": r}) + "\n" for s, r in pulls)
+
+    monkeypatch.setattr(approvals.github, "gh", gh)
+    UPGRADE_SWEEP()
+    assert git_ref_names(origin, "refs/heads/") == [
+        "refs/heads/claude/no-pr",
+        "refs/heads/claude/open",
+        "refs/heads/feature",
+        "refs/heads/main",
+    ]
+    moved = git_ref_names(origin, "refs/loop/")
+    assert approvals.RECORD_REF.format(record.rsplit("/", 1)[1]) in moved
+    assert {"refs/loop/lead/feat/x", "refs/loop/lead/feat/y", approvals.SWEPT} <= set(moved)
+    assert "1 claude/ branches kept" in capsys.readouterr().out
+    git_in(
+        a, "push", "-q", "origin", f"{head}:refs/heads/claude/merged"
+    )  # a new leftover: no marker-less sweep
+    asked.clear()
+    UPGRADE_SWEEP()
+    assert asked == [] and "refs/heads/claude/merged" in git_ref_names(origin, "refs/heads/")

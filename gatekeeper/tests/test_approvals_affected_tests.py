@@ -270,6 +270,6 @@ def test_a_record_run_with_no_affected_tests_line_records_nothing(worker: dict[s
     worker["commit"]("app.py", "value = 2\n")
     assert approvals.main(["affected-tests", "--record"]) == 0
     repo = worker["repo"]
-    assert git_in(repo, "ls-remote", "--heads", "origin", "refs/heads/loop-gate/*").strip() == ""
+    assert git_in(repo, "ls-remote", "--heads", "origin", "refs/loop/gate/*").strip() == ""
     head = git_in(repo, "rev-parse", "HEAD").strip()
     assert approvals.main(["gate-record", head]) == 1

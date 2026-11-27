@@ -131,7 +131,7 @@ def test_a_tree_whose_any_steps_have_a_pushed_pass_runs_only_its_host_steps_on_a
     assert steps["ran"]() == ["apple"]
     out = capsys.readouterr().out
     for name in ("lint", "unit"):
-        branch = approvals.RECORD_BRANCH.format(
+        branch = approvals.RECORD_REF.format(
             approvals.record_name(steps["tree"], steps["commands"][name])
         )
         assert f"{name}: passed on tree {steps['tree']} before, reused from {branch}" in out
