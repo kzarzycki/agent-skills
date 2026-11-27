@@ -288,8 +288,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    of gatekeeper.md's `select` whose `paths` the diff touches, and the product's affected tests
    only when a file is a build input, which includes a file `select` doesn't classify. The
    verifier's own review, repros and mutation runs stay.
-8. **Land** once the last verdict is triaged with no core finding open, or at the cap with no
-   blocker open and your `Cap: #<follow-up>` line in the PR body (SKILL.md, The cap); the merge itself
+8. **Land** once the last verdict is satisfied and triaged with no core finding open, or at the cap under the
+   exception SKILL.md's The cap gives (no blocker, no `Not run:` line, and your `Cap: #<follow-up>` line in the PR body); the merge itself
    waits for the landing rule (SKILL.md):
    - You land your own PRs and never merge `origin/main` into one, stacked or not, unless the gate forces it
      (the next point): a merge of main changes the head, which voids the verifier's verdict and costs another pass.
