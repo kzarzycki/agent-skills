@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.8 - 2026-11-27
+
+- `pin_update.py` follows a pin's own line: a `-next` pin moves to the newest newer tag of either line and never down to stable, a stable pin ignores `-next` tags, and every dependency pinned to a tag of the pack's repo moves by its own package prefix (#2772).
+
 ## 0.1.7 - 2026-11-26
 
 - `pin_update.py` also runs `apm update` (transitive packages too) and `apm audit`, rolls back an install that removes a skill, and commits with a compare link per moved pin; hygiene's pack-lag check reads every package of a lock (#2706).
