@@ -1220,5 +1220,6 @@ decision below: a head at the cap with majors open, none a blocker, lands under 
   write `SATISFIED: no` with minors open (verifier.md says it should not), so record the
   `Cap: #<follow-up>` line in the PR body, naming the issue the minors were filed in: with it
   `check merge` accepts minors open on a pass at the cap or later, as it does majors, and a
-  blocker still refuses. Below the cap minors still send the PR back for another pass.
+  blocker still refuses, as does a verdict with a `Not run:` line (a run never made). Below the cap an
+  unsatisfied verdict still sends the PR back for another pass; a satisfied one with minors lands at any pass.
   There is no owner stop.

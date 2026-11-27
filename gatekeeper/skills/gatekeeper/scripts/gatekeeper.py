@@ -3558,6 +3558,16 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                     )
                     if key.strip() in ("VERDICT", "SATISFIED", "Risk", LOGIC, RERUN_LINE)
                 },
+                # a run the verdict relies on that was never made (an acceptance line not run): kept so the cap decision
+                # can't waive it (reviewed); `Not run: none` names nothing
+                **{
+                    "Not run": value.strip()
+                    for key, _, value in (
+                        line.partition(":") for line in review["body"].splitlines()
+                    )
+                    if key.strip() == "Not run"
+                    and not re.fullmatch(r"none\.?", value.strip(), re.IGNORECASE)
+                },
                 **{
                     key.strip(): value.strip()
                     for key, _, value in (
@@ -3921,10 +3931,12 @@ def reviewed(
         if (found := re.search(r"(\d+)\s+minors?\b", lines["VERDICT"]))
     )
     # at the cap the lead decides: majors or minors filed as a follow-up (CAP_DECISION) land on this verdict, since a
-    # verifier writes `SATISFIED: no` for any open finding; a blocker never does, and nothing open is no decision
+    # verifier writes `SATISFIED: no` for any open finding; a blocker never does, nothing open is no decision, and a
+    # verdict naming a run never made (`Not run:`, an acceptance line not run) stays unsatisfied
     decided = (
         not blocker
         and (major or minor)
+        and not any("Not run" in lines for lines in same)
         and last >= cap(loop)
         and CAP_DECISION.search(QUOTED.sub("", pull.get("body") or "")) is not None
     )
@@ -10882,11 +10894,16 @@ def parse_report(
             f"{report}: `{reruns_named[-1]}`: write `{RERUN_LINE}: <commit>`, the full commit of the record branch the"
             " rerun pushed"
         )
+    # a `Not run:` line stays in the posted verdict, since the cap decision must not waive a run never made (reviewed)
+    not_run = [
+        line for line in lines if re.match(r"Not run:(?!\s*none\.?\s*$)", line, re.IGNORECASE)
+    ]
     closing = [
         verdicts[-1],
         satisfied[-1],
         judgments[-1],
         *logic[-1:],
+        *not_run[-1:],
         *scope[-1:],
         *reruns_named[-1:],
     ]
