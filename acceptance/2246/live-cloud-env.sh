@@ -1,4 +1,5 @@
 #!/bin/sh
+# acceptance: live
 # #2246 live proof, run by hand on a host with an Omnigent server and a claude login holding <base> and
 # <base>-code-mode: one `start claude-cloud --cloud-env <base>-code-mode` from a launch dir of its own, in a project
 # whose loop.md names `env <base>`, runs in the variant; the next plain start from the project's checkout gets <base>.

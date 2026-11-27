@@ -6,7 +6,7 @@ set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 probe=$(mktemp -d)
 trap 'rm -rf "$probe"' EXIT
-ln -s "$root/engineering/tests/conftest.py" "$probe/conftest.py"
+ln -s "$root/omnigent/tests/conftest.py" "$probe/conftest.py"
 
 cat > "$probe/test_bytes_probe.py" <<'PY'
 import os

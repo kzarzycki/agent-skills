@@ -9,6 +9,9 @@ import test_omnigent_agent as base
 from test_omnigent_agent import no_model, no_sleep  # noqa: F401  (the fixtures apply here by name)
 
 oa = base.omnigent_agent
+WRITES_LEAD_EVENTS = (
+    True  # the module that tests the writer, against a bare origin of its own (conftest.py)
+)
 BRANCH = "loop/x"
 
 

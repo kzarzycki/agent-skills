@@ -4,4 +4,4 @@
 # later, `failed` with the eviction comment's URL, `needs-owner` at the owner's go (ready or draft PR) or the 2-hour
 # ceiling; an origin that refuses the push, or an emit that raises, changes no exit code of `land`.
 set -e
-exec uv run pytest -q -p no:cacheprovider engineering/tests/test_approvals_land_event.py
+exec uv run pytest -q -p no:cacheprovider gatekeeper/tests/test_approvals_land_event.py

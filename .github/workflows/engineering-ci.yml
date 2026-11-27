@@ -211,6 +211,74 @@ jobs:
         run: |
           git diff --check "$BASE_SHA"...HEAD
 
+  # The scheduled run's acceptance checks (#1386): every `acceptance/<issue>/` folder, the specs' own proof that nothing
+  # else reruns once a spec has landed (SKILL.md, Nightly). Its own job: loop.md's 90-minute nightly budget does not fit
+  # `qualify`'s 60, and the two run at once. Skipped, as `qualify`, on a tree the last green nightly ran (R7).
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90 # loop.md's `Acceptance budget:` nightly minutes
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: tested
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 loop/skills/engineering-loop/scripts/nightly.py moved schedule
+      - if: steps.tested.outputs.skip != 'true'
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - if: steps.tested.outputs.skip != 'true'
+        run: mise install
+      - if: steps.tested.outputs.skip != 'true'
+        run: uv sync --frozen
+      - if: steps.tested.outputs.skip != 'true'
+        run: uv run gatekeeper/skills/gatekeeper/scripts/acceptance.py --all
+
+  # A red scheduled run opens, or adds to, the one `Nightly red since <sha>` issue listing the merges since the last green
+  # (#1386, SKILL.md Nightly): a lead bisects from it and lands a fix or a revert as a PR, never an auto-revert. The
+  # supervisor reads that issue as an `act` event the day it opens. `issues: write` is this job's alone.
+  nightly-red:
+    needs: [qualify, acceptance]
+    if: always() && github.event_name == 'schedule' && (needs.qualify.result == 'failure' || needs.acceptance.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - run: mise install
+      # The newest scheduled run on the default branch that passed, as `nightly.py moved schedule` reads it; none yet,
+      # the first commit, so the list is the whole history.
+      - id: green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          sha=$(gh api "repos/$REPO/actions/workflows/engineering-ci.yml/runs?event=schedule&branch=$BRANCH&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // empty')
+          [ -n "$sha" ] || sha=$(git rev-list --max-parents=0 HEAD | tail -1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          LAST_GREEN: ${{ steps.green.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: uv run loop/skills/engineering-loop/scripts/nightly.py red --last-green "$LAST_GREEN" --red "$GITHUB_SHA" --run "$RUN_URL"
+
   # R6's refusal: `.mergify.yml` merges a batch only on this check's success, which needs the batch step above to have
   # run its selection (tools/cross_change_tests.py). A path that skips it leaves this skipped or red, so nothing merges
   # untested (#2169, #2121). Not a required check of the base: a job-level `if` is safe here, unlike on `qualify`.
