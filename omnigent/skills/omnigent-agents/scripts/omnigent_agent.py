@@ -3188,7 +3188,9 @@ def steward_on(decisions: str) -> bool:
     ``**ON`` (#2824). The chief of staff then answers approvals and cards in the owner's name."""
     return bool(
         re.search(
-            r"^\s*- \*\*Steward mode(?:(?!\n\s*- ).)*?\*\*ON", decisions, re.MULTILINE | re.DOTALL
+            r"^\s*- \*\*Steward mode(?:(?!\n(?:\s*[-*] |\s*\n|#)).)*?\*\*ON",
+            decisions,
+            re.MULTILINE | re.DOTALL,
         )
     )
 
@@ -10809,7 +10811,8 @@ def supervise_registry(
             else:
                 log("hosts", None)
         host = str(info.get("host_id") or "")
-        direct = auto_direct(sid, lead, items, direct)
+        if followed:  # a session owing a report to its caller keeps its terminal event (#2824)
+            direct = auto_direct(sid, lead, items, direct)
         lead.update(
             title=info.get("title") or "",
             host=(hosts or {}).get(host, host),

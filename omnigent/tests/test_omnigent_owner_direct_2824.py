@@ -58,6 +58,17 @@ def test_a_message_with_a_sender_session_never_marks_a_lead_direct(
     assert "direct" not in fields(registry)
 
 
+def test_a_session_owing_a_report_is_not_marked_direct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text(f"a={tmp_path / 'a.md'}\n")  # not followed: owes its caller a report
+    og = base.Lead(base.told("brief", 600), typed("a hint", 1))
+    (tmp_path / "a.md").write_text("report")
+    base.supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    assert "direct" not in fields(registry)
+
+
 def test_direct_off_stays_off_until_a_newer_owner_message(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -98,6 +109,9 @@ def test_steward_mode_is_read_from_its_bullet_in_the_decisions() -> None:
     assert not on("- **Steward mode**: **OFF**\n- **ON** is not it")
     assert not on("")
     assert not on("Steward mode ON")
+    assert not on("- **Steward mode**: **OFF**\n\nSome paragraph with **ON** in it")
+    assert not on("- **Steward mode**: **OFF**\n## Other\n**ON**")
+    assert on("- **Steward mode**: all the **ON**\n  continued here")
 
 
 def test_a_manager_the_owner_wrote_to_tells_only_its_waiters_when_its_turn_ends_done(
