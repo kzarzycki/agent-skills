@@ -46,7 +46,15 @@ def hub(monkeypatch: pytest.MonkeyPatch, **states: str) -> Hub:
 
 def worker(og: base.FakeOmnigent, tmp_path: Path, pr: int = 7, role: str | None = None) -> str:
     sid, _ = omnigent_agent.start(
-        og, "claude-cloud", f"t{pr}", "do X", tmp_path / "r", role, 0, pr=pr
+        og,
+        "claude-cloud",
+        f"t{pr}",
+        "do X",
+        tmp_path / "r",
+        role,
+        0,
+        pr=pr,
+        effort="high" if role else None,
     )
     return sid
 

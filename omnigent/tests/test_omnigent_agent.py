@@ -94,6 +94,7 @@ class FakeOmnigent:
             "claude-sonnet-5-5",
             "gpt-6.1-sol",
             "gpt-6.1-terra",
+            "gemini-4-hydrogen-medium",
         ]
         self.overrides: dict[str, str | None] = {}  # the model_override each session took
         self.efforts: dict[str, str | None] = {}  # the reasoning_effort each session took
@@ -197,10 +198,6 @@ class FakeOmnigent:
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
         self.overrides[sid] = omnigent_agent.model_for(agent, model)[0]  # as the real body
-        if not self.overrides[sid] and self.harness(agent) == omnigent_agent.AGY_HARNESS:
-            self.overrides[sid] = (
-                "gemini-4-hydrogen-medium"  # agy's own settings model, copied into the session
-            )
         self.top_level.append(top_level)
         self.roles.append(role)
         self.prs.append(pr)
@@ -10281,6 +10278,7 @@ def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
         "verifier.md",
         0,
         permission_mode="bypassPermissions",
+        model="gemini-4-hydrogen-medium",
     )
     calls = _agent_server(
         monkeypatch,
@@ -12762,6 +12760,7 @@ def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) ->
 VERIFY_FAR = ["start", "claude", "v", "b.md", "/there/repo/tmp/loop/pr7-v1.md", "--top-level"]
 VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", str(VERIFIER_MD)]
 VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
+VERIFY_FAR += ["--effort", "high"]  # a far host's harness config is not readable from here (#2838)
 
 
 def test_a_cloud_pr_start_on_another_host_says_its_launch_dir_head_is_not_moved(
@@ -12921,6 +12920,9 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     worker[worker.index(str(VERIFIER_MD))] = str(VERIFIER_MD.with_name("worker.md"))
     worker[worker.index("--pr") : worker.index("--pr") + 2] = []
     worker[1] = "w"
+    del worker[
+        worker.index("--effort") : worker.index("--effort") + 2
+    ]  # an unregistered agent takes none
     assert omnigent_agent.main(worker) == 1
     err = capsys.readouterr().err
     assert "is in use on host mac by live session" in err and "L lead" in err
@@ -12928,6 +12930,7 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     here[here.index("mac")] = "h"
     here[here.index("/there/repo")] = str(tmp_path)
     here[1], here[4] = "u", str(tmp_path / "tmp/loop/pr7-v1.md")
+    del here[here.index("--effort") : here.index("--effort") + 2]
     assert omnigent_agent.main(here) == 1
     err = capsys.readouterr().err
     assert "is in use on host h by live session" in err and "M lead" in err
@@ -14750,7 +14753,15 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
     argv = ["b.md", "r.md", "--role", role_file(role), "--pr", "7"]
     assert (
         omnigent_agent.main(
-            ["start", agent, "t", *argv, *(["--same-family"] if role == "verifier.md" else [])]
+            [
+                "start",
+                agent,
+                "t",
+                *argv,
+                "--effort",
+                "high",
+                *(["--same-family"] if role == "verifier.md" else []),
+            ]
         )
         == 0
     )

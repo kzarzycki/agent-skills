@@ -82,3 +82,72 @@ def test_a_verifier_start_whose_effort_cannot_be_resolved_is_refused(
         model="gpt-6.1-sol",
     )
     assert "AGENT_SIGNATURE=codex/sol-6.1/med\n" in (tmp_path / "r.md.brief").read_text()
+
+
+def test_an_agy_verifier_started_with_no_model_is_refused_with_a_hint_that_works(
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """agy keeps its effort in its model id: right after create a session has none, so the hint names --model."""
+    og = FakeOmnigent()
+    og.harnesses["agy"] = "antigravity-native"
+    with pytest.raises(
+        omnigent_agent.Fail, match=r"antigravity-native.*--model with an id that carries"
+    ):
+        omnigent_agent.start(
+            og,
+            "agy",
+            "v",
+            "review",
+            tmp_path / "r.md",
+            role_file("verifier.md"),
+            0,
+            permission_mode="bypassPermissions",
+        )
+    assert og.archived == ["s0"]
+    omnigent_agent.start(
+        og,
+        "agy",
+        "v",
+        "review",
+        tmp_path / "r.md",
+        role_file("verifier.md"),
+        0,
+        permission_mode="bypassPermissions",
+        model="gemini-4-hydrogen-medium",
+    )
+    assert (
+        "AGENT_SIGNATURE=agy/gemini-4-hydrogen-medium/med\n"
+        in (tmp_path / "r.md.brief").read_text()
+    )
+
+
+def test_a_verifier_on_another_host_never_reads_this_machines_config(
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fixture home holds a Codex config at medium, which is this machine's, not the far host's."""
+    og = FakeOmnigent()
+    with pytest.raises(omnigent_agent.Fail, match=r"codex.*not readable from here.*Pass --effort"):
+        omnigent_agent.start(
+            og,
+            "codex",
+            "v",
+            "review",
+            tmp_path / "r.md",
+            role_file("verifier.md"),
+            0,
+            host_id="far",
+            model="gpt-6.1-sol",
+        )
+    omnigent_agent.start(
+        og,
+        "codex",
+        "v",
+        "review",
+        tmp_path / "r.md",
+        role_file("verifier.md"),
+        0,
+        host_id="far",
+        model="gpt-6.1-sol",
+        effort="high",
+    )
+    assert "s1" in og.sessions and og.archived == ["s0"]

@@ -5413,18 +5413,26 @@ def start(
                 abandon(sid)
                 raise failed(f"start failed: {sid}: not labelled --keep: {e}") from e
         used = took.get("model_override") or took.get("llm_model")
-        sig = signature(
-            harness, used, took.get("reasoning_effort"), (dict(os.environ), Path.home())
-        )
+        # this machine's config speaks only for a harness that runs here: a cloud VM or another host has its own
+        local = harness != CLOUD_HARNESS and (not host_id or host_id == og.host_id)
+        config = (dict(os.environ), Path.home()) if local else None
+        sig = signature(harness, used, took.get("reasoning_effort"), config)
         if reviews(role) and sig.endswith("/?"):
             # a verifier's report names the effort it ran at: one that can't be told is refused, never signed `?`
-            looked = resolve_effort(
-                harness, used, took.get("reasoning_effort"), (dict(os.environ), Path.home())
-            )[1]
+            looked = resolve_effort(harness, used, took.get("reasoning_effort"), config)[1]
+            if not local:
+                looked.append(
+                    "no harness config (it runs in the cloud or on another host, not readable from here)"
+                )
+            how = (
+                "Pass --model with an id that carries its effort (gemini-4-hydrogen-medium)"
+                if harness == AGY_HARNESS
+                else "Pass --effort"
+            )
             abandon(sid)
             raise failed(
                 f"start failed: {sid}: the verifier's effort can't be resolved on {harness}; looked at"
-                f" {'; '.join(looked)}. Pass --effort, or set the harness's own effort"
+                f" {'; '.join(looked)}. {how}"
             )
         # a lead's own link, known only now that its session exists: the runner's primary session names the root
         # of its tree, which is not the lead when the lead was started under another session
