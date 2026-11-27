@@ -156,6 +156,8 @@ class Thread:
             lambda *cmd, **kw: (
                 cv.subprocess.CompletedProcess(cmd, 0, "abc123 o/r feat/pr\n", "")
                 if cmd[:3] == ("gh", "pr", "view")
+                else cv.subprocess.CompletedProcess(cmd, 0, "[]", "")
+                if cmd[:3] == ("gh", "api", "--paginate")
                 else real(*cmd, **kw)
             ),
         )

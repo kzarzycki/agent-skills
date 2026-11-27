@@ -60,6 +60,46 @@ def fenced(text: str) -> list[str]:
     return [ticks, text.rstrip("\n"), ticks]
 
 
+# a verifier pass's tool-call budget: past it the pass stops and reports what it checked (#2870). Passes seen ran 11-62
+# calls, most under 30; 40 leaves a full pass room and stops a pass that explores the tree on a resent ~100k context.
+TOOL_CALL_BUDGET = 40
+FILE_LIST_CAP = 120
+# lines of a PR body a verifier gains nothing from, since no criterion is about them
+NOISE = re.compile(r"^(?:Token estimate|Tokens spent):.*\n?", re.MULTILINE)
+
+
+def diff_summary(base: str, head: str) -> list[str]:
+    """The brief's diff lines: `git diff --stat` between the merge-base and the head and the changed files with their
+    status, so the verifier reads them from the brief instead of exploring the tree for them. The head is fetched
+    first when this clone lacks it; where git can't answer, one line says so."""
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", *args], capture_output=True, text=True, check=True
+        ).stdout.rstrip("\n")
+
+    try:
+        try:
+            git("cat-file", "-e", f"{head}^{{commit}}")
+        except subprocess.CalledProcessError:
+            git("fetch", "-q", "origin", head)
+        stat = git("diff", "--stat=100", base, head)
+        names = git("diff", "--name-status", base, head).splitlines()
+    except (subprocess.CalledProcessError, OSError):
+        return ["- Diff: not available here; run `git diff --stat <base> <head>`"]
+    shown = names[:FILE_LIST_CAP]
+    more = [f"  ...and {len(names) - FILE_LIST_CAP} more: run `git diff --name-status`"] * (
+        len(names) > FILE_LIST_CAP
+    )
+    return [
+        f"- Changed files ({len(names)}, status then path):",
+        *(f"  {line}" for line in shown),
+        *more,
+        "- Diff stat (base to head):",
+        *(f"  {line}" for line in stat.splitlines()[-FILE_LIST_CAP - 1 :]),
+    ]
+
+
 def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
     """The findings pass `number` posted on the PR, each as its comment's text (`verdict` heads it `**Verifier (<family>),
     pass <n> · <id>** (<severity>): <title>`), the ones on a file outside the diff from the review's body, as their
@@ -174,6 +214,11 @@ def brief(
             f"- Worktree: first, in {far}, run `git fetch origin pull/{pr}/head` and"
             f" `git worktree add --detach {tree} {head}`, then run every command of this brief in {tree}"
         )
+    lines += diff_summary(base, head)
+    lines.append(
+        f"- Budget: {TOOL_CALL_BUDGET} tool calls. Read the changed files above, not the tree; at the budget stop,"
+        " write the report with what you checked and what you did not, and say so on a `Budget:` line"
+    )
     lines.append(f"- Report: {loop_dir / f'pr{pr}-v{number}.md'}")
     if reviewed:
         newest = next(commit for commit, n, _ in reversed(reviewed) if n == number - 1)
@@ -211,7 +256,7 @@ def brief(
         *fenced(pull["title"] or ""),
         "",
         "PR body:",
-        *fenced(pull["body"] or ""),
+        *fenced(NOISE.sub("", pull["body"] or "")),
     ]
     if priorities is not None:
         lines += ["", "Priorities:", priorities.read_text().rstrip()]
