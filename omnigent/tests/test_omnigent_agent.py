@@ -6334,7 +6334,7 @@ def test_without_console_the_supervisor_writes_no_state_labels_or_deadline_and_r
         supervised(og, registry, monkeypatch, 1, notify="cos")
     assert posted(og) == ["Supervisor: a t-a: turn ended\nlast message: DONE: shipped"] * 2
     assert og.labels == []
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.md", "registry"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.md", "registry", "registry.lock"]
 
 
 def state_of(registry: Path) -> dict:
@@ -15626,3 +15626,46 @@ def test_supervise_install_from_a_developer_checkout_refuses_and_names_the_insta
     )  # names the checkout it refused, not as the service's script
     installed_script = _pack_script(tmp_path, git=False)
     assert _service_script_of(installed_script, monkeypatch, tmp_path) == installed_script.resolve()
+
+
+def test_parallel_registry_writers_keep_every_entry_in_a_file_that_parses_2406(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry"
+    code = (
+        "import importlib.util,sys;from pathlib import Path;"
+        f"s=importlib.util.spec_from_file_location('o',{str(spec.origin)!r});"
+        "m=importlib.util.module_from_spec(s);sys.modules['o']=m;s.loader.exec_module(m);"
+        "m.arm(Path(sys.argv[1]),'s'+sys.argv[2],Path('r'+sys.argv[2]+'.md'))"
+    )
+    n = 12
+    procs = [
+        subprocess.Popen([sys.executable, "-c", code, str(registry), str(i)]) for i in range(n)
+    ]
+    assert [p.wait() for p in procs] == [0] * n
+    owed, bad = omnigent_agent.registered(registry)
+    assert bad == []
+    assert sorted(owed) == sorted(f"s{i}" for i in range(n))
+
+
+def test_a_registry_write_that_fails_midway_leaves_the_old_file_whole_2406(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry"
+    omnigent_agent.arm(registry, "s0", Path("r0.md"))
+    before = registry.read_text()
+    # a file-size limit makes the longer new text fail partway, as a full disk or a kill would
+    code = (
+        "import importlib.util,resource,signal,sys;from pathlib import Path;"
+        f"s=importlib.util.spec_from_file_location('o',{str(spec.origin)!r});"
+        "m=importlib.util.module_from_spec(s);sys.modules['o']=m;s.loader.exec_module(m);"
+        "signal.signal(signal.SIGXFSZ,signal.SIG_IGN);"
+        f"resource.setrlimit(resource.RLIMIT_FSIZE,({len(before) + 4},)*2);"
+        "m.arm(Path(sys.argv[1]),'s1',Path('r1.md'))"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code, str(registry)], capture_output=True, check=False
+    )
+    assert done.returncode != 0  # the write failed
+    assert registry.read_text() == before
+    assert not list(tmp_path.glob("*.tmp"))

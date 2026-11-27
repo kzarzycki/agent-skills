@@ -8942,24 +8942,32 @@ def pair(text: str) -> tuple[str, Path]:
 
 
 def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = None) -> list[str]:
-    """The registry's lines, read under an exclusive lock; with ``edit``, rewritten in place to
+    """The registry's lines, read under an exclusive lock; with ``edit``, rewritten to
     ``edit(lines)`` under the same lock, so a ``run`` arming while the supervisor drops another
-    session loses neither line. A missing file reads as empty."""
-    if edit:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with open(path, "a+" if edit else "r") as f:  # closing releases the lock
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.seek(0)
-            lines = f.read().splitlines()
-            if edit:
-                lines = edit(lines)
-                f.seek(0)
-                f.truncate()
-                f.write("".join(line + "\n" for line in lines))
-            return lines
-    except FileNotFoundError:  # only a read opens without creating
-        return []
+    session loses neither line. The lock is on a sidecar ``<registry>.lock`` file, since the
+    registry itself is replaced, and the new text goes to a temp file beside it, then
+    ``os.replace``: a writer that dies or fails mid-write leaves the old file whole, never a
+    truncated one (#2406). A missing file reads as empty."""
+    if not edit:
+        try:
+            return path.read_text().splitlines()  # a replace is atomic: a read sees a whole file
+        except FileNotFoundError:
+            return []
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "a") as lock:  # closing releases the lock
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            lines = path.read_text().splitlines()
+        except FileNotFoundError:
+            lines = []
+        lines = edit(lines)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text("".join(line + "\n" for line in lines))
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return lines
 
 
 def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str, bool, str]:
