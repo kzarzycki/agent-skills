@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.21 - 2026-11-27
+
+- Gate records and loop events move off `refs/heads/`: a host publishes a record at `refs/loop/gate/<tree>-<key>` and an event at `refs/loop/<kind>/<branch>`, and a cloud session whose push is refused still pushes the `loop-gate/` or `loop-event/` branch, which the new `loop-refs.yml` workflow moves and deletes. Every reader reads `refs/loop/` first, then the branch, and `drop_records` sweeps both names. The first `land` after the upgrade (and `prune-records`) runs one sweep that moves the old branches and deletes `claude/*` branches whose PR is merged or closed (#2821).
+
 ## 0.1.20 - 2026-11-26
 
 - The `land` docstring now says the GitHub merge queue path still sweeps `loop-gate/` record branches (#2785).
