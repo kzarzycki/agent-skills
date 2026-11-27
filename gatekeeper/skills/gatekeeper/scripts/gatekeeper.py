@@ -6973,14 +6973,22 @@ def land(
     as_json: bool = False,
 ) -> int:
     """`land_run`, then with `as_json` one JSON line per PR it judged (print_outcomes), whatever ended it."""
-    WANT_JSON[0] = as_json
+    if not as_json:
+        return land_run(pr, wait, only)
+    WANT_JSON[0] = True
     OUTCOMES.clear()
     try:
-        return land_run(pr, wait, only)
+        code = land_run(pr, wait, only)
+    except Refused as exc:  # said as main says it, before the lines
+        print(exc)
+        code = 1
+    except subprocess.CalledProcessError as exc:
+        print(exc.stderr.strip() or exc)
+        code = 1
     finally:
-        if as_json:
-            print_outcomes()
         WANT_JSON[0] = False
+    print_outcomes()
+    return code
 
 
 def land_run(pr: int | Sequence[int] | None, wait: bool = False, only: bool = False) -> int:

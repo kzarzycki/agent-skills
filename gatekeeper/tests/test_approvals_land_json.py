@@ -56,6 +56,13 @@ def test_a_pr_enqueued_in_githubs_queue_is_queued(queue: dict[str, Any]) -> None
     assert only(lines, 7, head) == ("queued", None)
 
 
+def test_the_line_carries_the_prs_url(queue: dict[str, Any]) -> None:
+    queue["opened"](7)
+    queue["pulls"][7]["url"] = "https://github.com/o/r/pull/7"
+    code, lines = queue["land"]("7", "--json")
+    assert code == 0 and outcomes(lines)[0]["url"] == "https://github.com/o/r/pull/7"
+
+
 def test_a_bare_land_names_each_candidate_it_queued(queue: dict[str, Any]) -> None:
     eight, seven = queue["opened"](8), queue["opened"](7)
     code, lines = queue["land"]("--json")
@@ -126,6 +133,7 @@ def test_a_red_base_is_waiting_on_base_red_and_not_the_prs_fault(queue: dict[str
     code, lines = queue["land"]("7", "--json")
     assert code == 1, lines  # the exit stays 1: only the line tells it from a fault of the PR
     assert only(lines, 7, head) == ("waiting", "base-red")
+    assert lines[-1].startswith("{") and "main itself is red" in lines[-2]  # after the usual output
 
 
 def test_a_bare_land_on_a_red_base_names_every_ready_pr_as_waiting_on_base_red(
