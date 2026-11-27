@@ -589,6 +589,76 @@ def agy_quota_banner(items: list[dict]) -> tuple[float, str] | None:
     return None
 
 
+AGY_SILENT_SECONDS = (
+    300.0  # an agy session with no assistant item this long after its brief is read at its pane
+)
+
+
+def agy_session(info: dict) -> bool:
+    """Whether ``info`` is an Antigravity session (its harness or agent name says so)."""
+    return "antigravity" in f"{info.get('harness') or ''} {info.get('agent_name') or ''}".lower()
+
+
+def agy_pane(sid: str) -> str:
+    """The text of the terminal pane agy runs in, which is the only place its quota banner appears (the session's
+    history holds the brief and nothing else). ``$OMNIGENT_AGY_PANE_CMD`` names the command that prints a session's
+    pane (``{sid}`` is replaced by its id); else every pane of this host's default tmux server is captured. Empty
+    when neither reads one: the pane then lives where this script can't see it (the harness-side fix)."""
+    template = os.environ.get("OMNIGENT_AGY_PANE_CMD")
+    try:
+        if template:
+            return subprocess.run(
+                template.replace("{sid}", sid),
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            ).stdout
+        ids = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        ).stdout.split()
+        return "\n".join(
+            subprocess.run(
+                ["tmux", "capture-pane", "-p", "-J", "-S", "-200", "-t", pane],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            ).stdout
+            for pane in ids
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def agy_quota_failure(sid: str, banner: tuple[float, str]) -> Fail:
+    """Record the quota-out ``banner`` and the failure of session ``sid`` naming its reset time."""
+    record_agy_quota(banner[0])
+    return Fail(
+        f"session {sid} ended: Antigravity's quota is out (resets in {banner[1]}, at"
+        f" {datetime.fromtimestamp(banner[0], timezone.utc):%Y-%m-%d %H:%MZ}); start the verifier on"
+        " the Codex route (--verifier-route codex) until then"
+    )
+
+
+def agy_silent_banner(sid: str, info: dict, items: list[dict]) -> tuple[float, str] | None:
+    """The quota banner in the pane of an agy session that has said nothing since its brief, ``AGY_SILENT_SECONDS``
+    on: the banner never reaches its history, so the history alone reads as a stall or an endless turn."""
+    if not agy_session(info) or any(
+        i.get("type") == "message" and i.get("role") == "assistant" for i in items
+    ):
+        return None
+    sent = [float(i.get("created_at") or 0) for i in items if i.get("role") == "user"]
+    if not sent or time.time() - max(sent) < AGY_SILENT_SECONDS:
+        return None
+    return agy_quota_reset(agy_pane(sid), time.time())
+
+
 def backoff(count: int) -> float:
     """The seconds before the revive after ``count`` earlier ones in a transient chain."""
     return BACKOFF_MINUTES[min(count, len(BACKOFF_MINUTES) - 1)] * 60.0
@@ -5810,6 +5880,8 @@ def wait(
                     file=sys.stderr,
                 )
             break
+        if not counts() and (banner := agy_silent_banner(sid, info, items)):
+            raise agy_quota_failure(sid, banner)
         prompts = prompts_of(info)
         if prompts and not counts():  # a report that counts is taken once settled
             raise Fail(
@@ -5875,12 +5947,7 @@ def wait(
             if stamp(question) is not None:
                 raise Asked(str(question))
             if banner := agy_quota_banner(items):
-                record_agy_quota(banner[0])
-                raise Fail(
-                    f"session {sid} ended: Antigravity's quota is out (resets in {banner[1]}, at"
-                    f" {datetime.fromtimestamp(banner[0], timezone.utc):%Y-%m-%d %H:%MZ}); start the verifier on"
-                    " the Codex route (--verifier-route codex) until then"
-                )
+                raise agy_quota_failure(sid, banner)
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
                 kind = recovery(error, items)
