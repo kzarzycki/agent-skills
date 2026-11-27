@@ -2066,8 +2066,13 @@ class Omnigent:
         raise Fail(f"{LOOP_FILE}: host {host} can't read {target}: {why}")
 
     def interrupt(self, sid: str) -> None:
-        """Stop ``sid``'s running turn, as the owner's stop does."""
-        self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
+        """Stop ``sid``'s running turn, as the owner's stop does. A session whose runner has gone
+        away takes the interrupt as ``queued: false`` and stays running: it then gets the
+        server's ``stop_session`` event, which moves a runnerless session to idle (#2808)."""
+        got = self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
+        not_queued = isinstance(got, dict) and got.get("queued") is False
+        if not_queued and str(self.info(sid).get("status")) in RUNNING:
+            self.call("POST", f"/v1/sessions/{sid}/events", {"type": "stop_session", "data": {}})
 
     def unarchive(self, sid: str) -> None:
         """Bring archived ``sid`` back with its transcript: the next message relaunches its agent
