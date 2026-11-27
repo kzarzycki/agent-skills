@@ -46,7 +46,15 @@ def hub(monkeypatch: pytest.MonkeyPatch, **states: str) -> Hub:
 
 def worker(og: base.FakeOmnigent, tmp_path: Path, pr: int = 7, role: str | None = None) -> str:
     sid, _ = omnigent_agent.start(
-        og, "claude-cloud", f"t{pr}", "do X", tmp_path / "r", role, 0, pr=pr
+        og,
+        "claude-cloud",
+        f"t{pr}",
+        "do X",
+        tmp_path / "r",
+        role,
+        0,
+        pr=pr,
+        effort="high" if role else None,
     )
     return sid
 
@@ -98,6 +106,10 @@ def test_a_verifier_with_pr_ends_with_its_verdict_and_gets_no_label(
 ) -> None:
     fake = hub(monkeypatch)
     fake.comments["42"] = base.on_pr(7, "VERDICT: 0 blocker, 0 major\nSATISFIED: yes\n")
+    og.harnesses = {
+        "claude-cloud": omnigent_agent.CLOUD_HARNESS
+    }  # a verifier's start signs its harness
+    (tmp_path / "verifier.md").write_text("role")
     sid = worker(og, tmp_path, 7, role=str(tmp_path / "verifier.md"))
     assert og.labels == {}
     assert omnigent_agent.main(["wait", sid, "v.md", "--pr", "7", "--verdict"]) == 0
