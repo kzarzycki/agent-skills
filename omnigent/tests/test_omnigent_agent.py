@@ -12582,34 +12582,44 @@ def test_the_real_interrupt_posts_the_interrupt_event(monkeypatch: pytest.Monkey
     calls: list[tuple] = []
     og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
     og.call = lambda m, p, b=None: calls.append((m, p, b)) or {}  # type: ignore[method-assign]
+    og.info = lambda sid, usage=False: {"status": "idle"}  # type: ignore[method-assign]
     og.interrupt("s1")
     assert calls == [("POST", "/v1/sessions/s1/events", {"type": "interrupt"})]
 
 
-def real_interrupt(reply: dict, status: str) -> list[tuple]:
+def real_interrupt(status: str, stop: Exception | None = None) -> list[tuple]:
     calls: list[tuple] = []
+
+    def call(m: str, p: str, b: object = None, **_k: object) -> dict:
+        calls.append((m, p, b))
+        if stop and isinstance(b, dict) and b.get("type") == "stop_session":
+            raise stop
+        return {"queued": False}  # the server's answer to an interrupt, always
+
     og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
-    og.call = lambda m, p, b=None, **k: calls.append((m, p, b)) or reply  # type: ignore[method-assign]
+    og.call = call  # type: ignore[method-assign]
     og.info = lambda sid, usage=False: {"status": status}  # type: ignore[method-assign]
     og.interrupt("s1")
     return calls
 
 
-def test_an_interrupt_not_queued_that_leaves_the_session_running_sends_stop_session() -> None:
-    calls = real_interrupt({"queued": False}, "running")
-    assert calls == [
+def test_an_interrupt_that_leaves_the_session_running_sends_stop_session() -> None:
+    assert real_interrupt("running") == [
         ("POST", "/v1/sessions/s1/events", {"type": "interrupt"}),
         ("POST", "/v1/sessions/s1/events", {"type": "stop_session", "data": {}}),
     ]
 
 
 def test_an_interrupt_that_stops_the_session_gets_no_stop_session() -> None:
-    assert real_interrupt({"queued": False}, "idle") == [
-        ("POST", "/v1/sessions/s1/events", {"type": "interrupt"})
-    ]
-    assert real_interrupt({"queued": True}, "running") == [
-        ("POST", "/v1/sessions/s1/events", {"type": "interrupt"})
-    ]
+    assert real_interrupt("idle") == [("POST", "/v1/sessions/s1/events", {"type": "interrupt"})]
+
+
+def test_a_refused_stop_session_does_not_raise_so_reap_still_archives(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = real_interrupt("running", omnigent_agent.Fail("HTTP 403 Forbidden"))
+    assert len(calls) == 2
+    assert "stop_session failed: HTTP 403" in capsys.readouterr().err
 
 
 def test_reap_force_sends_stop_session_then_archives_a_runnerless_session() -> None:
