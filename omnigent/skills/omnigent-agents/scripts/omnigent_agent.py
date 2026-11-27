@@ -3613,9 +3613,7 @@ def host_capacity(
     cap = None if not cpu else host_row(name).get("max_sessions")
     if cap is not None:
         # from the session list, so it holds where load and memory can't be read
-        live = len(
-            [s for s in live_sessions(og, host_id) if str(s.get("harness") or "") != CLOUD_HARNESS]
-        )
+        live = len([s for s in live_sessions(og, host_id) if not cloud_session(og, s)])
         if live >= cap:
             return False, f"{live} live sessions (max {cap:g})" + (
                 f"; {line}" if ok is not None else ""
