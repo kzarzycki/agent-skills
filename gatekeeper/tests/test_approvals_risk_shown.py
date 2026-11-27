@@ -76,3 +76,48 @@ def test_a_merged_prs_issue_closed_by_the_merge_is_no_finding() -> None:
 def test_an_open_prs_closed_issue_is_still_refused() -> None:
     pr = merged("OPEN")
     assert approvals.closes_nothing(pr, pr["closingIssuesReferences"]["nodes"], LOOP)
+
+
+def stated_line(
+    gating: Gate, capsys: pytest.CaptureFixture[str], verdict: str, label: str, settings: str
+) -> str:
+    state, _ = gating
+    policy(settings)
+    state["pull"] = judged_pr(judging(verdict), labels=(label,))
+    _, _, err = check_merge(capsys)
+    return next(each for each in err if each.startswith("PR #7: risk:"))
+
+
+VERIFIER = "risk:\n  verifier: true\n"
+
+
+def test_a_high_gate_rating_still_shows_the_stated_medium(
+    gating: Gate, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """With `risk.verifier` a medium verdict makes the gate rate the change high; the line keeps that rating and the
+    merge action, and shows what the label and the verdict say beside it."""
+    line = stated_line(gating, capsys, "medium — unsure", "risk:medium", VERIFIER)
+    assert line.startswith("PR #7: risk: high (") and "; merge: go" in line
+    assert "PR label `risk:medium`" in line and "verifier `Risk: medium`" in line
+
+
+def test_a_high_gate_rating_names_a_label_and_verdict_that_disagree(
+    gating: Gate, capsys: pytest.CaptureFixture[str]
+) -> None:
+    line = stated_line(gating, capsys, "high — wide", "risk:medium", VERIFIER)
+    assert line.startswith("PR #7: risk: high (") and "disagree" in line
+    assert "PR label `risk:medium`" in line and "verifier `Risk: high`" in line
+
+
+def test_check_merge_on_a_merged_pr_says_nothing_of_a_closed_issue(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The command a lead runs after the merge: the PR is MERGED and GitHub closed its `Closes #n` issue."""
+    monkeypatch.setattr(approvals, "project", lambda: (TRACKER, LOOP))
+    pr = merged("MERGED")
+    monkeypatch.setattr(approvals, "pull_request", lambda _n: pr)
+    monkeypatch.setattr(
+        approvals, "issues_of", lambda numbers: [pr["closingIssuesReferences"]["nodes"][0]]
+    )
+    approvals.main(["check", "merge", "7"])
+    assert "closes no open issue" not in capsys.readouterr().out

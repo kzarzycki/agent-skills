@@ -1961,8 +1961,18 @@ class Rated(NamedTuple):
                 why = " and ".join(stated_parts(label, said)) + "; no gate rule rates it higher"
         shown = f"{level} ({why})" if why else level
         note = ""
-        if self.level == "low" and len(words) > 1:  # a higher rating already is the gate's word
+        if self.level == "low" and len(words) > 1:
             note = f"; the PR's label and the verdict disagree: {' vs '.join(stated_parts(label, said))}"
+        elif self.level != "low":
+            # the gate's own rating stands and the merge action is unchanged; what the PR says beside it still shows,
+            # unless it only repeats the rating (`risk:high` the why cites) or says low
+            shown_label = [each for each in label if each != "low"]
+            shown_said = said if said and said != "low" else None
+            stated = {*shown_label, *([shown_said] if shown_said else [])}
+            if stated - {self.level} or len(stated) > 1:
+                disagree = bool(shown_label) and shown_said is not None and len(stated) > 1
+                kind = "disagree" if disagree else "state"
+                note = f"; the PR's label and the verdict {kind}: {' vs '.join(stated_parts(shown_label, shown_said))}"
         return f"PR #{pull['number']}: risk: {shown}; merge: {self.merge}{note}"
 
 
