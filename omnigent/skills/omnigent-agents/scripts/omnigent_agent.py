@@ -3644,8 +3644,9 @@ EFFORTS = {
     "codex-native": None,
 }
 AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
-# the verifier's routes (`--verifier-route`): the default stays Codex, the other two are its fallback when it refuses
+# the verifier's routes (`--verifier-route`): with no setting the default stays Codex, the other two are its fallback when it refuses
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
+VALUES_FILE, VALUES_ENV = "cos-values.yml", "COS_VALUES"
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
 # codex's own flag for approval_policy "never" with the danger-full-access sandbox; CODEX_DEFAULT is the
@@ -8422,6 +8423,39 @@ def record_collected(og: Omnigent, sid: str, report: Path, pr: int, far: bool) -
     record_verdict(pr, bring_home(og, sid, report, keep=True) if far else report)
 
 
+def verifier_setting() -> dict[str, Any]:
+    """The setup's default verifier, the `verifier:` block (`route`, `model`, `fallback`) of its values file
+    (chief-of-staff's `cos_values.py` owns the schema and checks it): `$COS_VALUES`, else `cos-values.yml` in the
+    current folder. Empty where there is no file or no block, so the pack's own order holds (#2840). Read with the
+    standard library only, since this script runs without PyYAML: a scalar or a `[a, b]` list per line."""
+    named = os.environ.get(VALUES_ENV)
+    path = Path(named).expanduser() if named else Path(VALUES_FILE)
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return {}
+    setting: dict[str, Any] = {}
+    inside = False
+    for raw in lines:
+        line = raw.split(" #")[0].rstrip()
+        if not line.strip():
+            continue
+        if not raw.startswith((" ", "\t")):
+            inside = line.strip() == "verifier:"
+            continue
+        if not inside or ":" not in line:
+            continue
+        key, _, value = line.strip().partition(":")
+        value = value.strip().strip("'\"")
+        if key == "fallback":
+            setting[key] = [
+                x.strip().strip("'\"") for x in value.strip("[]").split(",") if x.strip()
+            ]
+        elif key in ("route", "model") and value:
+            setting[key] = value
+    return setting
+
+
 def apply_route(args: argparse.Namespace) -> None:
     """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
     agy needs to run unattended) and `claude` a fresh Claude session of any model, the author's own included, marked
@@ -12668,7 +12702,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             "--verifier-route",
             choices=VERIFIER_ROUTES,
             default=None,
-            help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else codex): codex is the"
+            help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else the setup's `verifier.route`"
+            " in its values file, else codex): codex is the"
             " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
             " logged in); claude with a fresh Claude session of any --model (same-family)."
             " The two fallbacks are for a Codex refusal",
@@ -13581,9 +13616,32 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     f"--verifier-route {args.verifier_route} applies to a verifier start only:"
                     " pass --role <skills>/engineering-loop/verifier.md"
                 )
-            args.verifier_route = args.verifier_route or os.environ.get(
-                "OMNIGENT_VERIFIER_ROUTE", "codex"
+            setting = verifier_setting() if verifier else {}
+            # the flag, then $OMNIGENT_VERIFIER_ROUTE, then the setup's setting, then Codex
+            args.verifier_route = (
+                args.verifier_route
+                or os.environ.get("OMNIGENT_VERIFIER_ROUTE")
+                or setting.get("route")
+                or "codex"
             )
+            if verifier and args.verifier_route not in VERIFIER_ROUTES:
+                raise Fail(
+                    f"verifier route {args.verifier_route!r} is none of {', '.join(VERIFIER_ROUTES)}"
+                )
+            # the setting's model belongs to the setting's route: another route (a flag or the variable) is not
+            # the model's
+            if verifier and not args.model and args.verifier_route == setting.get("route"):
+                args.model = setting.get("model")
+            if verifier:
+                print(
+                    f"verifier route: {args.verifier_route}, model: {args.model or 'the agent default'}"
+                    + (
+                        f" (setup fallback: {', '.join(setting['fallback'])})"
+                        if setting.get("fallback")
+                        else ""
+                    ),
+                    file=sys.stderr,
+                )
         if verifier and args.verifier_route != "codex":
             apply_route(args)
         verifies = args.pr if verifier else None

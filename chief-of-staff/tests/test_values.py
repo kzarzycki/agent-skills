@@ -208,6 +208,24 @@ def test_relative_home_resolves_to_absolute(tmp_path, monkeypatch):
     assert v.path("registry") == tmp_path / "h/tmp/loop/leads.registry"
 
 
+def test_verifier_block_is_optional_and_checked(tmp_path, monkeypatch):
+    monkeypatch.delenv(cv.ENV_VAR, raising=False)
+    assert cv.load(home=tmp_path).get("verifier.route") is None
+    _write(
+        tmp_path, "verifier:\n  route: gemini\n  model: some-model\n  fallback: [codex, claude]\n"
+    )
+    v = cv.load(home=tmp_path)
+    assert [v.get(f"verifier.{k}") for k in ("route", "model", "fallback")] == [
+        "gemini",
+        "some-model",
+        ["codex", "claude"],
+    ]
+    _write(tmp_path, "verifier:\n  route: gpt\n  fallback: [codex, bard]\n  mode: x\n")
+    with pytest.raises(cv.ValuesError) as e:
+        cv.load(home=tmp_path)
+    assert set(e.value.keys) == {"verifier.route", "verifier.fallback", "verifier.mode"}
+
+
 DROPPED = [
     *("hosts." + k for k in ("cloud_bridge", "no_local_loop", "orchestration", "memory_floor")),
     "decisions.cos_line",
