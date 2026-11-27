@@ -18,8 +18,9 @@ a subfolder are not checks and are skipped. Each check's own output passes throu
     PASS acceptance/7/01-ok.sh (0.1s)
     FAIL acceptance/7/02-broken.sh (2.3s)
 
-A check whose first lines say `# acceptance: live` needs a live environment (a cloud session, a server) and is
-skipped by `--all` with a `SKIP` line; run by its issue number it runs as any other.
+A check whose first lines say `# acceptance: live` needs a live environment (a cloud session, a server), and one that
+says `# acceptance: skip <issue link>` is known red with its issue linked; `--all` skips either with a
+`SKIP` line naming the reason; run by its issue number it runs as any other.
 
 A file that cannot be started (no shebang, say) is a FAIL with the reason. `--all` runs every
 `acceptance/*/` folder in issue order, for the nightly. The last line is the total:
@@ -94,16 +95,25 @@ def checks(folder: Path) -> list[Path]:
     )
 
 
-LIVE = re.compile(r"^#\s*acceptance:\s*live\b", re.IGNORECASE | re.MULTILINE)
+MARKER = re.compile(r"^#\s*acceptance:\s*(live|skip)\b[ \t]*(\S*)", re.IGNORECASE | re.MULTILINE)
 
 
-def live(check: Path) -> bool:
-    """Whether the check's first lines carry `# acceptance: live`: it needs a live environment (a cloud session, an
-    Omnigent server) that a scheduled run has not, so `--all` skips it. Run by its issue number, it runs as any other."""
+def skipped(check: Path) -> str | None:
+    """Why `--all` skips `check`, from the marker in its first lines, else None. `# acceptance: live`: it needs a live
+    environment (a cloud session, a server) that a scheduled run has not. `# acceptance: skip <issue link>`: it is
+    known red and its issue is linked (a known-red check is skipped with its issue, never removed). Run by its issue
+    number, a marked check runs as any other."""
     try:
-        return bool(LIVE.search(check.read_text(errors="replace")[:1000]))
+        found = MARKER.search(check.read_text(errors="replace")[:1000])
     except OSError:
-        return False
+        return None
+    if not found:
+        return None
+    return (
+        "needs a live environment"
+        if found[1].lower() == "live"
+        else f"known red, tracked in {found[2] or 'no issue linked'}"
+    )
 
 
 def issue_order(folder: Path) -> tuple[int, int, str]:
@@ -173,12 +183,9 @@ def main(argv: list[str] | None = None) -> int:
             empty.append(folder)
             print(f"NONE {folder.relative_to(root).as_posix()}/ (no executable file)", flush=True)
         if args.all:
-            for check in (c for c in found if live(c)):
-                print(
-                    f"SKIP {check.relative_to(root).as_posix()} (needs a live environment)",
-                    flush=True,
-                )
-            found = [c for c in found if not live(c)]
+            for check in (c for c in found if skipped(c)):
+                print(f"SKIP {check.relative_to(root).as_posix()} ({skipped(check)})", flush=True)
+            found = [c for c in found if not skipped(c)]
         for check in found:
             if run(check, root):
                 passed += 1

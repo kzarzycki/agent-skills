@@ -146,6 +146,17 @@ def test_all_skips_a_live_check_and_a_named_issue_runs_it(repo: Path) -> None:
     assert acceptance(repo, "6").returncode == 1
 
 
+def test_all_skips_a_known_red_check_naming_its_issue_and_a_named_issue_runs_it(repo: Path) -> None:
+    """A known-red check is skipped with its issue linked, never removed: one marker, `# acceptance: skip <link>`."""
+    link = "https://github.com/o/r/issues/9"
+    check(repo, "acceptance/5/01-ok.sh", PASSING)
+    check(repo, "acceptance/6/red.sh", f"#!/bin/sh\n# acceptance: skip {link}\nexit 3\n")
+    everything = acceptance(repo, "--all")
+    assert everything.returncode == 0, everything.stdout + everything.stderr
+    assert f"SKIP acceptance/6/red.sh (known red, tracked in {link})" in everything.stdout
+    assert acceptance(repo, "6").returncode == 1
+
+
 def test_all_exits_0_when_every_folder_passes(repo: Path) -> None:
     check(repo, "acceptance/9/ok.sh", PASSING)
     check(repo, "acceptance/10/ok.sh", PASSING)
