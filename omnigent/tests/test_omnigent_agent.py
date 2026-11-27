@@ -10150,6 +10150,21 @@ def test_a_name_held_by_identical_copies_resolves_to_the_newest_in_any_listing_o
         assert calls[-1][2]["agent_id"] == "c2"
 
 
+def test_a_name_held_by_copies_resolves_to_the_highest_version_not_the_newest_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for listed in (("c1", "c2"), ("c2", "c1")):
+        pages = _copies({}, listed)
+        # version 2 (c2) was created before version 1 (c1) was registered again
+        for page in pages["/v1/agents?scope=user"]["data"]:  # type: ignore[index]
+            page["version"] = 2 if page["id"] == "c2" else 1
+            if page["id"] in ("c1", "c2"):
+                page["created_at"] = 100 if page["id"] == "c2" else 200
+        calls = _agent_server(monkeypatch, pages)
+        omnigent_agent.Omnigent().create("claude-cloud", "t")
+        assert calls[-1][2]["agent_id"] == "c2"
+
+
 def test_a_name_held_by_agents_that_differ_is_refused_with_their_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
