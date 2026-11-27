@@ -214,7 +214,7 @@ def test_land_on_a_queue_base_enqueues_and_exits_without_a_sleep_or_another_read
     queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Without `--wait` the queue is GitHub's to watch: land enqueues and exits, so a session holds no slot and spends no
-    quota; `land --wait` waits on until the queue merges it or takes it out (test_land_wait_queue_budget.py)."""
+    quota; `--wait` on a queue base does the same (#1287, test_land_wait_queue_budget.py)."""
     head = queue["opened"](7)
     # a poll sleeps POLL (30 s) or more; subprocess.wait sleeps a few ms on the same time module, which a slow
     # runner reaches while a git push runs (#1892), so only a poll-length sleep fails
@@ -881,7 +881,6 @@ def test_land_wait_on_an_unknown_mergeability_exits_3_at_once_and_a_later_land_e
     code, lines = queue["land"]("8", "--wait")
     assert code == approvals.WAITING and queue["enqueued"] == [], lines
     queue["pulls"][8]["mergeable"] = "MERGEABLE"
-    # with --wait it would wait on, for the merge (test_land_wait_queue_budget.py)
     assert queue["land"]("8")[0] == 0
     assert queue["enqueued"] == [(8, head)]
 

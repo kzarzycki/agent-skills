@@ -282,12 +282,10 @@ head, from the `Timed out in the merge queue` records land comments (#2308). Eit
 head, a ready-again (as its reds' count does) or a changed `timeouts.run`, which the `Timed out twice in the merge
 queue` record each leaves at the head names (`Run:`). Mergify records its first timeout too, so a budget raised between
 the two makes the next a fresh first; the GitHub queue records only its stop, so both timeouts count. The count lives in GitHub's timeline, so any land applies it and `land` keeps no
-state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends. `land <pr> --wait`
-waits on instead until the queue merges it (exit 0, after its `Landed` comment) or takes it out, whose removal the
-next round reads as above (#2101): between rounds it reads, each QUEUE_WATCH seconds (60), only the PR's state, head and
-queue entry, one GraphQL call (two ETag reads on REST, a 304 costing no quota), so a lead need not poll the PR itself;
-the same holds under `land.queue: mergify`, where a merge, Mergify's dequeued label or a push ends that read. A later
-`land <pr>` reads a removed entry's state once (above). Exit 3 stays for a PR whose conflict GitHub is still
+state. A PR enqueued or already queued exits 0, naming its queue position and head, and `land` ends: `--wait` on a GitHub-queue base
+is the same as no flag (#1287), so it sleeps and reads nothing after the enqueue, whatever the queue takes (the entry's
+removal is read by the next `land <pr>`, above). Under `land.queue: mergify` `land <pr> --wait` still waits on until
+Mergify merges it or dequeues it (#2101), reading between rounds, each QUEUE_WATCH seconds (60), only the PR's state and labels. Exit 3 stays for a PR whose conflict GitHub is still
 working out, or a base still running its checks: nothing was enqueued yet. Without `--wait`, who tells the lead of a merge or a removal
 is the project's watcher, not `land`. The first land that reads
 a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads every merged PR into the base that carries
@@ -9079,8 +9077,8 @@ def github_queue(
     """The GitHub merge queue, which `base`'s rules require (merging with `method`): no landing lock, local batch or
     local gate, since GitHub's queue orders the entries, gates each group with its `merge_group` CI run and isolates a
     red one. Every candidate (candidates_of), oldest PR first, goes in pinned to its head (queue_step). A PR in
-    the queue is done (exit 0), and land exits; `--wait` waits on a named one until the queue merges it (exit 0) or
-    takes it out (the round then reads the removal), reading only its queue state each QUEUE_WATCH (#2101). Exit 3
+    the queue is done (exit 0), and land exits, `--wait` or not (#1287): it never loops on the queue, and a later
+    `land <pr>` reads a removal. Exit 3
     stays for a PR GitHub is still working out a conflict of, or a base still running its checks, which a later `land`
     reads again."""
     if signed(loop):
@@ -9094,15 +9092,12 @@ def github_queue(
     candidates, exits, _ = candidates_of(named, base, tracker, loop, required, only)
     numbers, failed = {pull["number"] for pull in named}, set()
     for pull in candidates:
-        code, queued = queue_step(pull, base, method, loop, required)
+        code, _ = queue_step(pull, base, method, loop, required)
         if code == 1:
             failed.add(pull["number"])
-        if waiting and code == 0 and queued and pull["number"] in numbers:
-            # land --wait waits on until the queue merges it or takes it out (#2101), reading only its queue state
-            watched["queued"][pull["number"]] = GITHUB
-            exits[pull["number"]] = (WAITING, True)
-        elif pull["number"] in numbers or code != WAITING:
-            # what candidates_of waits on (a check, an owner's go) keeps its own wait
+        if pull["number"] in numbers or code != WAITING:
+            # a PR the queue holds is done (exit 0), `--wait` or not: land never loops on the queue (#1287); what
+            # candidates_of waits on (a check, an owner's go) keeps its own wait
             exits[pull["number"]] = (code, False)
     if not named:
         queue_trail(base)
