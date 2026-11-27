@@ -11451,6 +11451,26 @@ def test_a_cloud_child_s_question_is_asked_beside_its_report(
     assert not report.exists() and og.posts == 1  # no nudge
 
 
+class CloudPosting(Posting, CloudFake):
+    """A ``Posting`` whose sessions are ``claude-cloud`` ones, so a QUESTION reply is read as one."""
+
+
+def test_a_covered_child_that_writes_a_question_wakes_its_lead_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    og = CloudPosting(reply="QUESTION\nWhich option should I choose: A or B?")
+    calls = notify_stub(tmp_path, monkeypatch)
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "lead")
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.chdir(tmp_path)
+    report = tmp_path / "r.md"
+    sid, _ = omnigent_agent.start(og, "claude-cloud", "t", "do X", report, None, 0)
+    og.parents[sid] = "lead"  # covered: Omnigent tells the lead when this turn ends
+    assert omnigent_agent.main(["wait", sid, str(report), "--notify"]) == omnigent_agent.ASKED
+    assert og.wakes(calls) == 1 and not calls.exists()  # Omnigent's notice only
+    assert "not telling $LOOP_NOTIFY" in capsys.readouterr().err
+
+
 def test_a_far_cloud_child_s_question_is_written_on_its_host(tmp_path: Path) -> None:
     og = CloudFake(reply="QUESTION\nA or B?")
     report = tmp_path / "r.md"

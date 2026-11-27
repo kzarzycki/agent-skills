@@ -12875,7 +12875,8 @@ def main(argv: list[str] | None = None) -> int:
             tell(ended, f"exit {1 if isinstance(e, Exception) else 130}: {ended['failure']}", False)
         raise
     if "report" in ended:
-        turn_end = code == 0 and "failure" not in ended  # the report is in: the child's turn ended
+        # the report is in (exit 0) or a question is (exit 3): the child's turn ended either way
+        turn_end = code == ASKED or (code == 0 and "failure" not in ended)
         tell(ended, f"exit {code}: {ended.get('failure') or ended['report']}", turn_end)
     return code
 
