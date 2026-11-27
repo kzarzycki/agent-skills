@@ -12090,8 +12090,8 @@ def test_the_first_head_seen_for_a_repo_is_stored_and_raises_nothing(
     assert state_of(registry)["heads"] == {"o/r": OLD}
     assert landed(registry) == [] and posted(og) == []
     # no comparison: no old head (the PR poll's reads aside: the PR-stall sweep's open PRs, #1819, and the queue's
-    # comments, #2085)
-    swept = ("pulls?state=open", "issues/comments?")
+    # comments, #2085, and the red-nightly issues, #1386)
+    swept = ("pulls?state=open", "issues/comments?", "issues?state=open")
     read = [c[1] for c in calls if not any(sweep in c[2] for sweep in swept)]
     assert read == ["repos/o/r/commits/HEAD"]
 

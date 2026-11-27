@@ -67,6 +67,26 @@ def test_engineering_ci_runs_on_every_pr_and_all_deterministic_gates() -> None:
         assert command in commands
 
 
+def test_the_scheduled_run_runs_acceptance_all_and_a_red_one_opens_the_nightly_issue() -> None:
+    """#1386: the scheduled run runs every spec's acceptance checks, and a red one calls `nightly.py red`."""
+    workflow = _workflow("engineering-ci.yml")
+    jobs = workflow["jobs"]
+    acceptance = jobs["acceptance"]
+    assert acceptance["if"] == "github.event_name == 'schedule'"
+    assert any(step.get("run", "").endswith("acceptance.py --all") for step in acceptance["steps"])
+    red = jobs["nightly-red"]
+    assert set(red["needs"]) == {"qualify", "acceptance"}
+    assert red["if"].startswith("always() && github.event_name == 'schedule'")
+    assert "needs.qualify.result == 'failure'" in red["if"]
+    assert "needs.acceptance.result == 'failure'" in red["if"]
+    # the one job that writes issues; the workflow's default stays read-only
+    assert red["permissions"]["issues"] == "write"
+    assert "issues" not in workflow["permissions"]
+    call = next(step for step in red["steps"] if "nightly.py red" in step.get("run", ""))
+    for flag in ("--last-green", "--red", "--run"):
+        assert flag in call["run"]
+
+
 def test_tag_workflow_is_package_scoped() -> None:
     workflow = _workflow("engineering-tag-check.yml")
     commands = "\n".join(step.get("run", "") for step in _steps(workflow))

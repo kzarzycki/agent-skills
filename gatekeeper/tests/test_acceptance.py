@@ -62,7 +62,7 @@ def test_a_passing_and_a_failing_check_print_one_line_each_and_exit_1(repo: Path
         "PASS acceptance/7/01-ok.sh",
         "FAIL acceptance/7/02-broken.sh",
     ]
-    assert "TOTAL 2 checks, 1 passed, 1 failed" in result.stdout
+    assert "TOTAL 2 checks, 1 passed, 0 skipped, 1 failed" in result.stdout
     assert "OVER BUDGET" not in result.stdout
 
 
@@ -132,6 +132,49 @@ def test_all_runs_every_folder_in_issue_order_and_exits_1_when_one_fails(repo: P
         "PASS acceptance/9/ok.sh",
         "PASS acceptance/10/ok.sh",
     ]
+
+
+def test_all_skips_a_live_check_and_a_named_issue_runs_it(repo: Path) -> None:
+    """#1386: the nightly has no live environment, so `--all` skips a `# acceptance: live` check, and a folder holding
+    only such checks is not an empty one; run by its number the check runs."""
+    check(repo, "acceptance/5/01-ok.sh", PASSING)
+    check(repo, "acceptance/6/live.sh", "#!/bin/sh\n# acceptance: live\nexit 3\n")
+    everything = acceptance(repo, "--all")
+    assert everything.returncode == 0, everything.stdout + everything.stderr
+    assert "SKIP acceptance/6/live.sh" in everything.stdout
+    assert verdicts(everything.stdout) == ["PASS acceptance/5/01-ok.sh"]
+    assert acceptance(repo, "6").returncode == 1
+
+
+def test_all_skips_a_known_red_check_naming_its_issue_and_a_named_issue_runs_it(repo: Path) -> None:
+    """A known-red check is skipped with its issue linked, never removed: one marker, `# acceptance: skip <link>`."""
+    link = "https://github.com/o/r/issues/9"
+    check(repo, "acceptance/5/01-ok.sh", PASSING)
+    check(repo, "acceptance/6/red.sh", f"#!/bin/sh\n# acceptance: skip {link}\nexit 3\n")
+    everything = acceptance(repo, "--all")
+    assert everything.returncode == 0, everything.stdout + everything.stderr
+    assert f"SKIP acceptance/6/red.sh (known red, tracked in {link})" in everything.stdout
+    assert acceptance(repo, "6").returncode == 1
+
+
+def test_a_skip_marker_without_an_issue_link_is_not_honoured_and_skips_are_counted(
+    repo: Path,
+) -> None:
+    """The verifier's F1 and F2 (#2811): a known-red check hides only behind its linked issue, and `TOTAL` counts
+    what was skipped, so passed + failed + skipped is every script found."""
+    check(repo, "acceptance/5/01-ok.sh", PASSING)
+    check(repo, "acceptance/6/nolink.sh", "#!/bin/sh\n# acceptance: skip\nexit 3\n")
+    check(
+        repo,
+        "acceptance/7/linked.sh",
+        "#!/bin/sh\n# acceptance: skip https://example.test/i/1\nexit 3\n",
+    )
+    check(repo, "acceptance/8/live.sh", "#!/bin/sh\n# acceptance: live\nexit 3\n")
+    result = acceptance(repo, "--all")
+    assert result.returncode == 1  # the unlinked skip ran, and failed
+    assert verdicts(result.stdout) == ["PASS acceptance/5/01-ok.sh", "FAIL acceptance/6/nolink.sh"]
+    assert "NOTE acceptance/6/nolink.sh: `# acceptance: skip` names no issue link" in result.stdout
+    assert "TOTAL 4 checks, 1 passed, 2 skipped, 1 failed" in result.stdout
 
 
 def test_all_exits_0_when_every_folder_passes(repo: Path) -> None:
