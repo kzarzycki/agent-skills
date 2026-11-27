@@ -6,6 +6,7 @@ import os
 import subprocess
 import threading
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -17,6 +18,33 @@ from approvals_harness import (
 )
 
 REF = approvals.LOCK.format("main")
+
+
+@pytest.fixture(autouse=True)
+def beat_threads(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[list[tuple[threading.Event, threading.Thread]]]:
+    """Every beat a test starts is stopped and joined before its fixtures go (#2835): a beat left running kept pushing
+    a lock into the next test's repository, through that test's own patched `leased` and `git`. It depends on
+    `lands` and `monkeypatch` so it tears down first, while both are still in place."""
+    started: list[tuple[threading.Event, threading.Thread]] = []
+    yield started
+    for stop, _ in started:
+        stop.set()
+    for _, thread in started:
+        thread.join(30)
+    alive = [t for t in threading.enumerate() if t.is_alive() and t._target is approvals.heartbeat]  # type: ignore[attr-defined]
+    assert not alive, f"{len(alive)} beat thread(s) still alive after teardown"
+
+
+def start_beat(
+    started: list[tuple[threading.Event, threading.Thread]], held: list[str]
+) -> tuple[threading.Event, threading.Thread]:
+    stop = threading.Event()
+    thread = threading.Thread(target=approvals.heartbeat, args=("main", held, stop), daemon=True)
+    started.append((stop, thread))
+    thread.start()
+    return stop, thread
 
 
 def lock_aged(lands: dict[str, Any], minutes: int, body: str) -> str:
@@ -77,21 +105,23 @@ def test_a_young_beating_lock_is_waited_on(lands: dict[str, Any]) -> None:
 
 
 def beating(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    started: list[tuple[threading.Event, threading.Thread]],
 ) -> tuple[list[str], threading.Event, threading.Thread]:
     monkeypatch.setattr(approvals, "BEAT", 0.02)
     held: list[str] = []
     assert approvals.locked("main", held, 7)
-    stop = threading.Event()
-    thread = threading.Thread(target=approvals.heartbeat, args=("main", held, stop), daemon=True)
-    thread.start()
+    stop, thread = start_beat(started, held)
     return held, stop, thread
 
 
 def test_a_live_holders_heartbeat_moves_the_lock_and_keeps_the_pr_it_names(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    beat_threads: list[tuple[threading.Event, threading.Thread]],
 ) -> None:
-    held, stop, thread = beating(lands, monkeypatch)
+    held, stop, thread = beating(lands, monkeypatch, beat_threads)
     first = held[0]
     deadline = time.monotonic() + 20
     while len(held) < 3 and time.monotonic() < deadline:
@@ -108,16 +138,16 @@ def test_a_live_holders_heartbeat_moves_the_lock_and_keeps_the_pr_it_names(
 
 
 def test_a_holder_whose_lock_was_taken_stops_beating_and_refuses_to_merge(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    beat_threads: list[tuple[threading.Event, threading.Thread]],
 ) -> None:
     monkeypatch.setattr(approvals, "BEAT", 3600)  # no beat until the test moves the lock
     held: list[str] = []
     assert approvals.locked("main", held, 7)
     lock_aged(lands, 0, "pid 2, PR #8, beats, nonce b")  # another land took it
     monkeypatch.setattr(approvals, "BEAT", 0.02)
-    stop = threading.Event()
-    thread = threading.Thread(target=approvals.heartbeat, args=("main", held, stop), daemon=True)
-    thread.start()
+    _, thread = start_beat(beat_threads, held)
     thread.join(20)
     assert not thread.is_alive() and held == []
     with pytest.raises(approvals.Refused, match="took the landing lock"):
@@ -125,22 +155,24 @@ def test_a_holder_whose_lock_was_taken_stops_beating_and_refuses_to_merge(
 
 
 def run_beat(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch, failing: Any
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    failing: Any,
+    started: list[tuple[threading.Event, threading.Thread]],
 ) -> tuple[list[str], threading.Thread]:
     monkeypatch.setattr(approvals, "BEAT", 3600)
     held: list[str] = []
     assert approvals.locked("main", held, 7)
     monkeypatch.setattr(approvals, "BEAT", 0.02)
     monkeypatch.setattr(approvals, "leased", failing)
-    thread = threading.Thread(
-        target=approvals.heartbeat, args=("main", held, threading.Event()), daemon=True
-    )
-    thread.start()
+    _, thread = start_beat(started, held)
     return held, thread
 
 
 def test_a_beat_lost_to_the_network_keeps_the_lock_and_tries_again(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    beat_threads: list[tuple[threading.Event, threading.Thread]],
 ) -> None:
     real_leased, real_git, calls = approvals.leased, approvals.git, []
 
@@ -158,7 +190,7 @@ def test_a_beat_lost_to_the_network_keeps_the_lock_and_tries_again(
         return real_git(*args)
 
     monkeypatch.setattr(approvals, "git", down)
-    held, thread = run_beat(lands, monkeypatch, flaky)
+    held, thread = run_beat(lands, monkeypatch, flaky, beat_threads)
     deadline = time.monotonic() + 20
     while len(calls) < 2 and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -166,7 +198,9 @@ def test_a_beat_lost_to_the_network_keeps_the_lock_and_tries_again(
 
 
 def test_a_beat_that_reached_origin_but_reported_failure_stays_in_held(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    beat_threads: list[tuple[threading.Event, threading.Thread]],
 ) -> None:
     real_leased = approvals.leased
     seen: list[str] = []
@@ -176,7 +210,7 @@ def test_a_beat_that_reached_origin_but_reported_failure_stays_in_held(
         seen.append(new)
         return subprocess.CompletedProcess([], 1, "", "reset")
 
-    held, _ = run_beat(lands, monkeypatch, lost_answer)
+    held, _ = run_beat(lands, monkeypatch, lost_answer, beat_threads)
     deadline = time.monotonic() + 20
     while not seen and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -184,7 +218,9 @@ def test_a_beat_that_reached_origin_but_reported_failure_stays_in_held(
 
 
 def test_a_lost_answer_then_an_unreadable_tip_keeps_the_land_beating_and_its_lock_its_own(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    beat_threads: list[tuple[threading.Event, threading.Thread]],
 ) -> None:
     real_leased, real_git, seen = approvals.leased, approvals.git, []
 
@@ -203,7 +239,7 @@ def test_a_lost_answer_then_an_unreadable_tip_keeps_the_land_beating_and_its_loc
 
     down.once = False  # type: ignore[attr-defined]
     monkeypatch.setattr(approvals, "git", down)
-    held, thread = run_beat(lands, monkeypatch, lost_answer)
+    held, thread = run_beat(lands, monkeypatch, lost_answer, beat_threads)
     deadline = time.monotonic() + 20
     while len(held) < 4 and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -211,7 +247,9 @@ def test_a_lost_answer_then_an_unreadable_tip_keeps_the_land_beating_and_its_loc
 
 
 def test_a_beat_that_hangs_is_timed_out_and_gives_beating_back(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    beat_threads: list[tuple[threading.Event, threading.Thread]],
 ) -> None:
     seen: list[Any] = []
 
@@ -219,7 +257,7 @@ def test_a_beat_that_hangs_is_timed_out_and_gives_beating_back(
         seen.append(kw.get("timeout"))
         raise subprocess.TimeoutExpired("git", kw["timeout"])
 
-    _, thread = run_beat(lands, monkeypatch, hangs)
+    _, thread = run_beat(lands, monkeypatch, hangs, beat_threads)
     deadline = time.monotonic() + 20
     while not seen and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -229,7 +267,9 @@ def test_a_beat_that_hangs_is_timed_out_and_gives_beating_back(
 
 
 def test_the_beat_thread_blocks_the_stop_signals(
-    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    lands: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    beat_threads: list[tuple[threading.Event, threading.Thread]],
 ) -> None:
     import signal
 
@@ -239,7 +279,7 @@ def test_the_beat_thread_blocks_the_stop_signals(
         masks.append(signal.pthread_sigmask(signal.SIG_BLOCK, []))
         return subprocess.CompletedProcess([], 1)
 
-    run_beat(lands, monkeypatch, peek)
+    run_beat(lands, monkeypatch, peek, beat_threads)
     deadline = time.monotonic() + 20
     while not masks and time.monotonic() < deadline:
         time.sleep(0.02)
