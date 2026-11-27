@@ -27,7 +27,9 @@ def test_a_worker_keeps_its_pr_label_set_after_create(tmp_path: Path) -> None:
         0,
         pr=omnigent_agent.pr_ref("o/r#7"),
     )
-    assert labels(og) == {"omni.role": "worker"} and og.labels[sid] == {"omni.pr": "o/r#7"}
+    assert labels(og) == {"omni.role": "worker", "omni.phase": "build"} and og.labels[sid] == {
+        "omni.pr": "o/r#7"
+    }
 
 
 def test_a_verifier_is_labelled_with_the_pr_it_reviews(tmp_path: Path) -> None:
@@ -42,7 +44,7 @@ def test_a_verifier_is_labelled_with_the_pr_it_reviews(tmp_path: Path) -> None:
         0,
         about=omnigent_agent.pr_ref("o/r#9"),
     )
-    assert labels(og) == {"omni.role": "verifier", "omni.pr": "o/r#9"}
+    assert labels(og) == {"omni.role": "verifier", "omni.phase": "verify", "omni.pr": "o/r#9"}
 
 
 def test_a_pr_whose_repository_does_not_resolve_keeps_its_number_and_the_start_goes_on(
@@ -54,7 +56,7 @@ def test_a_pr_whose_repository_does_not_resolve_keeps_its_number_and_the_start_g
     monkeypatch.setattr(omnigent_agent, "pr_repo", no_repo)
     og = base.Posting()
     omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", VERIFIER, 0, about=5)
-    assert labels(og) == {"omni.role": "verifier", "omni.pr": "#5"}
+    assert labels(og) == {"omni.role": "verifier", "omni.phase": "verify", "omni.pr": "#5"}
 
 
 def test_a_session_with_no_pr_has_no_pr_label(tmp_path: Path) -> None:
