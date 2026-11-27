@@ -15,7 +15,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SETUP = (ROOT / ".claude" / "cloud-setup.sh").read_text()
 LIB_PATH = ROOT / "loop" / "skills" / "engineering-loop" / "scripts" / "cloud-setup-lib.sh"
-LIB = LIB_PATH.read_text() if LIB_PATH.exists() else ""  # absent before #962: each test then fails on its own
+LIB = (
+    LIB_PATH.read_text() if LIB_PATH.exists() else ""
+)  # absent before #962: each test then fails on its own
 PINS = tomllib.loads((ROOT / "mise.toml").read_text())["tools"]
 
 
