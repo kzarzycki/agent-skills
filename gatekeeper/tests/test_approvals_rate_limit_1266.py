@@ -136,6 +136,8 @@ def hold(monkeypatch: pytest.MonkeyPatch, polls: list[Any]) -> list[int]:
 
     monkeypatch.setattr(approvals, "landing", landing)
     monkeypatch.setattr(approvals, "git", git)
+    # the forge remote lookup runs git too: it must not take the polls this test scripts for the lock poll
+    monkeypatch.setattr(approvals, "forge", lambda root=None: "origin")
     return ran
 
 
