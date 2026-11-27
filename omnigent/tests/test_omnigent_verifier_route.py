@@ -76,7 +76,7 @@ def test_claude_route_start_on_the_author_s_own_model_starts_a_child(
 def test_signature_names_agy() -> None:
     assert (
         omnigent_agent.signature("antigravity-native", "gemini-4-hydrogen-medium", None)
-        == "agy/gemini-4-hydrogen-medium/?"
+        == "agy/gemini-4-hydrogen-medium/med"
     )
 
 
@@ -108,6 +108,9 @@ def test_gemini_route_on_the_callers_own_host_starts_a_child(
 ) -> None:
     og = FakeOmnigent()
     og.harnesses = {"antigravity-native-ui": "antigravity-native"}
+    og.overrides["s0"] = (
+        "gemini-4-hydrogen-medium"  # agy's settings model, which carries its effort
+    )
     og.host = lambda n: {"host": og.host_id}[n]  # type: ignore[method-assign]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.chdir(tmp_path)

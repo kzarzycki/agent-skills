@@ -197,6 +197,10 @@ class FakeOmnigent:
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
         self.overrides[sid] = omnigent_agent.model_for(agent, model)[0]  # as the real body
+        if not self.overrides[sid] and self.harness(agent) == omnigent_agent.AGY_HARNESS:
+            self.overrides[sid] = (
+                "gemini-4-hydrogen-medium"  # agy's own settings model, copied into the session
+            )
         self.top_level.append(top_level)
         self.roles.append(role)
         self.prs.append(pr)
@@ -389,10 +393,10 @@ def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("agent", "model", "env", "expected"),
     [
-        ("claude", "claude-sonnet-5-5", None, "cc/sonnet-5.5/?"),
-        ("codex", "gpt-6.1-terra", None, "codex/terra-6.1/?"),
-        ("codex", None, "gpt-6.1-sol", "codex/sol-6.1/?"),
-        ("claude", None, None, "cc/?/?"),
+        ("claude", "claude-sonnet-5-5", None, "cc/sonnet-5.5/high"),
+        ("codex", "gpt-6.1-terra", None, "codex/terra-6.1/med"),
+        ("codex", None, "gpt-6.1-sol", "codex/sol-6.1/med"),
+        ("claude", None, None, "cc/?/high"),
     ],
 )
 def test_start_gives_the_child_its_signature_from_what_it_passes(
@@ -497,7 +501,7 @@ def test_the_brief_signs_with_the_model_the_session_took_not_the_one_asked(tmp_p
     omnigent_agent.start(
         og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model="gpt-6.1-terra"
     )
-    assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=codex/?/?\n")
+    assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=codex/?/med\n")
 
 
 RELAY_RULE = (
@@ -2345,7 +2349,7 @@ def test_start_takes_the_effort_from_omnigent_effort_agent_unless_one_is_given(
     assert [(tmp_path / f"{n}.md.brief").read_text().split("\n")[0] for n in "abc"] == [
         "AGENT_SIGNATURE=codex/?/high",
         "AGENT_SIGNATURE=codex/?/low",
-        "AGENT_SIGNATURE=codex/?/?",
+        "AGENT_SIGNATURE=codex/?/med",
     ]
 
 
@@ -3658,7 +3662,7 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
     lock = f"LOOP_HEAVY_LOCK={tmp_path / 'engineering-loop/heavy-coord.lock'}\n"
     assert (
         tmp_path / "r.md.brief"
-    ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + lock + DEFAULT_PREAMBLE.format(
+    ).read_text() == "AGENT_SIGNATURE=cc/?/high\n" + lock + DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
     ).removesuffix("\n") + omnigent_agent.HOST_RUN_NOTE + "\n" + "do X"  # a host child (#1233)
     assert og.top_level == [False] and og.roles == ["roles/worker.md"]
@@ -3742,7 +3746,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     text = (tmp_path / "r.md.brief").read_text()
     assert (
         text
-        == f"AGENT_SIGNATURE=cc/?/?\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/{sid}\n"
+        == f"AGENT_SIGNATURE=cc/?/high\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/{sid}\n"
         + omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="")
         + "do X"
     )

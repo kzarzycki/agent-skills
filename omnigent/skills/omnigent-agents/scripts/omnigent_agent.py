@@ -301,6 +301,8 @@ from urllib.parse import quote
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import tomllib
+
 ROLES = ("lead", "worker", "verifier")  # engineering-loop role files, labelled omni.role
 TWIN_ROLES = (
     "worker",
@@ -4849,12 +4851,79 @@ def briefed_by_file(og: Omnigent, agent: str, host_id: str | None) -> bool:
     return agent in AGENTS or og.harness(agent).endswith("-native")
 
 
-def signature(harness: str, model: str | None, effort: str | None = None) -> str:
-    """``<harness>/<model>/<effort>``: ``cc``, ``codex`` or ``omp`` by harness, the model id without its vendor
+EFFORT_NAMES = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def model_effort(model: str | None) -> str | None:
+    """The effort a model's own name carries: agy's ids end in it (`gemini-4-hydrogen-medium`) and its
+    settings name it in brackets (`Gemini 3.8 Flash (Low)`)."""
+    names = "|".join(EFFORT_NAMES)
+    found = re.search(rf"(?:-|\()({names})\)?\s*$", (model or "").strip(), re.IGNORECASE)
+    return found[1].lower() if found else None
+
+
+def config_effort(harness: str, env: dict[str, str], home: Path) -> tuple[str | None, list[str]]:
+    """The effort a harness picks itself when a start names none, from its own config, with each place
+    looked at: Codex's `model_reasoning_effort` in `$CODEX_HOME/config.toml`, Claude Code's `effortLevel` in
+    `settings.json` of `$CLAUDE_CONFIG_DIR` (after `$CLAUDE_EFFORT`, `$CLAUDE_CODE_EFFORT_LEVEL`). agy keeps
+    its effort in its model, so it has no file here."""
+    looked: list[str] = []
+    if "codex" in harness:
+        path = Path(env.get("CODEX_HOME") or home / ".codex") / "config.toml"
+        key = "model_reasoning_effort"
+        try:
+            value = tomllib.loads(path.read_text()).get(key)
+        except (OSError, ValueError):
+            value = None
+        looked.append(f"{path} ({key})")
+        return (str(value) if value else None), looked
+    if "claude" in harness:
+        for var in ("CLAUDE_EFFORT", "CLAUDE_CODE_EFFORT_LEVEL"):
+            looked.append(f"${var}")
+            if env.get(var):
+                return env[var], looked
+        path = Path(env.get("CLAUDE_CONFIG_DIR") or home / ".claude") / "settings.json"
+        try:
+            value = json.loads(path.read_text()).get("effortLevel")
+        except (OSError, ValueError, AttributeError):
+            value = None
+        looked.append(f"{path} (effortLevel)")
+        return (str(value) if value else None), looked
+    return None, looked
+
+
+def resolve_effort(
+    harness: str,
+    model: str | None,
+    effort: str | None = None,
+    config: tuple[dict[str, str], Path] | None = None,
+) -> tuple[str | None, list[str]]:
+    """The effort a session runs at, with the places looked at when there is none: the start's own effort, else
+    the model's name, else (given `config`, the environment and home of the machine the harness runs on) the
+    harness's config. One place for every route's signature."""
+    if effort:
+        return effort, []
+    looked = [f"the start arguments (no effort), the model id {model or '(none)'}"]
+    if found := model_effort(model):
+        return found, looked
+    if config is None:
+        return None, looked
+    found, more = config_effort(harness, *config)
+    return found, looked + more
+
+
+def signature(
+    harness: str,
+    model: str | None,
+    effort: str | None = None,
+    config: tuple[dict[str, str], Path] | None = None,
+) -> str:
+    """``<harness>/<model>/<effort>``: ``cc``, ``codex``, ``agy`` or ``omp`` by harness, the model id without its vendor
     prefix and dotted (``claude-sonnet-5-5`` is ``sonnet-5.5``, ``gpt-6.1-terra`` is ``terra-6.1``), the effort
     (``medium`` is ``med``), and ``?`` for anything unknown. A session about to start knows only what it is
-    started with, as the server recorded it (``model_override``, ``reasoning_effort``); ``running_signature`` reads
-    the rest once it runs."""
+    started with, as the server recorded it (``model_override``, ``reasoning_effort``); the effort it was not given
+    comes from the model's name, then from the harness's own config (``config``: see ``resolve_effort``).
+    ``running_signature`` reads the rest once it runs."""
     name = next(
         (
             n
@@ -4873,6 +4942,7 @@ def signature(harness: str, model: str | None, effort: str | None = None) -> str
         short = f"{found[3]}-{found[1]}.{found[2]}"
     elif found := re.fullmatch(r"([a-z]+)-(\d+)-(\d+)", short):  # claude-sonnet-5-5
         short = f"{found[1]}-{found[2]}.{found[3]}"
+    effort = resolve_effort(harness, model, effort, config)[0]
     return f"{name}/{short or '?'}/{ ({'medium': 'med'}.get(effort or '', effort) or '?') }"
 
 
@@ -4903,9 +4973,10 @@ def running_signature(
     listed = {i for r in rows if isinstance(r, dict) for i in (r.get("id"), r.get("model")) if i}
     if (model := (session or {}).get("llm_model")) not in listed:
         return local
+    env, home = os.environ if env is None else env, home or Path.home()
     effort = session.get("reasoning_effort") or None
-    sig = signature(str(session.get("harness") or ""), model, effort)
-    return sig if effort else sig.rsplit("/", 1)[0] + "/" + local.rsplit("/", 1)[1]
+    sig = signature(str(session.get("harness") or ""), model, effort, (env, home))
+    return sig if not sig.endswith("/?") else sig.rsplit("/", 1)[0] + "/" + local.rsplit("/", 1)[1]
 
 
 def harness_signature(env: dict[str, str] | None = None, home: Path | None = None) -> str:
@@ -4917,7 +4988,9 @@ def harness_signature(env: dict[str, str] | None = None, home: Path | None = Non
         turn = last_line(
             rollout, lambda d: d["payload"] if d.get("type") == "turn_context" else None
         )
-        return signature("codex", (turn or {}).get("model"), (turn or {}).get("effort"))
+        return signature(
+            "codex", (turn or {}).get("model"), (turn or {}).get("effort"), (env, home)
+        )
     if env.get("CLAUDECODE"):
         projects = Path(env.get("CLAUDE_CONFIG_DIR") or home / ".claude") / "projects"
         session = env.get("CLAUDE_CODE_SESSION_ID")
@@ -4926,7 +4999,7 @@ def harness_signature(env: dict[str, str] | None = None, home: Path | None = Non
             transcript or None,
             lambda d: d["message"].get("model") if d.get("type") == "assistant" else None,
         )
-        return signature("claude", model, env.get("CLAUDE_EFFORT"))
+        return signature("claude", model, env.get("CLAUDE_EFFORT"), (env, home))
     return signature("?", None)
 
 
@@ -5339,7 +5412,20 @@ def start(
             except Fail as e:
                 abandon(sid)
                 raise failed(f"start failed: {sid}: not labelled --keep: {e}") from e
-        sig = signature(harness, took.get("model_override"), took.get("reasoning_effort"))
+        used = took.get("model_override") or took.get("llm_model")
+        sig = signature(
+            harness, used, took.get("reasoning_effort"), (dict(os.environ), Path.home())
+        )
+        if reviews(role) and sig.endswith("/?"):
+            # a verifier's report names the effort it ran at: one that can't be told is refused, never signed `?`
+            looked = resolve_effort(
+                harness, used, took.get("reasoning_effort"), (dict(os.environ), Path.home())
+            )[1]
+            abandon(sid)
+            raise failed(
+                f"start failed: {sid}: the verifier's effort can't be resolved on {harness}; looked at"
+                f" {'; '.join(looked)}. Pass --effort, or set the harness's own effort"
+            )
         # a lead's own link, known only now that its session exists: the runner's primary session names the root
         # of its tree, which is not the lead when the lead was started under another session
         link = f"OMNIGENT_SESSION_LINK={og.base}/c/{sid}\n" if top_level and not pr else ""
