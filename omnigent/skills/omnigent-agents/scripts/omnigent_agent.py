@@ -2066,8 +2066,19 @@ class Omnigent:
         raise Fail(f"{LOOP_FILE}: host {host} can't read {target}: {why}")
 
     def interrupt(self, sid: str) -> None:
-        """Stop ``sid``'s running turn, as the owner's stop does."""
+        """Stop ``sid``'s running turn, as the owner's stop does. A session whose runner has gone
+        away stays running after the interrupt: it then gets the server's ``stop_session`` event, which moves a runnerless session to idle (#2808)."""
         self.call("POST", f"/v1/sessions/{sid}/events", {"type": "interrupt"})
+        # the server answers an interrupt ``queued: false`` whether or not it stopped anything, so the
+        # status re-read decides. ``reap`` is the only caller and archives right after, so a
+        # ``stop_session`` racing an interrupt about to work costs nothing there.
+        try:
+            if str(self.info(sid).get("status")) in RUNNING:
+                self.call(
+                    "POST", f"/v1/sessions/{sid}/events", {"type": "stop_session", "data": {}}
+                )
+        except Fail as e:  # owner-only: a refusal must not keep ``reap`` from archiving
+            print(f"session {sid}: stop_session failed: {e}", file=sys.stderr)
 
     def unarchive(self, sid: str) -> None:
         """Bring archived ``sid`` back with its transcript: the next message relaunches its agent
