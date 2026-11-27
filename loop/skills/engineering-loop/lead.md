@@ -58,7 +58,11 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    question id in your report: it records their word and removes the label, so never ask
    them to add the label by hand. You never approve on your own judgment: an approval is a
    person's word or the owner's policy in gatekeeper.md. An issue
-   assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). Whenever
+   assigned to anyone but its approver is theirs: leave it (issues.md, Assignee). As soon as you take
+   an issue, before any PR exists, run `OMNIGENT_SESSION_LINK=<link> uv run <gatekeeper>/scripts/approvals.py claim <issue>`: it
+   writes the `Assigned:` claim with its `Session:` line and the issue's `Session` field, so a reader sees which session
+   has the issue from the start, not only once `check build` runs after the draft PR (a run with no session link writes
+   none). Whenever
    you park an issue (`needs-owner`) or drop it, run `uv run <this skill's folder>/scripts/loop.py release
    <issue>`, which removes only an assignee the loop added. Each state change here and below also moves the ticket on
    the board (github.md, Board); a failed move is reported, never blocking, because the
@@ -111,7 +115,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    (github.md, Review trail; board: `Build`). Its body carries your guess at the run's spend,
    `Token estimate: ~<N> (<basis>)`, e.g. `~2M, mostly two verifier passes`: the lead, its
    workers and verifiers together, cache reads included. It is for the owner's information and
-   nothing reads it, so a rough number beats a careful one. Then run `uv run <gatekeeper>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
+   nothing reads it, so a rough number beats a careful one. The body also ends with `Impl: <the AGENT_SIGNATURE line atop
+   your brief>`, its `· Session: <link>` part included, so the link is in the PR from the start. Then run `uv run <gatekeeper>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model and session id of each agent, and every worktree and
@@ -326,7 +331,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - End the PR body with `Impl: <signature>` of the agent that did most of the work, instead of the harness's
      "Generated with" footer: the worker's from its report, or yours, what omnigent-agents'
      `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
-     (`?` for any part you can't know).
+     (`?` for any part you can't know). A lead's line ends `· Session: <server>/c/<session id>`: keep that part, since
+     `approvals.py check session <pr>` (run on every pull request, drafts too) and `check merge` fail an `Impl:` line without it.
    - A project's own batching merge queue (`check queue`, `batch`) is deprecated: where the
      project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <gatekeeper>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`

@@ -10,6 +10,7 @@
     uv run scripts/approvals.py check build <n>           # <n> no PR has: the same as --issue <n>
     uv run --python '>=3.11' scripts/approvals.py check setup               # a pack upgrade's gate: the repo's policy parses and its mise tasks and workflows run the scripts with uv; exit 0 or 1
     uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
+    uv run scripts/approvals.py check session <pr>              # the PR body's `Impl:` line must carry `Session: <server>/c/<id>` (check merge runs it too); a body with no `Impl:` line passes; exit 0 or 1
     uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold, or verified and idle past loop.stalled_after_hours with no go or record: one line each, exit 1; one not judged here: its line, which changes no exit
     uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by <owner|delegate>   # on the owner's word, or the delegate's under `loop.delegate: all`
@@ -3368,6 +3369,29 @@ def problems(issues: list[dict[str, Any]], kinds: dict[str, set[str]] | None) ->
     return found
 
 
+# a PR body's `Impl:` line, the signature of the agent that did the work, and the session part it must carry (#2825):
+# `Impl: cc/sonnet-5.5/? · Session: <server>/c/<32-hex session id>`
+IMPL = re.compile(r"^[ \t]*Impl:[^\n]*", re.MULTILINE)
+IMPL_SESSION = re.compile(
+    r"\bSession:[ \t]*https?://[^\s/]+(?:/[^\s/]+)*/c/[0-9a-f]{32}(?![0-9A-Za-z_-])"
+)
+
+
+def session_gap(pull: dict[str, Any]) -> list[str]:
+    """`check session`, and `check merge` the same: a PR whose body has an `Impl:` line (it was made under an agent
+    session) needs that line to carry `Session: <server>/c/<32-hex id>`, so a reader finds the session behind the PR.
+    ponytail: a body with no `Impl:` line is a person's, or a project's with no sessions, and passes (#2458)."""
+    lines = IMPL.findall(QUOTED.sub("", pull.get("body") or ""))
+    if not lines or any(IMPL_SESSION.search(line) for line in lines):
+        return []
+    said = (
+        f"PR #{pull['number']}: its `Impl:` line has no session part: end it `Impl: <signature> · Session: "
+        "<server>/c/<session id>` (the `AGENT_SIGNATURE` line atop your brief is that line), then run `check build`"
+        " with `OMNIGENT_SESSION_LINK` set, which writes the PR's `Owner:` record"
+    )
+    return [said]
+
+
 def no_evidence(pull: dict[str, Any]) -> list[str]:
     """A line when the PR's body has no `## Evidence` section with content: `check merge`'s proof and `check ready`'s."""
     if section(pull["body"] or "", "Evidence").strip():
@@ -6665,6 +6689,8 @@ def check(point: str, pr: int | None, issue: int | None = None) -> int:
                 pr, *project()
             )  # a number no PR has is the issue's, as `--issue` reads it
         raise
+    if point == "session":  # the body alone: no policy to read
+        return checked(point, pull)
     with policy_from(pull["baseRefName"]):
         return checked(point, pull)
 
@@ -6683,6 +6709,16 @@ def full_check_line() -> None:
 
 
 def checked(point: str, pull: dict[str, Any]) -> int:
+    if (
+        point == "session"
+    ):  # the PR body alone, so a CI step runs it on a draft with no project policy read
+        found = session_gap(pull)
+        print(
+            "\n".join(found)
+            if found
+            else f"PR #{pull['number']}: its `Impl:` line names its session, or has none"
+        )
+        return 1 if found else 0
     tracker, loop = project()
     if (
         point == "ready"
@@ -6703,6 +6739,8 @@ def checked(point: str, pull: dict[str, Any]) -> int:
         base = pull["baseRefName"]
         judge_with_base(base, fetch=True)
     found, issues = gated(point, pull, tracker, loop)
+    if point == "merge":
+        found += session_gap(pull)
     if point == "build":
         found += held_claims(
             issues, loop
@@ -14654,7 +14692,9 @@ def main(argv: list[str]) -> int:
     )
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser("check")
-    checking.add_argument("point", choices=("build", "merge", "ready", "rerun", "setup", "stalled"))
+    checking.add_argument(
+        "point", choices=("build", "merge", "ready", "session", "rerun", "setup", "stalled")
+    )
     checking.add_argument("pr", type=int, nargs="?")
     checking.add_argument("--issue", type=int)
     claiming = commands.add_parser("claim")

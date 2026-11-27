@@ -3742,8 +3742,8 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     assert og.top_level == [True, True]
     text = (tmp_path / "r.md.brief").read_text()
     assert (
-        text
-        == f"AGENT_SIGNATURE=cc/?/high\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/{sid}\n"
+        text == f"AGENT_SIGNATURE=cc/?/high · Session: https://omnigent.test/c/{sid}\n"
+        f"OMNIGENT_SESSION_LINK=https://omnigent.test/c/{sid}\n"
         + omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="")
         + "do X"
     )
@@ -15549,6 +15549,9 @@ def test_a_lead_is_given_its_own_session_link_and_told_to_use_it(
     found = LINK_LINE.search(brief)
     assert found and found.group(1) == f"https://omnigent.test/c/{sid}"
     assert brief.index("AGENT_SIGNATURE=") < found.start()
+    # #2825: the signature the lead copies into its PR's `Impl:` line carries the session part
+    signed = re.search(r"^AGENT_SIGNATURE=.*$", brief, re.MULTILINE)
+    assert signed and signed.group(0).endswith(f" · Session: https://omnigent.test/c/{sid}")
     assert (
         "OMNIGENT_SESSION_LINK=<link>` before each `approvals.py` call that claims or builds"
         in brief
@@ -15573,6 +15576,10 @@ def test_a_child_that_is_no_lead_gets_no_session_link_line(
         else omnigent_agent.brief_of(report).read_text()
     )
     assert "OMNIGENT_SESSION_LINK" not in brief
+    signed = re.search(r"^AGENT_SIGNATURE=.*$", brief, re.MULTILINE)
+    assert not signed or "Session:" not in signed.group(
+        0
+    )  # #2825: only a lead's signature names its session
 
 
 def _pack_script(tmp_path: Path, git: bool) -> Path:

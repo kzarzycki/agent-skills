@@ -48,6 +48,11 @@ jobs:
       - env:
           GATE_BASE: ${{ github.event.pull_request.base.sha }}
         run: mise run lint-changed
+      # a PR body's `Impl:` line must name its session (#2825); drafts included, since this job runs on every pull_request
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: uv run gatekeeper/skills/gatekeeper/scripts/approvals.py check session "$PR"
 
   qualify:
     runs-on: ubuntu-latest
