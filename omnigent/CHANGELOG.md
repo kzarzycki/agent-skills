@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.34 - 2026-11-27
+
+- A Codex verifier `start` with no model or effort runs Terra at medium effort, and one on a PR head that already has a Codex pass is refused, naming that pass (#2870).
+
 ## 0.1.33 - 2026-11-27
 
 - `start` writes a lead's `AGENT_SIGNATURE` as `<signature> · Session: <link>`, so the line it copies into its PR's `Impl:` names its session (#2825).

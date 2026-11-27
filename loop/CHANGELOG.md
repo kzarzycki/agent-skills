@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.18 - 2026-11-27
+
+- A verifier brief lists the changed files and the diff stat, carries a tool-call budget and leaves the PR body's spend lines out; `cloud_verifier.py` runs a Codex pass on Terra at medium effort when none is named and refuses a second Codex pass on a head that already has one (#2870).
+
 ## 0.1.17 - 2026-11-27
 
 - `lead.md`'s merge-queue rerun line no longer names #1400 and #1794 as pending, and says a project's queue rerun is narrow only where its own CI calls `rerun-tests` (#2832).
