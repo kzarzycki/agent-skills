@@ -3673,7 +3673,34 @@ AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 # the verifier's routes (`--verifier-route`): with no setting the default stays Codex, the other two are its fallback when it refuses
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
 # a Codex verifier start with no model or effort named runs on these (cloud_verifier.py's CODEX_MODEL and CODEX_EFFORT)
-CODEX_VERIFIER_MODEL, CODEX_VERIFIER_EFFORT = "gpt-6.1-terra", "medium"
+# (the model is a tier, never an id: a generation drops tiers, and `start` refuses an older generation's)
+CODEX_VERIFIER_TIER, CODEX_VERIFIER_EFFORT = "terra", "medium"
+CODEX_TIERS = (
+    "luna",
+    "terra",
+    "sol",
+    "astra",
+)  # smallest to largest, as engineering-loop SKILL.md, Models, names them
+
+
+def tier_model(listed: list[str], tier: str) -> str | None:
+    """The model of `tier` among Codex ids `listed` (`gpt-<generation>-<tier>`): the newest generation's, else that
+    generation's closest higher tier, else its highest, never an older generation's; None when none is listed."""
+    found: dict[tuple[int, ...], dict[str, str]] = {}
+    for i in listed:
+        if m := re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-([a-z]+)", i):
+            found.setdefault(tuple(map(int, m[1].split("."))), {})[m[2]] = i
+    if not found:
+        return None
+    tiers = found[max(found)]
+    above = [t for t in CODEX_TIERS[CODEX_TIERS.index(tier) :] if t in tiers]
+    return (
+        tiers[above[0]]
+        if above
+        else tiers[max(tiers, key=lambda t: CODEX_TIERS.index(t) if t in CODEX_TIERS else -1)]
+    )
+
+
 CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
 
 
@@ -13895,7 +13922,16 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             ):
                 # never Codex's own defaults: a Sol model and an unset effort resend ~100k tokens of context per
                 # tool call at the larger model's rate (#2870); a start asks for Sol or another effort itself
-                args.model = args.model or CODEX_VERIFIER_MODEL
+                if not model_for(args.agent, args.model)[
+                    0
+                ]:  # no flag, no $OMNIGENT_MODEL_CODEX, no setting
+                    with contextlib.suppress(
+                        Fail
+                    ):  # a host that lists none leaves the agent's own model
+                        args.model = tier_model(
+                            og.models(args.agent, og.host(args.host) if args.host else None),
+                            CODEX_VERIFIER_TIER,
+                        )
                 args.effort = args.effort or CODEX_VERIFIER_EFFORT
                 if again := codex_pass_on_head(args.pr):
                     raise Fail(again)

@@ -5216,6 +5216,7 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
     omnigent_agent.main(
         [*base[:2], "t4", *base[3:], "--role", role_file("verifier.md"), "--model", "flag"]
     )
+    # no Terra tier listed here, so the first verifier keeps the agent's own model (#2870: tests/test_omnigent_codex_verifier_2870.py)
     assert models == [None, None, None, "flag"]  # Omnigent.create reads OMNIGENT_MODEL_CODEX
     assert not hasattr(omnigent_agent, "CODEX_VERIFIER_MODEL")
 

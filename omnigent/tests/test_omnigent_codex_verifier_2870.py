@@ -85,3 +85,36 @@ def test_the_refusal_names_the_earlier_pass_and_a_forge_that_cannot_answer_refus
 
     monkeypatch.setattr(omnigent_agent.subprocess, "run", down)
     assert omnigent_agent.codex_pass_on_head(7) is None
+
+
+def test_the_terra_tier_is_the_newest_generations_else_its_closest_higher_tier() -> None:
+    pick = omnigent_agent.tier_model
+    assert pick(["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.1-luna"], "terra") == "gpt-6.1-terra"
+    # 6.2 lists only sol and astra: Sol, never 6.1's Terra, which an older generation start refuses
+    assert pick(["gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"], "terra") == "gpt-6.2-sol"
+    assert pick(["gpt-6.2-astra", "gpt-6.1-sol"], "terra") == "gpt-6.2-astra"
+    assert pick(["claude-opus-5-5", "opus"], "terra") is None
+
+
+def test_a_codex_verifier_start_follows_the_newest_generation(
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.listed = ["gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert omnigent_agent.main(start(tmp_path, role_file)) == 0
+    assert og.overrides["s0"] == "gpt-6.2-sol"
+
+
+def test_the_model_variable_outranks_the_terra_tier(
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    og.listed = ["gpt-6.1-terra", "gpt-6.2-sol", "gpt-6.2-astra"]
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setenv("OMNIGENT_MODEL_CODEX", "gpt-6.2-astra")
+    monkeypatch.chdir(tmp_path)
+    assert omnigent_agent.main(start(tmp_path, role_file)) == 0
+    assert og.overrides["s0"] == "gpt-6.2-astra"
