@@ -6874,6 +6874,20 @@ def ready_pulls(base: str) -> list[dict[str, Any]]:
     ]
 
 
+def mark_unjudged(pr: int | Sequence[int] | None) -> None:
+    """A land that ended in an error names each PR it was asked to land that no step marked as `refused` for `github`,
+    the exit the error means for it, so no PR it judged is left without a line."""
+    for number in numbers_of(pr):
+        if number in OUTCOMES:
+            continue
+        try:
+            pull = pull_request(number)
+            if pull["state"] == "OPEN":
+                mark(pull, "refused", "github")
+        except Exception as exc:  # noqa: BLE001 -- a PR that can't be read has no head to name
+            print(f"PR #{number}: no outcome line: {stderr_of(exc)}", file=sys.stderr)
+
+
 def print_outcomes() -> None:
     """`land --json`: one JSON line per PR the land judged, after its usual output."""
     for number in sorted(OUTCOMES):
@@ -6982,9 +6996,11 @@ def land(
     except Refused as exc:  # said as main says it, before the lines
         print(exc)
         code = 1
+        mark_unjudged(pr)
     except subprocess.CalledProcessError as exc:
         print(exc.stderr.strip() or exc)
         code = 1
+        mark_unjudged(pr)
     finally:
         WANT_JSON[0] = False
     print_outcomes()
@@ -7715,8 +7731,8 @@ def land_base(
         if pull["state"] == "MERGED":
             print(f"PR #{number} is merged")
             merged_heads.append(pull["headRefOid"])  # for the sweep that ends this land (#1869)
-            queue_landed(pull)
-            mark(pull, "merged")
+            mark(pull, "merged")  # before the trail's writes, which may fail
+            mark(pull, "merged", url=queue_landed(pull))
         elif pull["state"] != "OPEN":
             if len(numbers) == 1:
                 raise Refused(f"PR #{number} is closed: nothing to land")
@@ -8847,6 +8863,9 @@ def batch_wait(
             if verdict.exit is None:
                 candidates.append(pull)
                 waits.pop(number)
+                OUTCOMES.pop(
+                    number, None
+                )  # no longer waiting: what it becomes is written by the step that settles it
                 joined.append(number)
                 near.remove(number)
                 print(f"PR #{number} turned landable and joins the batch")
@@ -8856,6 +8875,8 @@ def batch_wait(
                 and not owner_waits(pull, verdict.issues or [], loop)
             ):
                 waits[number] = verdict.exit
+                if verdict.outcome:
+                    mark(pull, *verdict.outcome)  # the exit changed, so the line does too
                 near.remove(number)
                 print(f"PR #{number} no longer waits only on its checks: left out of the wait")
     candidates.sort(key=lambda pull: pull["number"])
@@ -9148,6 +9169,7 @@ def evicted(
     of the log `what` names."""
     where, head, number = f"PR #{pull['number']}", pull["headRefOid"], pull["number"]
     print(f"{where} {said}: evicted")
+    mark(pull, "refused", "evicted")  # before the writes, which may fail
     port("forge").ready(number, undo=True)
     posted = comment(
         number,
@@ -9244,7 +9266,7 @@ def queue_trail(base: str) -> None:
             if trailed.get("state") == "MERGED":
                 merged_heads.append(trailed["headRefOid"])
                 mark(trailed, "merged")
-            queue_landed(trailed)
+            mark(trailed, "merged", url=queue_landed(trailed))
         except (Refused, subprocess.CalledProcessError) as exc:
             print(f"PR #{number}: land could not write its `{LANDED}` comment: {stderr_of(exc)}")
 
@@ -10099,8 +10121,8 @@ def queue_step(
         return WAITING, True
     if mergeable == "CONFLICTING":
         print(f"{where} conflicts with {base}: merge `{forge()}/{base}` in")
+        mark(pull, "refused", "conflict")  # before the comment, whose write may fail
         conflict_note(pull, base)
-        mark(pull, "refused", "conflict")
         return 1, False
     if (
         removals
@@ -10409,27 +10431,30 @@ def failing_check(group: str, required: set[str]) -> tuple[str, str, list[str]]:
     return name, run_link(checks[name]["url"]), log.splitlines()[-LOG_TAIL:]
 
 
-def queue_landed(pull: dict[str, Any]) -> None:
+def queue_landed(pull: dict[str, Any]) -> str:
     """A PR the GitHub merge queue merged gets its `Landed` comment, from the first land that reads it merged: `Base:`
     its merge commit, `Tree:` that commit's tree, `Gate: merge queue` with the links of the runs on it, the queue's
-    `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented."""
+    `merge_group` CI; and its worker sessions finished. Nothing for a PR it did not merge, or one already commented.
+    The comment's link, or "" where none was posted."""
     merged = [removal for removal in queue_events(pull) if removal.get("reason") == QUEUE_MERGED]
     queued = QUEUED in {each["name"] for each in pull["labels"]["nodes"]}
     if pull["state"] == "MERGED":
         breakglass_landed(pull)
+    link = ""
     if not any(note["body"].startswith(f"{LANDED}\n") for note in notes(pull)):
         if merged:
-            landed_comment(pull, merged[-1])
+            link = landed_comment(pull, merged[-1])
         # Mergify's merges leave no removal: a merged PR land queued for it (QUEUED) was merged by its queue
         elif queued and pull["state"] == "MERGED" and mergify(project()[1]):
-            mergify_landed(pull)
+            link = mergify_landed(pull)
     # off once the trail is written, or where there is none to write (merged outside the queue)
     if queued:
         label(pull["number"], QUEUED, add=False)
     land_ended(pull)
+    return link
 
 
-def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
+def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> str:
     """queue_landed's `Landed` comment on the commit the queue's `merged` removal names, and the worker sessions."""
     commit = (merged.get("beforeCommit") or {}).get("oid")
     tree = commit_tree(commit)
@@ -10440,7 +10465,7 @@ def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
             if "/actions/runs/" in run["url"]
         }
     )
-    comment(
+    posted = comment(
         pull["number"],
         fold(
             LANDED,
@@ -10449,9 +10474,10 @@ def landed_comment(pull: dict[str, Any], merged: dict[str, Any]) -> None:
         ),
     )
     archive_workers(pull["number"])
+    return posted if isinstance(posted, str) else ""
 
 
-def mergify_landed(pull: dict[str, Any]) -> None:
+def mergify_landed(pull: dict[str, Any]) -> str:
     """queue_landed's `Landed` comment on a PR the Mergify queue merged: `Base:` its merge commit, `Tree:` that
     commit's tree and `Gate: Mergify merge queue` with the links of the Actions runs on that commit; and the worker
     sessions. ponytail: the merge commit's runs, not those on Mergify's draft PR, which no REST read of the PR names."""
@@ -10466,7 +10492,7 @@ def mergify_landed(pull: dict[str, Any]) -> None:
             if "/actions/runs/" in run["url"]
         }
     )
-    comment(
+    posted = comment(
         pull["number"],
         fold(
             LANDED,
@@ -10475,6 +10501,7 @@ def mergify_landed(pull: dict[str, Any]) -> None:
         ),
     )
     archive_workers(pull["number"])
+    return posted if isinstance(posted, str) else ""
 
 
 def merged_anyway(number: int, head: str, exc: subprocess.CalledProcessError) -> str:
