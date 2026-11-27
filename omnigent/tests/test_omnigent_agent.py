@@ -4728,14 +4728,30 @@ def test_bridged_cloud_sessions_neither_hit_nor_fill_the_session_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(6000), loadavg="1.0 1 1")
-    cloud = {"harness": omnigent_agent.CLOUD_HARNESS}
+    # the server's list reports a cloud session's harness as its transport, `acp`; the cloud
+    # harness is its agent's
+    cloud = {"harness": "acp", "agent_name": "claude-cloud"}
     og.others = [
         {"id": f"x{i}", "host_id": "far", "status": "idle", "updated_at": i} for i in range(4)
     ]
     ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1", cpu=False)
     assert ok and "live sessions" not in line  # a cloud start isn't capped
-    og.others = [{**r, **cloud} for r in og.others]
-    assert omnigent_agent.host_capacity(og, "far", "epic-t1")[0]  # four bridges don't fill it
+    og.others = [{**r, **cloud} for r in og.others[:3]] + og.others[3:]
+    ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
+    assert ok and "live sessions" not in line  # 3 bridges and 1 local session leave room
+
+
+def test_local_sessions_still_fill_the_session_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(6000), loadavg="1.0 1 1")
+    og.others = [
+        {"id": f"x{i}", "host_id": "far", "status": "idle", "harness": "acp", "agent_name": "codex"}
+        for i in range(4)
+    ]
+    og.harnesses["codex"] = "acp:codex"
+    ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
+    assert ok is False and "4 live sessions (max 4)" in line
 
 
 def test_a_host_with_no_row_has_no_session_cap(
