@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.30 - 2026-11-27
+
+- A verifier's `Verifier:` line names the effort it ran at on every route: the start's `--effort`, else the effort in the model's name (agy's `gemini-4-hydrogen-medium`), else the harness's own config (Codex's `model_reasoning_effort`, Claude Code's `effortLevel`). A verifier start whose effort can't be resolved is refused, naming the harness and where it looked. The `SKILL.md` Antigravity paragraph names the model the Gemini verifiers run (#2838).
+
 ## 0.1.29 - 2026-11-27
 
 - A start on a host that bridges cloud sessions no longer counts them toward the host's `max_sessions`: the session list reports their harness as `acp`, so they are now recognised by their agent's harness (#2845).
