@@ -3186,7 +3186,11 @@ def owner_message(item: dict) -> bool:
 def steward_on(decisions: str) -> bool:
     """Whether steward mode is on in the standing ``decisions`` text: a bullet opening ``- **Steward mode`` that holds
     ``**ON`` (#2824). The chief of staff then answers approvals and cards in the owner's name."""
-    return bool(re.search(r"^\s*- \*\*Steward mode(?:(?!\n\s*- ).)*?\*\*ON", decisions, re.M | re.S))
+    return bool(
+        re.search(
+            r"^\s*- \*\*Steward mode(?:(?!\n\s*- ).)*?\*\*ON", decisions, re.MULTILINE | re.DOTALL
+        )
+    )
 
 
 def owner_said(og: Omnigent, sid: str, quote: str) -> tuple[bool, str]:

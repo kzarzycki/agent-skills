@@ -15,6 +15,7 @@ from test_omnigent_agent import (
     posted,
     skewed,
     stalls,
+    steward_board,
     supervised,
     told,
 )
@@ -55,6 +56,7 @@ def test_a_new_owner_card_is_raised_once(tmp_path: Path, monkeypatch: pytest.Mon
         lambda p: offset.__setitem__(0, {1: 30.0, 2: wait, 3: wait + 600}.get(p, wait + 900)),
         notify="cos",
         console=True,
+        decisions=steward_board(tmp_path),
     )
     [post] = posted(og)
     assert "[owner] a t-a: blocked on a prompt" in post
