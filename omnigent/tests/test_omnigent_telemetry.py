@@ -1,6 +1,7 @@
 """scripts/omnigent_telemetry.py's analysis on synthetic rows, no Omnigent and no database."""
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -158,62 +159,178 @@ def test_without_the_database_the_api_sections_render_and_the_rest_are_named() -
             },
         ],
     }
-    left = dict.fromkeys(telemetry.DB_SECTIONS, "unreachable")
+    left = dict.fromkeys(telemetry.API_SECTIONS, "unreachable")
     r = telemetry.build(usage, None, None, 7, NOW, left)
     assert [t["id"] for t in r["trees"]] == ["r1"]
     assert r["models"] == [{"model": "model-a", "cost_usd": 3.0}]
     out = telemetry.text(r)
     assert "7 days $12.25" in out and "r1" in out
-    assert all(f"{s}: unreachable" in out for s in telemetry.DB_SECTIONS)
+    assert all(f"{s}: unreachable" in out for s in telemetry.API_SECTIONS)
     assert "$12.25" in telemetry.page(r) and "<script" not in telemetry.page(r)
 
 
-def test_usage_decodes_in_each_frame_omnigent_writes() -> None:
-    doc = b'{"total_cost_usd": 0.12}'
-    assert telemetry.decode_usage((b"\x00\x00" + doc).hex()) == {"total_cost_usd": 0.12}
-    assert telemetry.decode_usage(doc.hex()) == {"total_cost_usd": 0.12}
-    assert telemetry.decode_usage(None) == {}
+class Served:
+    """A fake server: each path (without its query) answers with its canned document."""
+
+    def __init__(self, docs: dict[str, object], calls: list | None = None) -> None:
+        self.docs, self.calls = docs, calls if calls is not None else []
+
+    def __call__(self, named: str = "") -> Served:
+        self.calls.append(("server", named))
+        return self
+
+    def call(self, method: str, path: str, **kw: object) -> object:
+        self.calls.append((method, path, kw.get("timeout")))
+        doc = self.docs[path.split("?")[0]]
+        if isinstance(doc, Exception):
+            raise doc
+        return doc
 
 
-def test_server_names_the_omnigent_the_usage_is_read_from(monkeypatch, capsys) -> None:
-    servers: list[str] = []
+# The telemetry response as the report reads it: every section the report shows.
+TELEMETRY = {
+    "daily": [{"day": "2027-01-14", "cost_usd": 4.5}, {"day": "2027-01-15", "cost_usd": 6.0}],
+    "models": [
+        {
+            "model": "model-a",
+            "sessions": 2,
+            "cost_usd": 9.0,
+            "input_tokens": 2_000_000,
+            "cache_read_tokens": 30_000_000,
+            "output_tokens": 500_000,
+        }
+    ],
+    "sessions": [
+        {
+            "id": "root0001",
+            "root_id": "root0001",
+            "title": "lead",
+            "created_at": SINCE + 60,
+            "updated_at": SINCE + 120,
+            "agent": "claude-cloud",
+            "host": "host-a",
+            "live_status": 1,
+            "labels": {"omni.role": "lead"},
+            "turns": 7,
+            "tool_calls": {"tool-x": 3},
+            "usage": {"total_cost_usd": 9.0, "by_model": {"model-a": {"total_cost_usd": 9.0}}},
+        },
+        {
+            "id": "kid00001",
+            "root_id": "root0001",
+            "parent_id": "root0001",
+            "title": "verifier",
+            "created_at": SINCE + 70,
+            "updated_at": SINCE + 110,
+            "usage": {"total_cost_usd": 1.0},
+        },
+    ],
+    "scheduled_tasks": [
+        {"id": "task0001", "name": "nightly", "runs": 4, "ok": 1, "failed": 3, "skipped": 0}
+    ],
+    "truncated": ["sessions: 120 more past max_sessions 500"],
+}
+USAGE = {
+    "cost_today": 6.0,
+    "cost_last_7d": 10.5,
+    "cost_last_30d": 40.0,
+    "sessions": [
+        {
+            "id": "root0001",
+            "title": "lead",
+            "updated_at": SINCE + 120,
+            "cost_usd": 10.0,
+            "models": {"model-a": 10.0},
+            "child_usage": [
+                {"harness": "codex", "model": "gpt-x", "total_tokens": 500, "cost_usd": 0.5}
+            ],
+        }
+    ],
+}
 
-    class Named:
-        def __init__(self, named: str = "") -> None:
-            servers.append(named)
 
-        def call(self, method: str, path: str, **_: object) -> dict:
-            return {"sessions": []}
-
-    def no_db(*_: object) -> None:
-        raise telemetry.Fail("no database")
-
-    monkeypatch.setattr(telemetry, "Omnigent", Named)
-    monkeypatch.setattr(telemetry, "fetch_db", no_db)
+def served_report(monkeypatch, capsys, argv: list[str], docs: dict) -> tuple[list, dict]:
+    calls: list = []
+    monkeypatch.setattr(telemetry, "Omnigent", Served(docs, calls))
     monkeypatch.setattr(telemetry, "codex_rate_limits", lambda: None)
-    assert telemetry.main(["--server", "https://work.example", "--json"]) == 0
-    assert servers == ["https://work.example"]
+    assert telemetry.main([*argv, "--json"]) == 0
+    return calls, json.loads(capsys.readouterr().out)
 
 
-def test_the_usage_request_carries_the_window_and_a_long_timeout(monkeypatch, capsys) -> None:
-    calls: list[tuple[str, str, object]] = []
+def test_a_telemetry_response_renders_every_section_with_no_database(monkeypatch, capsys) -> None:
+    docs = {"/v1/usage/telemetry": TELEMETRY, "/v1/usage": USAGE}
+    calls, r = served_report(monkeypatch, capsys, ["--days", "3", "--max-sessions", "50"], docs)
+    since = telemetry.window_start(3, calls and r["window"]["generated"])
+    path = next(c[1] for c in calls if c[0] == "GET" and "telemetry" in c[1])
+    assert path.startswith(f"/v1/usage/telemetry?since={since}&until=")
+    assert path.endswith("&max_sessions=50")
+    assert [c[1] for c in calls if c[0] == "GET"][1] == "/v1/usage?days=3"
+    assert r["left_out"] == {
+        "Codex rate limits": "no Codex rollout with a rate-limit snapshot here"
+    }
+    out = telemetry.text(r)
+    for part in (
+        "Daily cost",
+        "$10.50",  # the window's daily total
+        "model-a",
+        "Session trees",
+        "root0001"[:8],
+        "Cloud sessions: 1",
+        "codex gpt-x $0.50",
+        "Scheduled tasks",
+        "nightly",
+        "CRON_FAIL_LOOP",
+        "7 days $10.50",
+    ):
+        assert part in out, part
+    page = telemetry.page(r)
+    assert "nightly" in page and "<script" not in page and "root0001"[:8] in page
 
-    class Recorded:
-        def __init__(self, named: str = "") -> None:
-            pass
 
-        def call(self, method: str, path: str, **kw: object) -> dict:
-            calls.append((method, path, kw.get("timeout")))
-            return {"sessions": []}
+def test_child_usage_stays_beside_its_parent_and_is_added_to_no_cost(monkeypatch, capsys) -> None:
+    docs = {"/v1/usage/telemetry": TELEMETRY, "/v1/usage": USAGE}
+    _, r = served_report(monkeypatch, capsys, [], docs)
+    row = r["cloud"]["rows"][0]
+    assert row["children"] == [
+        {"harness": "codex", "model": "gpt-x", "cost_usd": 0.5, "tokens": 500}
+    ]
+    assert (r["cloud"]["cost_usd"], r["cloud"]["child_cost_usd"]) == (9.0, 0.5)
+    assert r["models"][0]["cost_usd"] == 9.0  # the server's models, child usage not in them
+    assert r["trees"][0]["cost_usd"] == 10.0  # the API's tree cost, as the server counted it
 
-    def no_db(*_: object) -> None:
-        raise telemetry.Fail("no database")
 
-    monkeypatch.setattr(telemetry, "Omnigent", Recorded)
-    monkeypatch.setattr(telemetry, "fetch_db", no_db)
-    monkeypatch.setattr(telemetry, "codex_rate_limits", lambda: None)
-    assert telemetry.main(["--days", "3", "--json"]) == 0
-    assert calls == [("GET", "/v1/usage?days=3", 180.0)]
+def test_a_truncated_entry_is_a_named_gap_not_a_zero(monkeypatch, capsys) -> None:
+    docs = {"/v1/usage/telemetry": TELEMETRY, "/v1/usage": USAGE}
+    _, r = served_report(monkeypatch, capsys, [], docs)
+    assert r["truncated"] == ["sessions: 120 more past max_sessions 500"]
+    out = telemetry.text(r)
+    assert "not zeros" in out and "120 more past max_sessions 500" in out
+    assert "120 more past max_sessions 500" in telemetry.page(r)
+    only_dict = {**TELEMETRY, "truncated": [{"section": "tool_calls", "reason": "cut"}]}
+    assert telemetry.build(None, telemetry_rows(only_dict), None, 7, NOW)["truncated"] == [
+        "section tool_calls, reason cut"
+    ]
+
+
+def telemetry_rows(doc: dict) -> dict:
+    return telemetry.fetch_telemetry(Served({"/v1/usage/telemetry": doc}), SINCE, int(NOW), 500)
+
+
+def test_a_failed_telemetry_call_names_its_sections_and_the_usage_sections_still_render(
+    monkeypatch, capsys
+) -> None:
+    docs = {"/v1/usage/telemetry": telemetry.Fail("HTTP 404"), "/v1/usage": USAGE}
+    _, r = served_report(monkeypatch, capsys, [], docs)
+    assert all("HTTP 404" in r["left_out"][s] for s in telemetry.API_SECTIONS)
+    assert r["spend"]["cost_last_7d"] == 10.5 and r["daily"] is None
+
+
+def test_the_report_has_no_sql_and_no_database_credentials() -> None:
+    src = Path(telemetry.__file__).read_text()
+    for gone in ("psql", "docker", "SELECT ", "zstd", "db-container", "DB_CONTAINER", "PASSWORD"):
+        assert gone not in src, gone
+    for gone in ("psql", "docker", "Postgres"):
+        assert gone not in (Path(telemetry.__file__).parent.parent / "SKILL.md").read_text()
 
 
 def called(sid: str, tool: str | None, n: int = 0, **kw: object) -> dict:
@@ -288,15 +405,12 @@ def test_a_cloud_session_that_failed_still_counts_with_its_cost_and_its_children
             "cloud1",
             agent="claude-cloud",
             live_status=4,
-            usage={
-                "total_cost_usd": 2.0,
-                "by_model": {"claude-sonnet-5-5": {}},
-                "child_usage": [kid],
-            },
+            usage={"total_cost_usd": 2.0, "by_model": {"claude-sonnet-5-5": {}}},
         ),
         session("other", "other"),
     ]
-    c = telemetry.build(None, db(sessions=rows), None, 7, NOW)["cloud"]
+    api = {"sessions": [{"id": "cloud1", "child_usage": [kid]}]}
+    c = telemetry.build(api, db(sessions=rows), None, 7, NOW)["cloud"]
     assert (c["sessions"], c["cost_usd"], c["child_cost_usd"]) == (1, 2.0, 0.5)
     row = c["rows"][0]
     assert row["status"] == "failed" and row["models"] == ["claude-sonnet-5-5"]
@@ -314,27 +428,3 @@ def test_a_gemini_session_shows_its_tokens_not_a_bare_zero() -> None:
     r = telemetry.build(None, db(sessions=rows), None, 7, NOW)
     assert r["unpriced"][0]["note"] == "7,000 tokens, no price"
     assert "7,000 tokens, no price" in telemetry.text(r)
-
-
-def test_the_sql_reads_the_servers_label_table_item_codes_and_user_messages(monkeypatch) -> None:
-    """Names as the server's models have them: labels in `conversation_labels`, a tool's name inside
-    `conversation_items.data`, item types message 1, function_call 2, native_tool 7."""
-    seen: list[str] = []
-
-    def record(container: str, sql: str) -> list:
-        seen.append(sql)
-        return [{"unarchived": 0, "from_tasks": 0}] if "unarchived" in sql else []
-
-    monkeypatch.setattr(telemetry, "psql", record)
-    telemetry.fetch_db("c", SINCE)
-    sessions = seen[0]
-    assert "m.labels" not in sessions and "tool_name" not in sessions
-    assert (
-        "FROM conversation_labels l" in sessions and "l.key" in sessions and "l.value" in sessions
-    )
-    assert "i.type IN (2, 7)" in sessions and "i.data::json->>'name'" in sessions
-    # a native_tool row ({"item": {"type": ...}}, no top-level name) must never reach json_object_agg as NULL
-    assert "coalesce(i.data::json->>'name', i.data::json->'item'->>'type') IS NOT NULL" in " ".join(
-        sessions.split()
-    )
-    assert "i.type = 1 AND i.data::json->>'role' = 'user'" in " ".join(sessions.split())

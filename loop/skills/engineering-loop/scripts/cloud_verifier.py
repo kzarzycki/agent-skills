@@ -711,9 +711,7 @@ def linked_report(final: str, root: Path) -> tuple[str, str] | None:
 
 
 RELAYED: list[str] = [""]  # the tail of what the last relayed CLI printed, for `child_usage`
-CHILD_USAGE_URL = (
-    "OMNIGENT_CHILD_USAGE_URL"  # off unless the deployment sets it: usage leaves the VM only then
-)
+SERVER_URL = "OMNIGENT_SERVER_URL"  # the Omnigent server's base URL; off unless the deployment sets it: usage leaves the VM only then
 TOKENS = re.compile(r"(?:tokens used|total tokens)\D{0,12}([\d,]+)", re.IGNORECASE)
 COST = re.compile(r"(?:total )?cost\D{0,6}\$\s*([\d.]+)", re.IGNORECASE)
 
@@ -757,21 +755,26 @@ def agy_result(raw: str) -> tuple[str, dict | None]:
     return message, got
 
 
-def post_child_usage(usage: dict | None, parent: str | None = None) -> bool:
-    """Post a child's usage to Omnigent under its parent session (`$OMNIGENT_SESSION_ID`). Needs the deployment's
-    `$OMNIGENT_CHILD_USAGE_URL` (a `{session}` template) and never fails the pass."""
-    url, parent = os.environ.get(CHILD_USAGE_URL), parent or os.environ.get("OMNIGENT_SESSION_ID")
-    if not (usage and url and parent):
+def post_child_usage(usage: dict | None, parent: str | None = None, run: str | None = None) -> bool:
+    """Post a child's usage to `POST /v1/sessions/{parent}/child-usage` on the server `$OMNIGENT_SERVER_URL` names,
+    under its parent session (`$OMNIGENT_SESSION_ID`), and never fail the pass. The body is `key`, `harness` and
+    optionally `model`, `input_tokens`, `output_tokens`, `total_tokens` and `cost_usd`; the header
+    `X-Omnigent-Orchestration-Source` names the parent. `key` is stable per child run (`run` names it; else the
+    usage itself), so a retry replaces its entry instead of adding a second."""
+    base, parent = os.environ.get(SERVER_URL), parent or os.environ.get("OMNIGENT_SESSION_ID")
+    if not (usage and base and parent):
         return False
     try:
-        # Opt-in and a guess at the contract until the server's child-usage endpoint (omnigent#980) is settled: the
-        # runner token as a bearer when the deployment sets one, and a key so a retry never counts the child twice.
-        key = uuid.uuid5(uuid.NAMESPACE_URL, f"{parent}/{json.dumps(usage, sort_keys=True)}")
-        headers = {"Idempotency-Key": str(key)}
+        key = uuid.uuid5(uuid.NAMESPACE_URL, f"{parent}/{run or json.dumps(usage, sort_keys=True)}")
+        body = {"key": str(key), "harness": usage["harness"]}
+        for name in ("model", "input_tokens", "output_tokens", "total_tokens", "cost_usd"):
+            if usage.get(name) not in (None, "?"):
+                body[name] = usage[name]
+        headers = {"X-Omnigent-Orchestration-Source": parent}
         if token := os.environ.get("OMNIGENT_RUNNER_TOKEN"):
             headers["Authorization"] = f"Bearer {token}"
-        post_json(url.format(session=parent), usage, headers)
-    except (OSError, ValueError) as e:
+        post_json(f"{base.rstrip('/')}/v1/sessions/{parent}/child-usage", body, headers)
+    except (KeyError, OSError, ValueError) as e:
         print(f"cloud_verifier: child usage not posted: {e}", file=sys.stderr)
         return False
     return True
@@ -1094,9 +1097,12 @@ def review(
         ):  # JSON on stdout: the final message back into `final`, its usage posted
             message, found = agy_result(text(final))
             final.write_text(message)
-            post_child_usage(found and {"harness": harness, "model": model or "?", **found})
+            post_child_usage(
+                found and {"harness": harness, "model": model or "?", **found},
+                run=f"{harness}/{started}",
+            )
         else:
-            post_child_usage(child_usage(harness, model, RELAYED[0]))
+            post_child_usage(child_usage(harness, model, RELAYED[0]), run=f"{harness}/{started}")
         print(f"{harness} exited {code} after {ended - started:.0f} s", flush=True)
         # read before the checkout back, which rewrites a report path that both commits track
         wrote = {
