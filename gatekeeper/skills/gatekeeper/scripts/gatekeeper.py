@@ -643,7 +643,7 @@ import time
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from fractions import Fraction
 from pathlib import Path
 from types import ModuleType
@@ -710,6 +710,7 @@ WAITING = 3
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
 # a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
 # family (`codex/terra-6.1/med mid`, SKILL.md § Verifier report): a model id holding the word (`sol-mid-preview`) names no tier
+SAME_FAMILY = re.compile(r"(?<![^\s,])same-family(?![^\s,])", re.IGNORECASE)
 LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it is the lead's call), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
@@ -974,6 +975,8 @@ SPEC_ACTIONS = ("policy", "owner")
 # what a level asks of the merge, weakest first: the gates alone; a person's go on the head (the owner's, or the
 # delegate's where delegation allows); the owner's own go on the head
 MERGE_ACTIONS = ("gates", "go", "owner")
+# `verifier.same_family`: the highest risk level (LEVELS) at which a same-family verdict may land; `never` lands none
+SAME_FAMILY_LIMITS = ("never", "low", "high")
 SCHEMA: dict[str, dict[str, Any]] = {
     "loop": {
         "cap": int,
@@ -1014,6 +1017,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "critical_paths": list,
         "merge_paths": list,
     },
+    # which verifier family may land a PR (#609): see same_family()
+    "verifier": {"same_family": Choice(SAME_FAMILY_LIMITS), "same_family_until": str},
     "levels": {
         level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS), "rerun": bool}
         for level in LEVELS
@@ -3509,6 +3514,8 @@ def proofs(
                 f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
                 " default-tier verifier pass on the head first"
             )
+        if not unreviewed and (why := same_family(pull, issues, loop, verdicts)):
+            found.append(f"{where}: {why}")
         # only on a verdict that would land, since the verifier's pass is one of the two proofs it reads
         if not unreviewed and (line := rerun_gap(pull, issues, loop)):
             found.append(line)
@@ -3619,6 +3626,55 @@ RULE_FILES = (
         for name in ("gatekeeper.py", "approvals.py")
     ),
 )
+
+
+def same_family(
+    pull: dict[str, Any],
+    issues: list[dict[str, Any]],
+    loop: str | None,
+    verdicts: list[tuple[str, int, dict[str, str]]] | str,
+    today: date | None = None,
+) -> str | None:
+    """Why the newest verifier pass, if every verdict in it is a same-family one (a heading naming `same-family`), may not
+    land this PR, or None: loop.md's `verifier.same_family` (`never`, `low` or `high`) is the highest risk level
+    (LEVELS) at which such a verdict lands, and the change's level is its highest risk term (terms). `same_family_until`
+    (an ISO date, quoted) lifts the limit to `high` through that day, for an outage the owner approved, and falls back
+    to `same_family` once past. Without `same_family` a same-family verdict lands at any level, as before the setting
+    (#1115); a verdict of another family, or a mixed pass, is never held."""
+    terms_ = settings(loop).get("verifier", {})
+    limit = terms_.get("same_family")
+    if limit is None or isinstance(verdicts, str) or not verdicts:
+        return None
+    head = verdicts[-1][0]
+    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
+    last = max(number for number, _ in on_head)
+    newest = [lines for number, lines in on_head if number == last]
+    if not all(SAME_FAMILY.search(lines["Family"]) for lines in newest):
+        return None
+    if until := terms_.get("same_family_until"):
+        try:
+            end = date.fromisoformat(until)
+        except ValueError:
+            raise Refused(
+                f"loop.md's `verifier.same_family_until` must be an ISO date (YYYY-MM-DD), not {until!r}"
+            ) from None
+        if (today or datetime.now(timezone.utc).date()) <= end:
+            limit = "high"
+    found = [level for level, _, _ in terms(pull, issues, loop)]
+    level = "critical" if "critical" in found else "high" if found else "low"
+    order = (
+        "never",
+        "low",
+        "high",
+        "critical",
+    )  # a change rates low at the least, so `never` lands none
+    if order.index(level) <= order.index(limit):
+        return None
+    return (
+        f"its newest verdict is same-family and the change rates {level}, above loop.md's"
+        f" `verifier.same_family: {limit}`: a verdict of the other family first"
+        " (or the owner's `verifier.same_family_until` date for an outage)"
+    )
 
 
 def tiered(
