@@ -29,7 +29,8 @@ def test_the_queue_paragraphs_name_the_whole_rerun_as_a_gap_against_r5():
 def test_lead_reads_a_red_at_once_instead_of_waiting_on_the_rerun():
     lead = (SKILL / "lead.md").read_text()
     step = lead[lead.index("a red is enqueued once more") :][:600]
-    assert "R5 rules out" in step and all(issue in step for issue in GAP)
+    assert "R5 rules out" in step and "only where its own CI calls `rerun-tests`" in step
+    assert not any(issue in step for issue in GAP)
     assert "read the red's log at once" in step
 
 
