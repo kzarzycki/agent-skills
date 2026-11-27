@@ -4543,6 +4543,21 @@ def detached_branch(path: Path, remote: str, pr: int = 0) -> tuple[str, str]:
         except Fail:
             return "", ""
         return name, name
+    # refresh the tracking refs first: a clone that fetched only the tip has none, and a deleted branch leaves a stale one
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "fetch",
+            "-q",
+            "--prune",
+            remote,
+            f"+refs/heads/*:refs/remotes/{remote}/*",
+        ],
+        capture_output=True,
+        check=False,
+    )
     held = [
         b.removeprefix(f"{remote}/")
         for b in git_out(
