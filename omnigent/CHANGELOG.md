@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.33 - 2026-11-27
+
+- `start` writes a lead's `AGENT_SIGNATURE` as `<signature> · Session: <link>`, so the line it copies into its PR's `Impl:` names its session (#2825).
+
 ## 0.1.32 - 2026-11-27
 
 - `supervise --console` stops posting the owner's own conversations to the chief of staff: a followed session the owner writes in is marked `direct` once (`direct <session> --off` holds until a newer owner message), `[Message from session` counts as a session's post (so `reap` no longer reads it as the owner talking), and an approval prompt or a card open past 4 h is recorded, not posted, unless a `- **Steward mode` bullet in the standing decisions holds `**ON` (#2824).
