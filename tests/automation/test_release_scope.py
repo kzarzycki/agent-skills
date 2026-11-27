@@ -156,14 +156,18 @@ def test_release_check_passes_with_neither_smoke_variable_set(monkeypatch, capsy
         monkeypatch.delenv(name, raising=False)
     assert cli.main(["release-check", "engineering", "engineering-v0.0.0"]) == 0
     assert "smoke" not in capsys.readouterr().out
-    assert cli.main(["release-check", "engineering", "engineering-v0.0.0", "--skip-smoke"]) == 2  # flag is gone
+    assert (
+        cli.main(["release-check", "engineering", "engineering-v0.0.0", "--skip-smoke"]) == 2
+    )  # flag is gone
 
 
 def test_release_check_does_not_consult_the_smoke_run_even_when_configured(monkeypatch) -> None:
     from tools.capability_pack import cli
 
     monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
-    monkeypatch.setattr(cli, "run_smoke", lambda *_a, **_k: pytest.fail("release-check must not run the smoke"))
+    monkeypatch.setattr(
+        cli, "run_smoke", lambda *_a, **_k: pytest.fail("release-check must not run the smoke")
+    )
     for name, value in SMOKE.items():
         monkeypatch.setenv(name, value)
     assert cli.main(["release-check", "engineering", "engineering-v0.0.0"]) == 0
@@ -197,16 +201,24 @@ def test_run_smoke_dispatches_for_the_commit_and_reports_the_runs_result() -> No
 
     calls: list[list[str]] = []
     env = {**SMOKE, "RELEASE_SMOKE_PR": "5"}
-    assert run_smoke(HEAD, env, _smoke_gh("success", calls), sleep=lambda _s: None) == ("u-run", "success")
+    assert run_smoke(HEAD, env, _smoke_gh("success", calls), sleep=lambda _s: None) == (
+        "u-run",
+        "success",
+    )
     dispatch = next(c for c in calls if c[:2] == ["workflow", "run"])
     assert f"ref={HEAD}" in dispatch and "pr=5" in dispatch and "org/private" in dispatch
-    assert run_smoke(HEAD, SMOKE, _smoke_gh("failure", []), sleep=lambda _s: None) == ("u-run", "failure")
+    assert run_smoke(HEAD, SMOKE, _smoke_gh("failure", []), sleep=lambda _s: None) == (
+        "u-run",
+        "failure",
+    )
 
 
 def test_smoke_run_command_exits_with_the_runs_result(monkeypatch, capsys) -> None:
     from tools.capability_pack import cli
 
-    monkeypatch.setattr(cli, "run_smoke", lambda head: ("u-run", "success" if head == HEAD else "x"))
+    monkeypatch.setattr(
+        cli, "run_smoke", lambda head: ("u-run", "success" if head == HEAD else "x")
+    )
     assert cli.main(["smoke-run", HEAD]) == 0
     assert "smoke run: success: u-run" in capsys.readouterr().out
     monkeypatch.setattr(cli, "run_smoke", lambda head: ("u-run", "failure"))

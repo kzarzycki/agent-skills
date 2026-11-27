@@ -1387,7 +1387,11 @@ def run_smoke(
     ]  # fmt: skip
 
     def known() -> set[int]:
-        return {item["databaseId"] for item in json.loads(run(listing)) if head in (item.get("displayTitle") or "")}
+        return {
+            item["databaseId"]
+            for item in json.loads(run(listing))
+            if head in (item.get("displayTitle") or "")
+        }
 
     before = known()
     inputs = ["-f", f"ref={head}"]
