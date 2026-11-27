@@ -5436,7 +5436,10 @@ def start(
         # a lead's own link, known only now that its session exists: the runner's primary session names the root
         # of its tree, which is not the lead when the lead was started under another session
         link = f"OMNIGENT_SESSION_LINK={og.base}/c/{sid}\n" if top_level and not pr else ""
-        full = f"AGENT_SIGNATURE={sig}\n" + link + body
+        # a lead's signature carries its session (`Impl: <signature> · Session: <link>`), so the one line it copies into
+        # its PR body names the session behind the PR (#2825); `gatekeeper check session` fails a PR that lacks it
+        named = f" · Session: {og.base}/c/{sid}" if link else ""
+        full = f"AGENT_SIGNATURE={sig}{named}\n" + link + body
         text = message(full)
         if by_file:
             brief_file.parent.mkdir(parents=True, exist_ok=True)
