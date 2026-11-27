@@ -84,3 +84,45 @@ def test_reap_merged_finds_the_worker_of_a_merged_pr_never_its_verifier() -> Non
     og.call = lambda method, path, *_: {"data": live}  # type: ignore[method-assign]
     assert omnigent_agent.pr_workers(og) == ["w"]
     assert omnigent_agent.pr_workers(og, omnigent_agent.pr_ref("o/r#7")) == ["w"]
+
+
+def _live(og: base.FakeOmnigent, *sessions: dict) -> None:
+    og.call = lambda method, path, *_: {"data": list(sessions)}  # type: ignore[method-assign]
+
+
+def test_pr_workers_never_names_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "me")
+    og = base.FakeOmnigent()
+    _live(
+        og,
+        {"id": "me", "labels": {"omni.pr": "o/r#7"}},
+        {"id": "w", "labels": {"omni.role": "worker", "omni.pr": "o/r#7"}},
+    )
+    assert omnigent_agent.pr_workers(og, omnigent_agent.pr_ref("o/r#7")) == ["w"]
+
+
+@pytest.mark.parametrize("role", ["lead", "cos", "pm"])
+def test_pr_workers_never_names_a_lead_or_manager(
+    role: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OMNIGENT_SESSION_ID", raising=False)
+    og = base.FakeOmnigent()
+    _live(
+        og,
+        {"id": "boss", "labels": {"omni.role": role, "omni.pr": "o/r#7"}},
+        {"id": "w", "labels": {"omni.role": "worker", "omni.pr": "o/r#7"}},
+    )
+    assert omnigent_agent.pr_workers(og, omnigent_agent.pr_ref("o/r#7")) == ["w"]
+
+
+def test_pr_workers_still_names_a_worker_and_a_child_with_no_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OMNIGENT_SESSION_ID", "me")
+    og = base.FakeOmnigent()
+    _live(
+        og,
+        {"id": "w", "labels": {"omni.role": "worker", "omni.pr": "o/r#7"}},
+        {"id": "c", "labels": {"omni.pr": "o/r#7"}},
+    )
+    assert omnigent_agent.pr_workers(og, omnigent_agent.pr_ref("o/r#7")) == ["w", "c"]

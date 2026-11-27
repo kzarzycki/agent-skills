@@ -7549,10 +7549,17 @@ def withdraw(og: Omnigent, sid: str, card: str = "") -> list[str]:
 
 
 def pr_workers(og: Omnigent, pr: int | None = None) -> list[str]:
-    """The live sessions labelled with a PR (``PR_LABEL``), of PR number ``pr`` when given."""
+    """The live sessions labelled with a PR (``PR_LABEL``), of PR number ``pr`` when given, that a merge may
+    finish: never the caller (``own_id()``, the session that ran ``land``, which the detached reap inherits through
+    its environment) and never a session whose ``omni.role`` is outside ``LEAN_ROLES`` (a lead, a manager),
+    whatever its PR labels (#2794). A session with no role is a child and stays in."""
     page = og.call("GET", "/v1/sessions?kind=any&limit=1000")
     found = []
+    caller = own_id()
     for s in page.get("data", []):
+        role = str((s.get("labels") or {}).get("omni.role") or "")
+        if str(s.get("id")) == caller or role not in ("", *LEAN_ROLES):
+            continue
         labelled = pr_labels(held_by(s))
         named = getattr(pr, "repo", "")
         if (
