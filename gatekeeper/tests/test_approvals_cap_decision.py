@@ -77,3 +77,16 @@ def test_a_decision_after_a_code_block_still_counts(body: str) -> None:
     assert (
         verified(at(CAP, "0 blocker, 1 major, 0 minor"), "## Evidence\n\nlog line\n\n" + body) == []
     )
+
+
+def test_minors_only_at_the_cap_land_under_the_cap_line_though_the_verifier_wrote_no() -> None:
+    minors = at(CAP, "0 blocker, 0 major, 1 minor")
+    assert verified(minors, "## Evidence\n\nlog line\n") == [UNSATISFIED]
+    assert verified(minors, DECIDED) == []
+    assert verified(at(CAP + 1, "0 blocker, 0 major, 2 minor"), DECIDED) == []
+
+
+def test_minors_below_the_cap_blocker_at_the_cap_or_nothing_open_still_refuse() -> None:
+    assert UNSATISFIED in verified(at(CAP - 1, "0 blocker, 0 major, 1 minor"), DECIDED)
+    assert UNSATISFIED in verified(at(CAP, "1 blocker, 0 major, 1 minor"), DECIDED)
+    assert UNSATISFIED in verified(at(CAP, "0 blocker, 0 major, 0 minor"), DECIDED)

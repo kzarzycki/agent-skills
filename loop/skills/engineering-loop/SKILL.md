@@ -1216,5 +1216,9 @@ decision below: a head at the cap with majors open, none a blocker, lands under 
 
   The cap adds no risk: the PR's own rating decides whether its merge waits for a go.
 - **The last pass under the cap leaves only minor or edge findings open:** ledger them and
-  file their issue (Triage), leave the code untouched, and land on the satisfied verdict.
+  file their issue (Triage), leave the code untouched, and land on the verdict. A verifier may
+  write `SATISFIED: no` with minors open (verifier.md says it should not), so record the
+  `Cap: #<follow-up>` line in the PR body, naming the issue the minors were filed in: with it
+  `check merge` accepts minors open on a pass at the cap or later, as it does majors, and a
+  blocker still refuses. Below the cap minors still send the PR back for another pass.
   There is no owner stop.

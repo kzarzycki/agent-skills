@@ -198,6 +198,9 @@ yourself, keeping standards and spec as separate axes.
   necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
   naming that log; the verifier script hands no later question to the lead without that line
   (exit 1).
+- **When `SATISFIED:` is `yes`:** no blocker or major is open and every acceptance line ran. Open
+  minors alone never make it `no`; the lead files them (The cap in SKILL.md). Write `no` for an open blocker or
+  major, or an acceptance line you did not run.
 - **An acceptance line you did not run** blocks `SATISFIED: yes`, whatever the reason: a
   Before merge line's check run by the acceptance command, a `Manual:` line probed through
   the path a user takes (on the instance when one is up) or accepted on evidence (Manual

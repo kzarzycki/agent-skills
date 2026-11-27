@@ -3897,8 +3897,8 @@ def reviewed(
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried: on
     the same tree, or where loop.md opts in, which prints a line either way), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
-    blocker or a major open; majors with no blocker at the cap or later pass once the PR body records the lead's
-    decision (CAP_DECISION). A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
+    blocker or a major open; majors or minors with no blocker at the cap or later pass once the PR body records the
+    lead's decision (CAP_DECISION). A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
     needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
     verdicts = passes(pull) if verdicts is None else verdicts
     if isinstance(verdicts, str):
@@ -3915,10 +3915,16 @@ def reviewed(
         ]
     pairs = [pair for pair in map(counts, same) if pair is not None]
     blocker, major = sum(pair[0] for pair in pairs), sum(pair[1] for pair in pairs)
-    # at the cap the lead decides: majors filed as a follow-up (CAP_DECISION) land on this verdict; a blocker never does
+    minor = sum(
+        int(found[1])
+        for lines in same
+        if (found := re.search(r"(\d+)\s+minors?\b", lines["VERDICT"]))
+    )
+    # at the cap the lead decides: majors or minors filed as a follow-up (CAP_DECISION) land on this verdict, since a
+    # verifier writes `SATISFIED: no` for any open finding; a blocker never does, and nothing open is no decision
     decided = (
         not blocker
-        and major
+        and (major or minor)
         and last >= cap(loop)
         and CAP_DECISION.search(QUOTED.sub("", pull.get("body") or "")) is not None
     )
