@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.16 - 2026-11-27
+
+- `lead.md`'s Verifier route points to the setup's `verifier:` setting instead of naming Codex as the default and a fixed Gemini model; the fallback rules read in the configured order (#2840).
+
 ## 0.1.15 - 2026-11-27
 
 - cloud_verifier: child usage posts to `POST /v1/sessions/{id}/child-usage` on the server `OMNIGENT_SERVER_URL` names (replacing `OMNIGENT_CHILD_USAGE_URL`), with `key`, `harness` and the optional model, token and cost fields, and an `X-Omnigent-Orchestration-Source` header naming the parent; the key is stable per child run, so a retry replaces its entry (#2805).
