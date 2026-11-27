@@ -174,8 +174,7 @@ def test_phase(observe_teardown_phase):
 PY
 
 cd "$root"
-export PYTHONPATH="$root/engineering/tests${PYTHONPATH:+:$PYTHONPATH}" PROBE_1543_INHERITED=caller PYTEST_ADDOPTS=
-export PYTHONPATH="$root/gatekeeper/tests"
+export PYTHONPATH="$root/gatekeeper/tests" PROBE_1543_INHERITED=caller PYTEST_ADDOPTS=
 pytest=(uv run env -u VIRTUAL_ENV python -m pytest -q --tb=short -p no:cacheprovider --rootdir "$probe")
 "${pytest[@]}" -n 0 "$probe/test_environ_probe.py"
 "${pytest[@]}" -n 2 --dist loadfile "$probe/test_environ_probe.py"

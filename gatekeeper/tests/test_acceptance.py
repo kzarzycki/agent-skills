@@ -62,7 +62,7 @@ def test_a_passing_and_a_failing_check_print_one_line_each_and_exit_1(repo: Path
         "PASS acceptance/7/01-ok.sh",
         "FAIL acceptance/7/02-broken.sh",
     ]
-    assert "TOTAL 2 checks, 1 passed, 1 failed" in result.stdout
+    assert "TOTAL 2 checks, 1 passed, 0 skipped, 1 failed" in result.stdout
     assert "OVER BUDGET" not in result.stdout
 
 
@@ -173,7 +173,8 @@ def test_a_skip_marker_without_an_issue_link_is_not_honoured_and_skips_are_count
     result = acceptance(repo, "--all")
     assert result.returncode == 1  # the unlinked skip ran, and failed
     assert verdicts(result.stdout) == ["PASS acceptance/5/01-ok.sh", "FAIL acceptance/6/nolink.sh"]
-    assert "TOTAL 2 checks, 1 passed, 1 failed, 2 skipped" in result.stdout
+    assert "NOTE acceptance/6/nolink.sh: `# acceptance: skip` names no issue link" in result.stdout
+    assert "TOTAL 4 checks, 1 passed, 2 skipped, 1 failed" in result.stdout
 
 
 def test_all_exits_0_when_every_folder_passes(repo: Path) -> None:
