@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.23 - 2026-11-27
+
+- `land` under `land.queue: mergify` tries a hand-over call GitHub answers with a 5xx again (after 2, 10 and 30 seconds); one that still fails ends `land` (and `land --wait`) with exit 1 and one line naming the error, so exit 0 means queued or merged (#2405).
+
 ## 0.1.22 - 2026-11-27
 
 - `approvals.py check session <pr>` fails a PR body whose `Impl:` line has no `Session: <server>/c/<id>` part, and `check merge` runs the same check; a body with no `Impl:` line passes. A lead's `Impl:` signature carries its session link, and `lead.md` step 1 runs `claim <issue>` when it takes the issue (#2825).
