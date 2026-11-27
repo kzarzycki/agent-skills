@@ -6628,6 +6628,31 @@ def pr_stalls(
     return said
 
 
+NIGHTLY_RED = "Nightly red since "  # the title `nightly.py red` gives the issue it opens (engineering-loop, Nightly)
+
+
+def nightly_reds(repo: str, memo: dict) -> list[tuple[str, str]]:
+    """``(id, line)`` for each open red-nightly issue of ``repo`` not yet told (#1386): an issue whose title opens with
+    ``NIGHTLY_RED`` is a red scheduled run, an ``act`` event for the manager the day it opens, so it hears of the red
+    without waiting for a hygiene pass. ``memo['told']`` keeps the issue numbers seen open; one that closes leaves it. The
+    line names the number only, never the issue's own text."""
+    told = set(memo.get("told") or [])
+    now = sorted(
+        row["number"]
+        for row in rest_pages(f"repos/{repo}/issues?state=open")
+        if not row.get("pull_request") and str(row.get("title", "")).startswith(NIGHTLY_RED)
+    )
+    memo["told"] = now
+    return [
+        (
+            f"nightly-red:{repo}#{n}",
+            f"{repo}: the scheduled nightly is red, issue #{n}: bisect the merges it lists and land a fix or a revert",
+        )
+        for n in now
+        if n not in told
+    ]
+
+
 # ponytail: one window, ceiling and floor for every repo the supervisor watches; the upgrade path is a per-repo setting
 QUEUE_WINDOW = (
     7 * 86400.0
@@ -9511,6 +9536,14 @@ def route(event: dict, ask: Callable[[], tuple[str, str]]) -> tuple[str, str, st
         return "rule", "act", "an approved, verified PR its queue never took: land it or flag it"
     if kind == "pr-stall":  # read from GitHub, never from a lead's words
         return "rule", "act", "a PR stalled: clear its blocker, or card the owner the fix"
+    if (
+        kind == "nightly-red"
+    ):  # an open `Nightly red since` issue, read from GitHub, never from a lead's words
+        return (
+            "rule",
+            "act",
+            "the scheduled nightly is red: a lead bisects its issue, or the fix goes through the loop",
+        )
     if kind == "login":  # read from the host and the CLI, never from a lead's words
         return "rule", "owner", "the Omnigent login ends or is rejected: only the owner logs in"
     if kind == "dequeued":  # a Mergify comment, raised on the lead that owns the PR, else on none
@@ -10911,6 +10944,19 @@ def supervise_registry(
                 etags_save(etags_path)
                 for eid, line in found:
                     say(line, sid, eid, "pr-stall")
+            try:
+                for eid, line in nightly_reds(
+                    repo, state.setdefault("nightly", {}).setdefault(repo, {})
+                ):
+                    say(line, sid, eid, "nightly-red")
+            except RateLimited as e:
+                limited[0] = time.monotonic() + e.jittered()
+                swept.pop(repo, None)
+                log(("nightly-red", repo), f"GitHub rate limit: issues not read for {e.wait:.0f}s")
+            except Exception as e:  # noqa: BLE001 - read again at the next PR_STALL_POLL
+                log(("nightly-red", repo), f"{repo}: red-nightly issues not read: {reason(e)}")
+            else:
+                log(("nightly-red", repo), None)
             queue_round(repo, sid)
 
     def queue_round(repo: str, sid: str) -> None:
