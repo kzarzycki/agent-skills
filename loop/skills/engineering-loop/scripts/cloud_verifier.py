@@ -762,8 +762,9 @@ def post_child_usage(usage: dict | None, parent: str | None = None, run: str | N
     `X-Omnigent-Orchestration-Source` names the parent. `key` is stable per child run (`run` names it; else the
     usage itself), so a retry replaces its entry instead of adding a second."""
     base, parent = os.environ.get(SERVER_URL), parent or os.environ.get("OMNIGENT_SESSION_ID")
-    if not (usage and base and parent):
-        return False
+    counts = ("input_tokens", "output_tokens", "total_tokens", "cost_usd")
+    if not (usage and base and parent and any(usage.get(n) is not None for n in counts)):
+        return False  # the server refuses an entry with neither a count nor a cost (422)
     try:
         key = uuid.uuid5(uuid.NAMESPACE_URL, f"{parent}/{run or json.dumps(usage, sort_keys=True)}")
         body = {"key": str(key), "harness": usage["harness"]}

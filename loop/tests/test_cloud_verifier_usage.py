@@ -64,3 +64,9 @@ def test_the_usage_of_an_agy_json_run_is_read_and_a_plain_run_is_left_alone() ->
     assert cv.agy_result(from_json) == ("SATISFIED: yes", {"total_tokens": 321})
     assert cv.agy_result("SATISFIED: yes\n") == ("SATISFIED: yes\n", None)
     assert cv.agy_result('{"result": "x"}') == ("x", None)
+
+
+def test_an_entry_with_no_count_and_no_cost_is_not_posted(monkeypatch) -> None:
+    monkeypatch.setenv(cv.SERVER_URL, "https://omni.example")
+    monkeypatch.setattr(cv, "post_json", lambda *a: (_ for _ in ()).throw(AssertionError("posted")))
+    assert not cv.post_child_usage({"harness": "codex", "model": "m"}, "p1", "r")

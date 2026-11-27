@@ -21,7 +21,7 @@ offline. The page holds the numbers, not a retro's narrative.
 
 | Source | Where it answers | Gives |
 |---|---|---|
-| `GET /v1/usage/telemetry?since=&until=&max_sessions=` | any host logged in to the server (`omnigent-agents`' `scripts/omnigent_agent.py` does the login and token refresh) | daily cost, models, sessions (labels, turns, tool calls, usage by model), scheduled tasks and a `truncated` list; every flag and the split read this |
+| `GET /v1/usage/telemetry?since=&until=&max_sessions=` | any host logged in to the server (`omnigent-agents`' `scripts/omnigent_agent.py` does the login and token refresh) | `daily_cost`, `models`, `sessions` (labels, turns, tool calls, usage by model, `subscribes_to`), `scheduled_tasks`, `sidebar` and a `truncated` list of strings; every flag and the split read this |
 | `GET /v1/usage?days=N` | the same | spend today, over 7 and 30 days; each top-level session tree's cost by model; each session's `child_usage[]` |
 | Codex rollouts, `~/.omnigent/codex-native/*/codex-home/sessions/` | each host that ran Codex | the newest rate-limit snapshot, per window (5h, weekly) |
 
@@ -32,8 +32,9 @@ and prints under "Truncated by the server" as a gap, never as zeros: raise the c
 `--days`. Tokens and per-model numbers are each session's lifetime totals for the sessions the
 server returned; Claude harnesses record cost but no tokens. A tree's cost is the API's subtree
 sum, and the API lists only unarchived top-level sessions, so an archived tree is missing.
-Subscription and sidebar flags need those sections in the telemetry response and are left out
-without them.
+`SUBSCRIPTION_AMPLIFICATION` is computed from each session's `subscribes_to` among the returned
+sessions, and `SIDEBAR_NOISE` from `sidebar.from_scheduled_tasks`. `--days` is 1 to 90, the longest
+window the server serves.
 
 ## Splitting sessions
 

@@ -37,12 +37,12 @@ from omnigent_agent import Fail, Omnigent
 
 # /v1/usage and /v1/usage/telemetry build their window on request: slower than the 30 s of any other call
 USAGE_SECONDS = 180.0
+MAX_DAYS = 90  # the longest window GET /v1/usage/telemetry serves
 MAX_SESSIONS = 500  # sessions the telemetry call returns before it reports the rest as truncated
 ROLLOUTS = "~/.omnigent/codex-native/*/codex-home/sessions/*/*/*/rollout-*.jsonl"
 ROLLOUT_FILES = 15  # newest rollouts scanned for a populated rate-limit snapshot
 TOP_TREES = 15  # trees in the text and HTML tables; --json has all
 
-LIVE = {1: "idle", 2: "running", 3: "waiting", 4: "failed"}
 
 # Flag thresholds: a flag fires at its threshold and stays quiet below it.
 SUBAGENTS = 25  # sub-agents in one root tree
@@ -83,12 +83,16 @@ def fetch_telemetry(client: Omnigent, since: int, until: int, max_sessions: int)
         s["usage"] = s.get("usage") or {}
         s["labels"] = s["labels"] if isinstance(s.get("labels"), dict) else {}
         s["tool_calls"] = s["tool_calls"] if isinstance(s.get("tool_calls"), dict) else {}
+    models = [
+        {**m, "cache_read_tokens": m.get("cache_read_input_tokens") or 0}
+        for m in got.get("models") or []
+    ]
     return {
         "sessions": sessions,
-        "daily": got.get("daily") or [],
-        "models": got.get("models"),
+        "daily": got.get("daily_cost") or [],
+        "models": models,
         "tasks": got.get("scheduled_tasks") or [],
-        "subscriptions": got.get("subscriptions"),  # None: this response does not carry them
+        "subscriptions": sum(len(s.get("subscribes_to") or []) for s in sessions),
         "sidebar": got.get("sidebar"),
         "truncated": got.get("truncated") or [],
     }
@@ -141,7 +145,7 @@ def window_start(days: int, now: float) -> int:
 
 
 def cost(usage: dict) -> float:
-    return float(usage.get("total_cost_usd") or 0.0)
+    return float(usage.get("cost_usd") or 0.0)
 
 
 def role_of(s: dict) -> str:
@@ -153,15 +157,19 @@ def role_of(s: dict) -> str:
     return next((r for r in ROLES if r in words), "")
 
 
+def has_tokens(usage: dict) -> bool:
+    return usage.get("input_tokens") is not None or usage.get("output_tokens") is not None
+
+
 def tokens_of(usage: dict) -> int:
-    return int(usage.get("total_tokens") or 0)
+    return int((usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0))
 
 
 def side_metrics(members: list[dict], tool: str | None) -> dict:
     """One side's numbers. `tool_calls` is {name: count} per session; `tool` the split's tool, if any."""
     calls = sum(sum((s.get("tool_calls") or {}).values()) for s in members)
     own = sum((s.get("tool_calls") or {}).get(tool, 0) for s in members) if tool else 0
-    priced = [s for s in members if s["usage"].get("total_tokens") is not None]
+    priced = [s for s in members if has_tokens(s["usage"])]
     return {
         "sessions": len(members),
         "cost_usd": sum(cost(s["usage"]) for s in members),
@@ -244,7 +252,7 @@ def cloud_of(sessions: list[dict], kids: dict[str, list[dict]]) -> dict:
                 "title": s["title"] or "",
                 "cost_usd": cost(s["usage"]),
                 "models": sorted(by),
-                "status": LIVE.get(s.get("live_status"), ""),
+                "status": s.get("live_status") or "",
                 "children": [
                     {
                         "harness": c.get("harness") or "?",
@@ -323,14 +331,14 @@ def trees_of(api_sessions: list[dict], sessions: list[dict] | None, since: int) 
                 host=root.get("host") or "",
                 agent=root.get("agent") or "",
                 workspace=root.get("workspace") or "",
-                status=LIVE.get(root.get("live_status"), ""),
+                status=root.get("live_status") or "",
                 root_cost_usd=cost(root.get("usage") or {}),
                 subagents=len(children),
                 nested_codex=sum(1 for s in children if s.get("sub_agent_name") == "Codex"),
                 items=sum(s.get("items") or 0 for s in members),
-                inherited=root.get("inherited") or 0,
+                inherited=root.get("inherited_items") or 0,
                 compactions=sum(s.get("compactions") or 0 for s in members),
-                tokens=sum(s["usage"].get("total_tokens") or 0 for s in members),
+                tokens=sum(tokens_of(s["usage"]) for s in members),
                 late_verifiers=sorted(
                     s["title"] for s in children if verifier_pass(s["title"]) >= VERIFIER_PASS
                 ),
@@ -354,21 +362,25 @@ def flags_of(db: dict, trees: list[dict], since: int) -> list[str]:
                 f" >= {VERIFIER_PASS} ({', '.join(t['late_verifiers'][:3])})"
             )
     for s in db["sessions"]:
-        if (s.get("created_at") or 0) >= since and (s.get("inherited") or 0) >= INHERITED_ITEMS:
+        if (s.get("created_at") or 0) >= since and (
+            s.get("inherited_items") or 0
+        ) >= INHERITED_ITEMS:
             flags.append(
                 f"FORK_BLOAT {s['id'][:8]} '{(s['title'] or '')[:40]}': started with"
-                f" {s['inherited']} inherited items, {(s['items'] or 0) - s['inherited']} its own"
+                f" {s['inherited_items']} inherited items, {(s.get('items') or 0) - s['inherited_items']} its own"
             )
+    titles = {s["id"]: s.get("title") or "" for s in db["sessions"]}
     by_target: dict[str, list[dict]] = defaultdict(list)
-    for e in db["subscriptions"] or []:
-        by_target[e["target_id"]].append(e)
+    for s in db[
+        "sessions"
+    ]:  # `subscribes_to`: the sessions this one wakes on, when they end a turn
+        for target in s.get("subscribes_to") or []:
+            by_target[target].append(s)
     for target, edges in by_target.items():
         if len(edges) >= SUBSCRIBERS:
-            subs = ", ".join(
-                f"{e['subscriber_id'][:8]} '{(e['subscriber_title'] or '')[:24]}'" for e in edges
-            )
+            subs = ", ".join(f"{e['id'][:8]} '{(e.get('title') or '')[:24]}'" for e in edges)
             flags.append(
-                f"SUBSCRIPTION_AMPLIFICATION {target[:8]} '{(edges[0]['target_title'] or '')[:40]}'"
+                f"SUBSCRIPTION_AMPLIFICATION {target[:8]} '{titles.get(target, '')[:40]}'"
                 f" wakes {len(edges)} subscribers: {subs}"
             )
     for t in db["tasks"]:
@@ -377,20 +389,13 @@ def flags_of(db: dict, trees: list[dict], since: int) -> list[str]:
                 f"CRON_FAIL_LOOP {t['id'][:8]} '{t['name']}': {t['failed']}/{t.get('runs', 0)} runs failed"
                 f" (last error {t.get('last_error') or 'none recorded'})"
             )
-    side = db["sidebar"] or {"from_tasks": 0, "unarchived": 0}
-    if side["from_tasks"] >= SIDEBAR_SESSIONS:
+    side = db["sidebar"] or {"from_scheduled_tasks": 0, "unarchived": 0}
+    if side["from_scheduled_tasks"] >= SIDEBAR_SESSIONS:
         flags.append(
-            f"SIDEBAR_NOISE {side['from_tasks']} of {side['unarchived']} unarchived top-level"
+            f"SIDEBAR_NOISE {side['from_scheduled_tasks']} of {side['unarchived']} unarchived top-level"
             " sessions were created by scheduled-task runs"
         )
     return flags
-
-
-def truncated_text(entry: object) -> str:
-    """A truncated entry (the server names the cut section, as a string or an object) as one line."""
-    if isinstance(entry, dict):
-        return ", ".join(f"{k} {v}" for k, v in entry.items())
-    return str(entry)
 
 
 def build(
@@ -432,14 +437,12 @@ def build(
         "tasks": sorted(db["tasks"], key=lambda t: (-t.get("failed", 0), -t.get("runs", 0)))
         if db
         else None,
-        "subscriptions": len(db["subscriptions"])
-        if db and db.get("subscriptions") is not None
-        else None,
+        "subscriptions": db["subscriptions"] if db else None,
         "sidebar": db.get("sidebar") if db else None,
         "flags": flags_of(db, trees, since) if db else None,
         "split": split_of(db["sessions"], split_tool, split_label) if db else None,
         "cloud": cloud_of(db["sessions"], child_usage_of(usage)) if db else None,
-        "truncated": [truncated_text(t) for t in (db or {}).get("truncated") or []],
+        "truncated": [str(t) for t in (db or {}).get("truncated") or []],
         "unpriced": [
             {"id": s["id"], "title": s["title"], "note": n}
             for s in (db["sessions"] if db else [])
@@ -485,7 +488,7 @@ def model_cells(m: dict) -> list[str]:
 MODEL_HEAD = ["model", "sessions", "cost", "uncached in", "cache read", "output"]
 TREE_HEAD = ["root", "updated", "host", "harness", "sub-agents (nested Codex)", "items (forked)"]
 TREE_HEAD += ["compactions", "cost (root)", "title"]
-TASK_HEAD = ["task", "name", "runs", "ok", "failed", "skipped", "last error", "workspace"]
+TASK_HEAD = ["task", "name", "runs", "succeeded", "failed", "skipped", "last error", "workspace"]
 
 
 def tree_cells(t: dict) -> list[str]:
@@ -506,7 +509,11 @@ def tree_cells(t: dict) -> list[str]:
 
 
 def task_cells(t: dict) -> list[str]:
-    cells = [t["id"][:8], t["name"], *(t.get(k, 0) for k in ("runs", "ok", "failed", "skipped"))]
+    cells = [
+        t["id"][:8],
+        t["name"],
+        *(t.get(k, 0) for k in ("runs", "succeeded", "failed", "skipped")),
+    ]
     return [str(c) for c in cells] + [t.get("last_error") or "", t.get("workspace") or ""]
 
 
@@ -617,7 +624,7 @@ def text(r: dict) -> str:
         if r["subscriptions"] is not None and r["sidebar"]:
             out.append(
                 f"\nLive subscriptions: {r['subscriptions']}. Unarchived top-level sessions:"
-                f" {r['sidebar']['unarchived']}, {r['sidebar']['from_tasks']} from scheduled runs."
+                f" {r['sidebar']['unarchived']}, {r['sidebar']['from_scheduled_tasks']} from scheduled runs."
             )
     if r["flags"] is not None:
         out.append(f"\nFlags ({len(r['flags'])}):")
@@ -776,8 +783,8 @@ def main(argv: list[str] | None = None) -> int:
         args.split_label = args.split_label or vals.get("split_label")
     if args.split_tool and args.split_label:
         p.error("--split-tool and --split-label are one split each: pick one")
-    if args.days < 1:
-        p.error("--days must be at least 1")
+    if not 1 <= args.days <= MAX_DAYS:
+        p.error(f"--days must be 1 to {MAX_DAYS}: the server serves at most {MAX_DAYS} days")
     now = time.time()
     left_out: dict[str, str] = {}
     usage = db = None

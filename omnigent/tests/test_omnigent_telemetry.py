@@ -35,11 +35,11 @@ def session(sid: str, root: str, title: str = "", **kw: object) -> dict:
         "agent": "codex-native-ui",
         "host": "host-a",
         "workspace": "/work",
-        "live_status": 1,
+        "live_status": "idle",
         "sub_agent_name": None,
-        "usage": {"total_cost_usd": 1.0},
+        "usage": {"cost_usd": 1.0},
         "compactions": 0,
-        "inherited": 0,
+        "inherited_items": 0,
     }
     return {**row, **kw}
 
@@ -60,7 +60,7 @@ def db(**kw: object) -> dict:
         "sessions": [],
         "subscriptions": [],
         "tasks": [],
-        "sidebar": {"unarchived": 0, "from_tasks": 0},
+        "sidebar": {"unarchived": 0, "from_scheduled_tasks": 0},
         **kw,
     }
 
@@ -73,13 +73,9 @@ def kinds(rows: dict) -> list[str]:
     return [f.split()[0] for f in flags(rows)]
 
 
-def edge(subscriber: str, target: str) -> dict:
-    return {
-        "subscriber_id": subscriber,
-        "subscriber_title": f"lead {subscriber}",
-        "target_id": target,
-        "target_title": f"worker {target}",
-    }
+def watchers(target: str, n: int) -> list[dict]:
+    """`n` sessions that each subscribe to `target` (the server's `subscribes_to`)."""
+    return [session(f"w{i}", f"w{i}", subscribes_to=[target]) for i in range(n)]
 
 
 def task(failed: int) -> dict:
@@ -89,7 +85,7 @@ def task(failed: int) -> dict:
         "state": 1,
         "workspace": None,
         "runs": 10,
-        "ok": 10 - failed,
+        "succeeded": 10 - failed,
         "failed": failed,
         "skipped": 0,
         "last_error": "host_offline" if failed else None,
@@ -113,17 +109,24 @@ def test_verifier_churn_fires_on_a_pass_past_the_cap_in_either_title_form() -> N
 
 def test_fork_bloat_counts_inherited_items_of_a_session_started_in_the_window() -> None:
     at = telemetry.INHERITED_ITEMS
-    assert kinds(db(sessions=[session("f1", "f1", inherited=at, items=at + 5)])) == ["FORK_BLOAT"]
-    assert kinds(db(sessions=[session("f1", "f1", inherited=at - 1, items=at)])) == []
-    old = session("f1", "f1", inherited=at, items=at, created_at=SINCE - 1)
+    assert kinds(db(sessions=[session("f1", "f1", inherited_items=at, items=at + 5)])) == [
+        "FORK_BLOAT"
+    ]
+    assert kinds(db(sessions=[session("f1", "f1", inherited_items=at - 1, items=at)])) == []
+    old = session("f1", "f1", inherited_items=at, items=at, created_at=SINCE - 1)
     assert kinds(db(sessions=[old])) == []
 
 
 def test_subscription_amplification_fires_when_one_target_wakes_several_subscribers() -> None:
-    many = [edge(f"s{i}", "t1") for i in range(telemetry.SUBSCRIBERS)]
-    assert kinds(db(subscriptions=many)) == ["SUBSCRIPTION_AMPLIFICATION"]
-    one_each = [edge(f"s{i}", f"t{i}") for i in range(telemetry.SUBSCRIBERS)]
-    assert kinds(db(subscriptions=one_each)) == []
+    many = [session("t1", "t1", title="worker t1"), *watchers("t1", telemetry.SUBSCRIBERS)]
+    assert kinds(db(sessions=many)) == ["SUBSCRIPTION_AMPLIFICATION"]
+    assert (
+        "wakes 2 subscribers" in flags(db(sessions=many))[0]
+        and "worker t1" in flags(db(sessions=many))[0]
+    )
+    one_each = [session(f"s{i}", f"s{i}", subscribes_to=[f"t{i}"]) for i in range(2)]
+    assert kinds(db(sessions=one_each)) == []
+    assert kinds(db(sessions=watchers("t1", telemetry.SUBSCRIBERS - 1))) == []
 
 
 def test_cron_fail_loop_fires_at_its_failed_run_count() -> None:
@@ -133,8 +136,8 @@ def test_cron_fail_loop_fires_at_its_failed_run_count() -> None:
 
 def test_sidebar_noise_counts_unarchived_sessions_scheduled_runs_created() -> None:
     at = telemetry.SIDEBAR_SESSIONS
-    assert kinds(db(sidebar={"unarchived": 50, "from_tasks": at})) == ["SIDEBAR_NOISE"]
-    assert kinds(db(sidebar={"unarchived": 50, "from_tasks": at - 1})) == []
+    assert kinds(db(sidebar={"unarchived": 50, "from_scheduled_tasks": at})) == ["SIDEBAR_NOISE"]
+    assert kinds(db(sidebar={"unarchived": 50, "from_scheduled_tasks": at - 1})) == []
 
 
 def test_without_the_database_the_api_sections_render_and_the_rest_are_named() -> None:
@@ -187,47 +190,98 @@ class Served:
         return doc
 
 
-# The telemetry response as the report reads it: every section the report shows.
+# The telemetry response as the live server returns it (its OpenAPI contract), every section filled.
 TELEMETRY = {
-    "daily": [{"day": "2027-01-14", "cost_usd": 4.5}, {"day": "2027-01-15", "cost_usd": 6.0}],
+    "object": "usage_telemetry",
+    "since": SINCE,
+    "until": int(NOW),
+    "daily_cost": [{"day": "2027-01-14", "cost_usd": 4.5}, {"day": "2027-01-15", "cost_usd": 6.0}],
     "models": [
         {
             "model": "model-a",
-            "sessions": 2,
-            "cost_usd": 9.0,
             "input_tokens": 2_000_000,
-            "cache_read_tokens": 30_000_000,
             "output_tokens": 500_000,
-        }
+            "cache_read_input_tokens": 30_000_000,
+            "cost_usd": 9.0,
+            "sessions": 2,
+        },
+        {
+            "model": "model-unpriced",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 0,
+            "cost_usd": None,
+            "sessions": 1,
+        },
     ],
     "sessions": [
         {
             "id": "root0001",
+            "parent_id": None,
             "root_id": "root0001",
             "title": "lead",
             "created_at": SINCE + 60,
             "updated_at": SINCE + 120,
+            "archived": False,
             "agent": "claude-cloud",
+            "harness": "claude",
             "host": "host-a",
-            "live_status": 1,
+            "workspace": None,
+            "live_status": "idle",
+            "sub_agent_name": None,
             "labels": {"omni.role": "lead"},
+            "items": 40,
             "turns": 7,
+            "compactions": 1,
+            "inherited_items": 0,
             "tool_calls": {"tool-x": 3},
-            "usage": {"total_cost_usd": 9.0, "by_model": {"model-a": {"total_cost_usd": 9.0}}},
+            "usage": {
+                "cost_usd": 9.0,
+                "input_tokens": 2_000_000,
+                "output_tokens": 500_000,
+                "cache_read_input_tokens": 30_000_000,
+                "by_model": {"model-a": {"cost_usd": 9.0, "input_tokens": 2_000_000}},
+            },
+            "subscribes_to": [],
         },
         {
             "id": "kid00001",
-            "root_id": "root0001",
             "parent_id": "root0001",
+            "root_id": "root0001",
             "title": "verifier",
             "created_at": SINCE + 70,
             "updated_at": SINCE + 110,
-            "usage": {"total_cost_usd": 1.0},
+            "archived": False,
+            "agent": None,
+            "harness": None,
+            "host": None,
+            "workspace": None,
+            "live_status": None,
+            "sub_agent_name": None,
+            "labels": {},
+            "items": 5,
+            "turns": 1,
+            "compactions": 0,
+            "inherited_items": 0,
+            "tool_calls": {},
+            "usage": {"cost_usd": None, "input_tokens": 0, "output_tokens": 0, "by_model": {}},
+            "subscribes_to": ["root0001"],
         },
     ],
     "scheduled_tasks": [
-        {"id": "task0001", "name": "nightly", "runs": 4, "ok": 1, "failed": 3, "skipped": 0}
+        {
+            "id": "task0001",
+            "name": "nightly",
+            "state": "enabled",
+            "workspace": None,
+            "runs": 4,
+            "succeeded": 1,
+            "failed": 3,
+            "skipped": 0,
+            "last_error": "host_offline",
+        }
     ],
+    "sidebar": {"unarchived": 12, "from_scheduled_tasks": 10},
     "truncated": ["sessions: 120 more past max_sessions 500"],
 }
 USAGE = {
@@ -242,7 +296,22 @@ USAGE = {
             "cost_usd": 10.0,
             "models": {"model-a": 10.0},
             "child_usage": [
-                {"harness": "codex", "model": "gpt-x", "total_tokens": 500, "cost_usd": 0.5}
+                {
+                    "key": "codex-1",
+                    "harness": "codex",
+                    "model": "gpt-x",
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "total_tokens": 500,
+                    "cost_usd": 0.5,
+                },
+                {
+                    "key": "agy-1",
+                    "harness": "agy",
+                    "model": None,
+                    "total_tokens": 9,
+                    "cost_usd": None,
+                },
             ],
         }
     ],
@@ -277,6 +346,9 @@ def test_a_telemetry_response_renders_every_section_with_no_database(monkeypatch
         "root0001"[:8],
         "Cloud sessions: 1",
         "codex gpt-x $0.50",
+        "SIDEBAR_NOISE",
+        "Live subscriptions: 1",
+        "model-unpriced",
         "Scheduled tasks",
         "nightly",
         "CRON_FAIL_LOOP",
@@ -292,7 +364,8 @@ def test_child_usage_stays_beside_its_parent_and_is_added_to_no_cost(monkeypatch
     _, r = served_report(monkeypatch, capsys, [], docs)
     row = r["cloud"]["rows"][0]
     assert row["children"] == [
-        {"harness": "codex", "model": "gpt-x", "cost_usd": 0.5, "tokens": 500}
+        {"harness": "codex", "model": "gpt-x", "cost_usd": 0.5, "tokens": 500},
+        {"harness": "agy", "model": "?", "cost_usd": None, "tokens": 9},
     ]
     assert (r["cloud"]["cost_usd"], r["cloud"]["child_cost_usd"]) == (9.0, 0.5)
     assert r["models"][0]["cost_usd"] == 9.0  # the server's models, child usage not in them
@@ -306,10 +379,6 @@ def test_a_truncated_entry_is_a_named_gap_not_a_zero(monkeypatch, capsys) -> Non
     out = telemetry.text(r)
     assert "not zeros" in out and "120 more past max_sessions 500" in out
     assert "120 more past max_sessions 500" in telemetry.page(r)
-    only_dict = {**TELEMETRY, "truncated": [{"section": "tool_calls", "reason": "cut"}]}
-    assert telemetry.build(None, telemetry_rows(only_dict), None, 7, NOW)["truncated"] == [
-        "section tool_calls, reason cut"
-    ]
 
 
 def telemetry_rows(doc: dict) -> dict:
@@ -343,7 +412,7 @@ def test_a_tool_split_gives_each_side_its_metrics_and_the_tools_share_of_calls()
             "a",
             "tool-x",
             6,
-            usage={"total_cost_usd": 2.0, "total_tokens": 100},
+            usage={"cost_usd": 2.0, "input_tokens": 60, "output_tokens": 40},
             turns=3,
             title="lead a",
         ),
@@ -351,12 +420,16 @@ def test_a_tool_split_gives_each_side_its_metrics_and_the_tools_share_of_calls()
             "b",
             "tool-x",
             4,
-            usage={"total_cost_usd": 1.0, "total_tokens": 50},
+            usage={"cost_usd": 1.0, "input_tokens": 50, "output_tokens": 0},
             turns=1,
             title="verifier b",
         ),
         called(
-            "c", None, usage={"total_cost_usd": 5.0, "total_tokens": 10}, turns=2, title="lead c"
+            "c",
+            None,
+            usage={"cost_usd": 5.0, "input_tokens": 10, "output_tokens": 0},
+            turns=2,
+            title="lead c",
         ),
     ]
     r = telemetry.build(None, db(sessions=rows), None, 7, NOW, None, "tool-x", None)
@@ -398,14 +471,19 @@ def test_no_split_without_an_argument_and_the_pack_names_no_tool() -> None:
 
 
 def test_a_cloud_session_that_failed_still_counts_with_its_cost_and_its_childrens_usage() -> None:
-    kid = {"harness": "codex", "model": "gpt-x", "total_tokens": 500, "cost_usd": 0.5}
+    kid = {
+        "harness": "codex",
+        "model": "gpt-x",
+        "total_tokens": 500,
+        "cost_usd": 0.5,
+    }
     rows = [
         session(
             "cloud1",
             "cloud1",
             agent="claude-cloud",
-            live_status=4,
-            usage={"total_cost_usd": 2.0, "by_model": {"claude-sonnet-5-5": {}}},
+            live_status="failed",
+            usage={"cost_usd": 2.0, "by_model": {"claude-sonnet-5-5": {}}},
         ),
         session("other", "other"),
     ]
@@ -422,9 +500,20 @@ def test_a_cloud_session_that_failed_still_counts_with_its_cost_and_its_children
 def test_a_gemini_session_shows_its_tokens_not_a_bare_zero() -> None:
     rows = [
         session(
-            "g", "g", agent="antigravity-native", usage={"total_cost_usd": 0, "total_tokens": 7000}
+            "g",
+            "g",
+            agent="antigravity-native",
+            usage={"cost_usd": 0, "input_tokens": 6000, "output_tokens": 1000},
         )
     ]
     r = telemetry.build(None, db(sessions=rows), None, 7, NOW)
     assert r["unpriced"][0]["note"] == "7,000 tokens, no price"
     assert "7,000 tokens, no price" in telemetry.text(r)
+
+
+def test_a_window_past_the_servers_90_days_is_refused(capsys) -> None:
+    import pytest
+
+    with pytest.raises(SystemExit):
+        telemetry.main(["--days", "91"])
+    assert "1 to 90" in capsys.readouterr().err
