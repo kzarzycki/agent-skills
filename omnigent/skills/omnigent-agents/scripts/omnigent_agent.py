@@ -5,7 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE|lead|worker|verifier] [--effort LEVEL] [--pr N] [--host NAME|ID (claude-cloud child)] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
-    python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
+    python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--pr N] [--timeout S] -- <command...>
     python3 scripts/omnigent_agent.py gate-host [--exclude HOST]...   # where a gate goes: PICK <host> here|far, or STAY <why>
     python3 scripts/omnigent_agent.py gate-run --host H [--checkout DIR] [--timeout S] -- <command...>
     python3 scripts/omnigent_agent.py ssh <host> --why <purpose> -- <command...>
@@ -4721,11 +4721,49 @@ def git_out(root: Path, *args: str) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def run_head(checkout: Path, command: str = "") -> tuple[Path, str, str, str, str]:
+def detached_branch(path: Path, remote: str, pr: int = 0) -> tuple[str, str]:
+    """The (local name, remote branch) a detached HEAD runs on: PR ``pr``'s head branch when given, else the
+    one ``remote`` branch that contains HEAD; ("", "") when none or several do."""
+    if pr:
+        try:
+            name = pr_branch(pr, path)
+        except Fail:
+            return "", ""
+        return name, name
+    # refresh the tracking refs first: a clone that fetched only the tip has none, and a deleted branch leaves a stale one
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "fetch",
+            "-q",
+            "--prune",
+            "--no-tags",
+            remote,
+            f"+refs/heads/*:refs/remotes/{remote}/*",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    base = f"refs/remotes/{remote}/"  # full names: a tag or local branch of the same name can't change the parse
+    held = [
+        b.removeprefix(base)
+        for b in git_out(
+            path, "for-each-ref", "--contains", "HEAD", "--format=%(refname)", base
+        ).split()
+        if b != f"{base}HEAD"
+    ]
+    return (held[0], held[0]) if len(held) == 1 else ("", "")
+
+
+def run_head(checkout: Path, command: str = "", pr: int = 0) -> tuple[Path, str, str, str, str]:
     """The checkout's root, branch, remote, remote branch and HEAD a cloud run clones, refusing
-    before any session exists what a cloud session can't see: tracked changes, a detached HEAD, or a
-    HEAD its branch's remote doesn't hold, since the session clones from the remote. Each refusal
-    names the host fallback for ``command``, as any other failed route does."""
+    before any session exists what a cloud session can't see: tracked changes, a detached HEAD no
+    remote branch holds (one at a pushed branch's tip, as a verifier's worktree is, runs on that branch:
+    PR ``pr``'s, else the single remote branch containing HEAD), or a HEAD its branch's remote
+    doesn't hold, since the session clones from the remote. Each refusal names the host fallback for
+    ``command``, as any other failed route does."""
     root = checkout_root(str(checkout))
     if not root:
         raise cloud_run_failed(f"claude-cloud-run: {checkout} is not inside a checkout", command)
@@ -4742,13 +4780,19 @@ def run_head(checkout: Path, command: str = "") -> tuple[Path, str, str, str, st
             command,
         )
     branch = git_out(path, "symbolic-ref", "--short", "HEAD")
-    if not branch:
-        raise cloud_run_failed(
-            f"claude-cloud-run: {path} has a detached HEAD: check out a branch, `git push` it, and run it again",
-            command,
-        )
     remote = forge_remote(path)
-    merge = git_out(path, "config", f"branch.{branch}.merge").removeprefix("refs/heads/") or branch
+    if branch:
+        merge = (
+            git_out(path, "config", f"branch.{branch}.merge").removeprefix("refs/heads/") or branch
+        )
+    else:
+        branch, merge = detached_branch(path, remote, pr)
+        if not branch:
+            raise cloud_run_failed(
+                f"claude-cloud-run: {path} has a detached HEAD that no single branch of {remote} holds:"
+                " check out a branch, `git push` it, and run it again",
+                command,
+            )
     head = git_out(path, "rev-parse", "HEAD")
     fetched = subprocess.run(
         ["git", "-C", root, "fetch", "-q", remote, f"refs/heads/{merge}"],
@@ -4809,11 +4853,12 @@ def cloud_run(
     timeout: float,
     launch: Callable[[list[str]], int],
     server: str = "",
+    pr: int = 0,
 ) -> int:
     """Run ``command`` in a Claude cloud session on ``checkout``'s HEAD and return its exit code,
     else ``CLOUD_RUN_FAILED`` with the reason and the host fallback. ``launch`` runs the launcher's
     own ``run`` (``command``'s argv), which writes the session's report to the report path."""
-    root, branch, remote, merge, head = run_head(checkout, command)
+    root, branch, remote, merge, head = run_head(checkout, command, pr)
     try:
         return cloud_run_route(root, branch, remote, merge, head, command, timeout, launch, server)
     except Interrupted:
@@ -13341,6 +13386,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         default=Path("."),
         help="the checkout whose HEAD runs (default: this directory); its branch must be pushed",
     )
+    p.add_argument(
+        "--pr",
+        type=int,
+        default=0,
+        help="on a detached HEAD, run on this PR's head branch (default: the one remote branch containing HEAD)",
+    )
     p.add_argument("run", nargs=argparse.REMAINDER, metavar="-- COMMAND")
     p = sub.add_parser(
         "claude-cloud-env",
@@ -13848,7 +13899,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # one word is a shell command as written; several are joined as argv
             line = words[0] if len(words) == 1 else shlex.join(words)
             return cloud_run(
-                args.checkout, line, args.timeout, lambda argv: command(argv, {}), args.server
+                args.checkout,
+                line,
+                args.timeout,
+                lambda argv: command(argv, {}),
+                args.server,
+                args.pr,
             )
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)
