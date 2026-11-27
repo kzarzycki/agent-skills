@@ -5,6 +5,15 @@ On the host that starts cloud sessions:
 
     python3 scripts/cloud_verifier.py login            # once: a device login into a Codex home kept only for seeding
     python3 scripts/cloud_verifier.py seed [--env ID]...  # before starting a session whose VM will verify
+    python3 scripts/cloud_verifier.py env-sync [--env ID] [--script PATH] [--apply]  # is the environment's setup script the base branch's?
+
+`env-sync` reads the environment's copy of the setup script (`config.init_script`, the same GET `seed` makes) and
+compares it with the file on the base branch (`origin/HEAD`, else `origin/main`, else `main`; the working file
+when none has it). `--script` is that file's path, `.claude/claude-cloud-setup.sh` or else the older
+`.claude/cloud-setup.sh`. It prints `in sync` and exits 0, or `environment setup is stale` with the command that
+applies it and exits 1. `--apply` posts the base branch's file as `init_script`, every other config key as it
+was (as `store` does), reads it back and confirms (exit 1 when the read-back differs). Exit 2: no environment,
+login or script. `land` runs the same check after a landing whose diff touches the script (it never fails the landing).
 
 In the VM, from the checkout:
 
@@ -494,6 +503,73 @@ def store(env: str, auth: dict, headers: dict) -> None:
     print(
         f"seeded {current['name']} ({env}): the login there lasts {days_left(auth):.1f} more days"
     )
+
+
+SETUP_SCRIPTS = (".claude/claude-cloud-setup.sh", ".claude/cloud-setup.sh")
+
+
+def base_ref() -> str | None:
+    """The base branch's ref in this checkout: origin's HEAD, else origin/main, else main; None when none exists."""
+    head = run("git", "symbolic-ref", "-q", "refs/remotes/origin/HEAD", check=False).stdout.strip()
+    for ref in (head.removeprefix("refs/remotes/"), "origin/main", "main"):
+        if ref and run("git", "rev-parse", "--verify", "-q", ref, check=False).returncode == 0:
+            return ref
+    return None
+
+
+def setup_script(script: str | None) -> tuple[str, str]:
+    """The setup script's path and its text on the base branch (else the working file): --script, else the first of
+    SETUP_SCRIPTS the base branch has."""
+    ref = base_ref()
+    for path in [script] if script else SETUP_SCRIPTS:
+        shown = run("git", "show", f"{ref}:{path}", check=False) if ref else None
+        if shown is not None and shown.returncode == 0:
+            return path, shown.stdout
+        file = Path(run("git", "rev-parse", "--show-toplevel").stdout.strip()) / path
+        if file.is_file():
+            return path, file.read_text()
+    raise Refused(
+        f"no setup script: {script or ' or '.join(SETUP_SCRIPTS)} is not on the base branch"
+    )
+
+
+def env_sync(env: str | None, script: str | None, apply: bool) -> int:
+    """Compare the environment's `init_script` with the base branch's setup script; 0 in sync (or applied), 1 stale
+    (or an apply that did not read back), the Refused of a missing environment, login or script is exit 2."""
+    path, wanted = setup_script(script)
+    env = env or pinned_environment()
+    headers = claude_headers()
+    url = f"{environments_client().base()}/v1/environment_providers/{env}"
+    current = post_json(url, None, headers)
+    config = current["config"]
+    if (config.get("init_script") or "").rstrip() == wanted.rstrip():
+        print(f"in sync: {current['name']} ({env}) runs {path} as the base branch has it")
+        return 0
+    command = f"python3 {Path(__file__).name} env-sync --env {env} --script {path} --apply"
+    if not apply:
+        print(
+            f"environment setup is stale: {current['name']} ({env}) runs another {path} than the base branch's;"
+            f" apply it with: {command}"
+        )
+        return 1
+    post_json(
+        url,
+        {
+            "name": current["name"],
+            "description": current.get("description", ""),
+            "config": {**config, "init_script": wanted},
+        },
+        headers,
+    )
+    back = post_json(url, None, headers)
+    if (back["config"].get("init_script") or "").rstrip() != wanted.rstrip():
+        print(
+            f"cloud_verifier: {env} did not keep the posted {path}: read back another",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"applied: {current['name']} ({env}) now runs {path} as the base branch has it")
+    return 0
 
 
 # ── VM: verify ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1679,6 +1755,17 @@ def command(argv: list[str] | None) -> int:
         default=3,
         help="refresh the host's own login in place when its access token has fewer days left",
     )
+    y = sub.add_parser(
+        "env-sync",
+        help="is the cloud environment's setup script the base branch's? --apply posts it (host)",
+    )
+    y.add_argument("--env", help="environment id; default: the checkout's pinned one")
+    y.add_argument(
+        "--script", help=f"the setup script's path; default: {' or '.join(SETUP_SCRIPTS)}"
+    )
+    y.add_argument(
+        "--apply", action="store_true", help="post the base branch's file, then read it back"
+    )
     v = sub.add_parser(
         "verify", help="run a Codex or Claude verifier pass on the PR and post its report (VM)"
     )
@@ -1730,6 +1817,8 @@ def command(argv: list[str] | None) -> int:
             return login()
         if args.command == "seed":
             return seed(args.env, args.min_days, args.host_min_days, args.host_refresh_days)
+        if args.command == "env-sync":
+            return env_sync(args.env, args.script, args.apply)
         if args.command == "thread-exec":
             code, said = thread_exec(
                 Rpc(host_token()),

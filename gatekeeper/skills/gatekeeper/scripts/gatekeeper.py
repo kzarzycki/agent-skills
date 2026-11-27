@@ -6883,6 +6883,7 @@ def land_ended(pull: dict[str, Any]) -> None:
         return
     landed_ok.add(branch)
     land_event(pull, "ok")
+    setup_env_check(pull)
     try:
         script = Path(loop_events.__file__).resolve()
         common = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
@@ -6909,6 +6910,47 @@ def land_ended(pull: dict[str, Any]) -> None:
     except Exception as exc:  # noqa: BLE001 -- the PR has landed: the refs stay until a `clear` of the branch is run
         print(
             f"PR #{pull.get('number')}: land event refs not cleared: {stderr_of(exc)}",
+            file=sys.stderr,
+        )
+
+
+# loop.md's one line naming the cloud environment's setup script, when it is not one of SETUP_SCRIPTS
+CLOUD_SETUP = re.compile(r"^Cloud setup script:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+SETUP_SCRIPTS = (".claude/claude-cloud-setup.sh", ".claude/cloud-setup.sh")
+
+
+def setup_env_check(pull: dict[str, Any]) -> None:
+    """After a landing whose diff touches the cloud environment's setup script (loop.md's `Cloud setup script:` line,
+    else SETUP_SCRIPTS), run the engineering-loop's `cloud_verifier.py env-sync` and print what it says, the stale line
+    and its apply command included. Never fatal and no call at all for a diff that leaves the script alone: the merge has
+    happened, and the environment keeps its own copy of the script until someone applies the new one (#989)."""
+    try:
+        found = CLOUD_SETUP.search(loop_md())
+        paths = [found[1].strip("`")] if found else list(SETUP_SCRIPTS)
+        touched = {each["path"] for each in (pull.get("files") or {}).get("nodes") or []}
+        script = next((path for path in paths if path in touched), None)
+        if script is None:
+            return
+        folder = installed_scripts("engineering-loop")
+        if folder is None or not (folder / "cloud_verifier.py").is_file():
+            print(
+                f"PR #{pull['number']} changed {script}: the engineering-loop skill is not installed, so the environment's copy was not checked"
+            )
+            return
+        done = subprocess.run(
+            [sys.executable, str(folder / "cloud_verifier.py"), "env-sync", "--script", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        said = " ".join((done.stdout or done.stderr).split())
+        print(
+            f"PR #{pull['number']} changed {script}: {said or f'env-sync exited {done.returncode}'}"
+        )
+    except Exception as exc:  # noqa: BLE001 -- the PR has landed: a failed check only says so
+        print(
+            f"PR #{pull.get('number')}: setup-script check failed: {stderr_of(exc)}",
             file=sys.stderr,
         )
 
