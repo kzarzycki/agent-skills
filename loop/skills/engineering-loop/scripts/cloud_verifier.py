@@ -656,6 +656,15 @@ def pass_history(pr: int) -> tuple[list[dict], list[dict]]:
     return both[0], both[1]
 
 
+def refuse_repeat_codex_pass(pr: int, head: str) -> None:
+    """The one place every Codex route (`verify`, `thread`) refuses a second pass on `head`, naming the first."""
+    if again := earlier_codex_pass(*pass_history(pr), head):
+        raise Refused(
+            f"PR #{pr} head {head[:12]} already has a Codex verifier pass ({again[0]}, pass {again[1]}): a second pass on"
+            " an unchanged head repeats it. Push a fix and verify the new head, or use another route"
+        )
+
+
 def json_arrays(text: str) -> list[dict]:
     """The objects in `gh api --paginate`'s output, one JSON array per page back to back; anything else is skipped."""
     items, at, decoder = [], 0, json.JSONDecoder()
@@ -1101,11 +1110,8 @@ def review(
     pull = json.loads(run("gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}").stdout)
     head, ref = pull["head"]["sha"], pull["head"]["ref"]
     HEAD[0] = head
-    if harness == "codex" and (again := earlier_codex_pass(*pass_history(pr), head)):
-        raise Refused(
-            f"PR #{pr} head {head[:12]} already has a Codex verifier pass ({again[0]}, pass {again[1]}): a second pass on"
-            " an unchanged head repeats it. Push a fix and verify the new head, or use another route"
-        )
+    if harness == "codex":
+        refuse_repeat_codex_pass(pr, head)
     event.start(ref)
     was = (
         run("git", "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip()
@@ -1524,9 +1530,6 @@ def thread_review(
     token = host_token()
     print(f"quota before: {quota(token)}")
     rpc = Rpc(token)
-    if not thread:
-        thread, env = thread_start(rpc, model, effort)
-        print(f"thread {thread} env {env}")
     head = run(
         "gh",
         "pr",
@@ -1538,6 +1541,10 @@ def thread_review(
         '.headRefOid+" "+.headRepositoryOwner.login+"/"+.headRepository.name+" "+.headRefName',
     ).stdout.split()
     head[0] = pending_head or head[0]
+    refuse_repeat_codex_pass(pr, head[0])  # before a thread is made for it
+    if not thread:
+        thread, env = thread_start(rpc, model, effort)
+        print(f"thread {thread} env {env}")
     event.start(head[2])
     code, said = thread_exec(
         rpc,

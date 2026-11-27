@@ -13932,7 +13932,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                             og.models(args.agent, og.host(args.host) if args.host else None),
                             CODEX_VERIFIER_TIER,
                         )
-                args.effort = args.effort or CODEX_VERIFIER_EFFORT
+                # `$OMNIGENT_EFFORT_CODEX` (read by `start` for the two aliases) outranks the default effort
+                if not (
+                    args.agent in AGENTS and os.environ.get(f"OMNIGENT_EFFORT_{args.agent.upper()}")
+                ):
+                    args.effort = args.effort or CODEX_VERIFIER_EFFORT
                 if again := codex_pass_on_head(args.pr):
                     raise Fail(again)
             if verifier:

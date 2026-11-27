@@ -36,6 +36,17 @@ def test_a_codex_verifier_start_with_no_model_or_effort_runs_terra_at_medium(
     assert (og.overrides["s0"], og.efforts["s0"]) == ("gpt-6.1-terra", "medium")
 
 
+def test_the_effort_variable_outranks_the_default_effort(
+    tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    monkeypatch.setenv("OMNIGENT_EFFORT_CODEX", "high")
+    monkeypatch.chdir(tmp_path)
+    assert omnigent_agent.main(start(tmp_path, role_file)) == 0
+    assert og.efforts["s0"] == "high"
+
+
 def test_a_start_that_names_a_model_and_effort_keeps_them(
     tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -56,3 +56,29 @@ def test_paginated_pages_are_read_back_to_back_and_a_bad_answer_is_none() -> Non
     pages = json.dumps([{"a": "] ["}]) + json.dumps([{"b": 2}])
     assert cv.json_arrays(pages) == [{"a": "] ["}, {"b": 2}]
     assert cv.json_arrays("not json") == []
+
+
+def test_a_thread_pass_on_an_unchanged_head_is_refused_before_a_thread_is_made(
+    monkeypatch, tmp_path
+) -> None:
+    head = "a" * 40
+    monkeypatch.setattr(cv, "host_token", lambda: "t")
+    monkeypatch.setattr(cv, "quota", lambda token: "ok")
+    monkeypatch.setattr(cv, "Rpc", lambda token: object())
+    monkeypatch.setattr(
+        cv,
+        "run",
+        lambda *cmd, **kw: cv.subprocess.CompletedProcess(cmd, 0, "abc o/r feat/pr\n", ""),
+    )
+    first = {"commit_id": "abc", "body": "**Verifier (codex/terra-6.1/med), pass 1**"}
+    monkeypatch.setattr(cv, "pass_history", lambda pr: ([first], []))
+
+    def no_thread(*args):
+        raise AssertionError("a thread was started")
+
+    monkeypatch.setattr(cv, "thread_start", no_thread)
+    brief = tmp_path / "brief.md"
+    brief.write_text("Review.\n")
+    with pytest.raises(cv.Refused, match=r"codex/terra-6.1/med, pass 1"):
+        cv.thread_verify(7, brief, None, None, None, "env")
+    assert head  # a later head is another pass: see earlier_codex_pass's test

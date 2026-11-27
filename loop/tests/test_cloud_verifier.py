@@ -903,6 +903,8 @@ def route_1b(tmp_path, monkeypatch):
         lambda *a, **k: (
             subprocess.CompletedProcess(a, 0, "abc123 o/r feat/pr\n", "")
             if a[:3] == ("gh", "pr", "view")
+            else subprocess.CompletedProcess(a, 0, "[]", "")
+            if a[:3] == ("gh", "api", "--paginate")
             else real(*a, **k)
         ),
     )
