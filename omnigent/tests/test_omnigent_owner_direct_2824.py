@@ -67,6 +67,7 @@ def test_a_session_owing_a_report_is_not_marked_direct(
     (tmp_path / "a.md").write_text("report")
     base.supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
     assert "direct" not in fields(registry)
+    assert any("report written" in p for p in base.posted(og))  # its caller is told
 
 
 def test_direct_off_stays_off_until_a_newer_owner_message(
