@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.29 - 2026-11-27
+
+- A start on a host that bridges cloud sessions no longer counts them toward the host's `max_sessions`: the session list reports their harness as `acp`, so they are now recognised by their agent's harness (#2845).
+
 ## 0.1.28 - 2026-11-27
 
 - A verifier start with no `--verifier-route` or `--model` takes the route and model from the setup's values file (`verifier:`, read from `$COS_VALUES` or `cos-values.yml` in the current folder) and prints what it chose; the flags and `$OMNIGENT_VERIFIER_ROUTE` still override it, and with no setting Codex stays the default (#2840).
