@@ -337,7 +337,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <gatekeeper>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: the
-     newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line),
+     newest verifier review, satisfied with no core finding open (or at the cap, only what a `Cap:` line covers: SKILL.md, The cap),
      covers the head, and every review thread is resolved (SKILL.md, Review trail on the PR). No gate step comes
      between the verdict and the merge: no new gate of record, no `check-fast` run again (the head's CI reads the
      worker's record for its tree), no full suite and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the

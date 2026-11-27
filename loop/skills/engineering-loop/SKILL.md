@@ -554,7 +554,7 @@ rule that held the spec at a level on `{spec: owner, merge: gates}` (the default
 `spec.auto: true`), or a level whose `merge` is lighter than that rating's, such as
 `critical: {merge: gates}` beside the default `high`. Where the level asks `gates`,
 the merge approval is the gates themselves: every verifier review on the newest pass's
-commit satisfied with no blocker or major open (at the cap, majors under the lead's `Cap:` line: The cap), that commit covering the head that lands,
+commit satisfied with no blocker or major open (at the cap, what the lead's `Cap:` line covers: The cap), that commit covering the head that lands,
 every review thread resolved, and no review requesting changes; no CI check on the head is
 part of it (Merge model). A pass counts whichever model family wrote it (Independent verification).
 
@@ -1088,7 +1088,7 @@ or the owner's private network.
   override any resolution, and alone dismisses a teammate's `CHANGES_REQUESTED`; an agent
   dismisses one only when the owner asks for that review in the session, quoting the ask
   in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
-  is open, or at the cap only majors under the lead's `Cap:` line (The cap), and squashed on merge. The PR keeps a public trail of what was found, fixed and
+  is open, or at the cap only what the lead's `Cap:` line covers (The cap), and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
   the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run test:changed`) on each pushed head is the check while a PR is a draft, and no gate of record runs on a head but the worker's one on its final head (Merge model).
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
@@ -1132,7 +1132,7 @@ or the owner's private network.
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
 - **Landing.** Land starts once the last verdict is triaged with no core finding open (or, at
-  the cap, only majors open under the lead's `Cap:` line: The cap) and
+  the cap, only what the lead's `Cap:` line covers is open: The cap) and
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,
   which marks it ready and lands it with every other landable PR in one batch, with no gate step (Merge model). The PR merges only when the newest
   verdict covers the head that lands, a merge queue's batch check is green where the base has a queue, and, where the
@@ -1201,7 +1201,7 @@ lands without review: every head that lands has a satisfied verdict on that exac
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
 its own. The one exception is gatekeeper.md's `carry_over_main`: clean merges of main that touch
 none of the PR's files keep the verdict (Approvals and proof). The other is the lead's cap
-decision below: a head at the cap with majors open, none a blocker, lands under a `Cap:` line.
+decision below: a head at the cap with majors or minors open, none a blocker, lands under a `Cap:` line.
 
 - **The last pass under the cap leaves a blocker or major open:** the lead decides, since
   more passes alone would keep the fix regressing. It picks one of three:
