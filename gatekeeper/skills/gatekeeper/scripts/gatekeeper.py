@@ -21,6 +21,7 @@
     uv run scripts/approvals.py overlap <pr>|--files <path>... [--base <b>]  # other open PRs changing the same files: hunks, and whether the heads merge
     uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
     uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
+    uv run scripts/approvals.py local-ci --record --place   # --place: run the gate on the loop.md `Placement: hosts:` host with a free slot and the lowest load (`loop.gate_exclude_hosts` never chosen); one line says where, or why it stays here
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py local-ci --record --rerun [--base <rev>] [--no-push]  # an independent rerun of HEAD's selection: nothing reused, its record keyed apart (levels' `rerun`); --no-push keeps the record commit as a local branch and names it, for a CI job without a write token
@@ -545,7 +546,7 @@ running this counts as a writer, by its own permissions on the repo.
 
 The policy block (policy.md beside SKILL.md has every key), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
-the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
+the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `gate_exclude_hosts`, `owner`, `machine_exit`,
 `short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
 `high` and `critical`, each with `spec` and `merge` (above), and `rerun`, whether `check merge` and `land` need an
 independent rerun of the head's selection on its tree (default false at every level: a repo turns it on once a workflow pushes the rerun record): a
@@ -980,6 +981,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "ci": bool,
         "opt_out": bool,
         "local_ci_env": list,
+        "gate_exclude_hosts": list,
         "gate": str,
         "gate_steps": Rows(
             name=str,
@@ -12591,6 +12593,16 @@ def land_waiting() -> bool:
     return False
 
 
+def write_holder(fd: int) -> None:
+    """Write this process's pid into the slot file it just locked, which is how another host reads the slot as held
+    (omnigent_agent.py's far_gate_slots: a pid still a process there). A failed write leaves the slot taken."""
+    try:
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+    except OSError:
+        pass
+
+
 def take_slot(
     waiting: Callable[[], None] = lambda: None, land: bool = False
 ) -> tuple[int | None, str]:
@@ -12621,6 +12633,7 @@ def take_slot(
             except BaseException:
                 os.close(fd)
                 raise
+            write_holder(fd)
             return fd, slot_path()
         while True:
             if land or not land_waiting():
@@ -12635,6 +12648,7 @@ def take_slot(
                     except BaseException:
                         os.close(fd)
                         raise
+                    write_holder(fd)
                     return fd, path
             if said is None or time.monotonic() >= said:
                 said = time.monotonic() + SLOT_SAY_SECONDS
@@ -14388,6 +14402,61 @@ def settled_head(pr: int, want: str | None) -> str:
     )
 
 
+CLOUD_RUN_FAILED = (
+    125  # omnigent_agent.py's own exit when a placed run gave no result (its CLOUD_RUN_FAILED)
+)
+
+
+def placed_gate(argv: list[str]) -> int | None:
+    """`local-ci --place`: where the gate goes among loop.md's `Placement: hosts:`, asked of the omnigent-agents
+    skill's `omnigent_agent.py gate-host` (the chooser `start` uses: `host_capacity`, with the slot state of each
+    host), run as a command since skills install separately and neither may import the other. The policy's
+    `loop.gate_exclude_hosts` are never chosen. Another host's pick runs this command there (`gate-run`, with no
+    `--place`), which reads and writes its record as a local run does, and its exit code is returned; None runs the gate
+    here, saying why (no host readable, the chooser missing, the dispatch failing) in one line."""
+    script = agent_script()
+    stay = "local-ci: gate stays here"
+    if not script.is_file():
+        print(f"{stay}: no omnigent-agents skill to choose a host", file=sys.stderr)
+        return None
+    excluded = settings(project()[1]).get("gate_exclude_hosts") or []
+    chooser = [sys.executable, str(script), "gate-host", *(f"--exclude={h}" for h in excluded)]
+    try:
+        out = subprocess.run(chooser, capture_output=True, text=True, check=True, timeout=120)
+        line = (out.stdout.strip().splitlines() or [""])[0]
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"{stay}: the host chooser failed: {e}", file=sys.stderr)
+        return None
+    found = re.fullmatch(r"PICK (\S+) (here|far)", line)
+    if not found:
+        print(f"{stay}: {line.removeprefix('STAY ') or 'no host chosen'}", file=sys.stderr)
+        return None
+    if found[2] == "here":
+        print(f"local-ci: gate placed on {found[1]}, this host", file=sys.stderr)
+        return None
+    print(f"local-ci: gate placed on {found[1]}", file=sys.stderr)
+    root = toplevel()
+    entry = Path(sys.argv[0]).resolve()
+    where = str(entry.relative_to(root)) if entry.is_relative_to(root) else str(entry)
+    words = ["uv", "run", where, *(w for w in argv if w != "--place")]
+    run = [
+        sys.executable,
+        str(script),
+        "gate-run",
+        "--host",
+        found[1],
+        "--checkout",
+        str(root),
+        "--",
+        *words,
+    ]
+    code = subprocess.run(run, cwd=root, check=False).returncode
+    if code == CLOUD_RUN_FAILED:
+        print(f"{stay}: the run on {found[1]} gave no result", file=sys.stderr)
+        return None
+    return code
+
+
 def local_ci(
     pr: int | None,
     proof: dict[str, Any] | None = None,
@@ -14772,6 +14841,8 @@ def main(argv: list[str]) -> int:
     recording.add_argument("--rerun", action="store_true")
     # --no-push: with --rerun, keep the record as a local branch and name it (KEPT), for a CI job without a write token
     recording.add_argument("--no-push", action="store_true")
+    # --place: run the gate on the Placement host with a free slot and the lowest load (placed_gate)
+    recording.add_argument("--place", action="store_true")
     recording.add_argument("--head", metavar="SHA")
     # --base: in narrowed mode, the commit `--record` selects against (land's cloud gate passes its batch's base tip)
     recording.add_argument("--base", metavar="REV")
@@ -14972,6 +15043,13 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused(
                 "--no-push goes with --rerun: only a rerun's record is kept for another job to push"
             )
+        if (
+            args.place
+            and (args.record or args.run)
+            and not os.environ.get(DETACHED)
+            and (code := placed_gate(argv)) is not None
+        ):
+            return code
         KEEP.set(args.no_push)
         if args.step:
             asked_steps(args)
