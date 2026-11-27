@@ -9,14 +9,17 @@ ROOT = Path(__file__).resolve().parents[2]
 ROLES = {
     "lead": (ROOT / "loop/agents/lead.md", ROOT / "loop/skills/engineering-loop/lead.md"),
     "worker": (ROOT / "loop/agents/worker.md", ROOT / "loop/skills/engineering-loop/worker.md"),
-    "verifier": (ROOT / "loop/agents/verifier.md", ROOT / "loop/skills/engineering-loop/verifier.md"),
+    "verifier": (
+        ROOT / "loop/agents/verifier.md",
+        ROOT / "loop/skills/engineering-loop/verifier.md",
+    ),
     "chief-of-staff": (
         ROOT / "chief-of-staff/agents/chief-of-staff.md",
         ROOT / "chief-of-staff/skills/chief-of-staff/SKILL.md",
     ),
 }
 HARNESS_OR_MODEL = re.compile(
-    r"claude|codex|gemini|omnigent|opus|sonnet|haiku|fable|gpt|antigravity|\bagy\b", re.I
+    r"claude|codex|gemini|omnigent|opus|sonnet|haiku|fable|gpt|antigravity|\bagy\b", re.IGNORECASE
 )
 
 
@@ -60,7 +63,9 @@ def test_role_prose_has_one_copy(role):
     agent, skill = ROLES[role]
     _, body = split(agent)
     assert skill.name in body
-    skill_lines = {line.strip() for line in skill.read_text().splitlines() if len(line.strip()) > 40}
+    skill_lines = {
+        line.strip() for line in skill.read_text().splitlines() if len(line.strip()) > 40
+    }
     copied = [line.strip() for line in body.splitlines() if line.strip() in skill_lines]
     assert not copied
     assert len(body.splitlines()) < 12
