@@ -20,9 +20,14 @@ def quota_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+def agy_info(og: FakeOmnigent) -> None:
+    og.info = lambda s: {"id": s, "status": "idle", "harness": "antigravity-native"}  # type: ignore[method-assign]
+
+
 def test_a_quota_banner_fails_the_turn_with_the_reset_time(tmp_path: Path) -> None:
     og = FakeOmnigent()
-    sid = og.create("claude", "t")
+    agy_info(og)
+    sid = og.create("antigravity-native-ui", "t")
     og.sessions[sid].append(
         {"type": "message", "role": "assistant", "content": [{"type": "text", "text": BANNER}]}
     )
@@ -103,3 +108,21 @@ def test_a_gemini_start_is_refused_until_the_recorded_reset_passes(
     omnigent_agent.agy_quota_path().write_text('{"until": %s}' % (now - 1))  # the reset has passed
     assert omnigent_agent.main(argv) == 0
     assert list(og.sessions) == ["s0"]
+
+
+def test_other_harnesses_and_partial_phrases_are_no_banner(tmp_path: Path) -> None:
+    now = time.time()
+    assert omnigent_agent.agy_quota_reset("the quota reached its limit", now) is None
+    assert omnigent_agent.agy_quota_reset("Individual quota reached.", now) is None  # no reset time
+    said = [{"type": "message", "role": "assistant", "content": [{"type": "text", "text": BANNER}]}]
+    assert omnigent_agent.agy_quota_banner({"harness": "claude-native"}, said) is None
+    assert omnigent_agent.agy_quota_banner({"harness": "antigravity-native"}, said) is not None
+
+
+def test_the_pane_is_read_only_through_the_sessions_own_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OMNIGENT_AGY_PANE_CMD", raising=False)
+    assert omnigent_agent.agy_pane("s0") == ""  # no scan of every pane
+    monkeypatch.setenv("OMNIGENT_AGY_PANE_CMD", "echo pane-of-{sid}")
+    assert omnigent_agent.agy_pane("s7").strip() == "pane-of-s7"

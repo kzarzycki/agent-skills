@@ -526,21 +526,18 @@ RESETS = re.compile(
 MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
 
-# Antigravity's out-of-quota banner: "Individual quota reached ... Resets in 129h55m". The agent prints it and then
-# sits idle, so a turn that ended on it is a failure, and the reset time it names holds every later gemini start (#2919).
-AGY_QUOTA = re.compile(r"\bquota reached\b", re.IGNORECASE)
+# Antigravity's out-of-quota banner: "Individual quota reached. Please upgrade ... Resets in 129h5m17s." The agent prints it
+# and then sits idle, so a turn that ended on it is a failure, and the reset time it names holds every later gemini
+# start (#2919). Both parts must be there, so a Claude or Codex turn that says "quota reached" is never one.
+AGY_QUOTA = re.compile(r"\bIndividual quota reached\b", re.IGNORECASE)
 AGY_RESETS_IN = re.compile(r"\bresets?\s+in\s+((?:\d+\s*[dhms]\s*)+)", re.IGNORECASE)
-AGY_QUOTA_UNKNOWN_SECONDS = 3600.0  # a banner that prints no reset time holds starts this long
 
 
 def agy_quota_reset(text: str, now: float) -> tuple[float, str] | None:
-    """The instant (epoch seconds) and the printed duration of an Antigravity quota banner in ``text``, else None.
-    A banner with no ``Resets in`` time resets ``AGY_QUOTA_UNKNOWN_SECONDS`` on, the duration then ``unknown``."""
-    if not AGY_QUOTA.search(text):
+    """The instant (epoch seconds) and the printed duration of an Antigravity quota banner in ``text``, else None:
+    text with no ``Individual quota reached`` and a ``Resets in`` time is no banner."""
+    if not AGY_QUOTA.search(text) or not (match := AGY_RESETS_IN.search(text)):
         return None
-    match = AGY_RESETS_IN.search(text)
-    if not match:
-        return now + AGY_QUOTA_UNKNOWN_SECONDS, "unknown"
     seconds = sum(
         int(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[u.lower()]
         for n, u in re.findall(r"(\d+)\s*([dhms])", match[1], re.IGNORECASE)
@@ -578,8 +575,11 @@ def agy_quota_until(now: float) -> float | None:
     return until if until > now else None
 
 
-def agy_quota_banner(items: list[dict]) -> tuple[float, str] | None:
-    """The quota banner an Antigravity session printed since the last user message, else None."""
+def agy_quota_banner(info: dict, items: list[dict]) -> tuple[float, str] | None:
+    """The quota banner an Antigravity session printed since the last user message, else None: another harness's
+    session never has one."""
+    if not agy_session(info):
+        return None
     now = time.time()
     for item in reversed(items):
         if item.get("role") == "user":
@@ -601,37 +601,22 @@ def agy_session(info: dict) -> bool:
 
 def agy_pane(sid: str) -> str:
     """The text of the terminal pane agy runs in, which is the only place its quota banner appears (the session's
-    history holds the brief and nothing else). ``$OMNIGENT_AGY_PANE_CMD`` names the command that prints a session's
-    pane (``{sid}`` is replaced by its id); else every pane of this host's default tmux server is captured. Empty
-    when neither reads one: the pane then lives where this script can't see it (the harness-side fix)."""
+    history holds the brief and nothing else). ``$OMNIGENT_AGY_PANE_CMD`` names the command that prints ``sid``'s own
+    pane (``{sid}`` is replaced by its id); with none set, nothing is read, since a scan of every pane would
+    attribute another session's banner to this one. Empty when it reads nothing: the pane then lives where this
+    script can't see it (the harness-side fix)."""
     template = os.environ.get("OMNIGENT_AGY_PANE_CMD")
+    if not template:
+        return ""
     try:
-        if template:
-            return subprocess.run(
-                template.replace("{sid}", sid),
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            ).stdout
-        ids = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+        return subprocess.run(
+            template.replace("{sid}", sid),
+            shell=True,
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
-        ).stdout.split()
-        return "\n".join(
-            subprocess.run(
-                ["tmux", "capture-pane", "-p", "-J", "-S", "-200", "-t", pane],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-            ).stdout
-            for pane in ids
-        )
+        ).stdout
     except (OSError, subprocess.SubprocessError):
         return ""
 
@@ -5946,7 +5931,7 @@ def wait(
         if turn_ended and not counts():
             if stamp(question) is not None:
                 raise Asked(str(question))
-            if banner := agy_quota_banner(items):
+            if banner := agy_quota_banner(info, items):
                 raise agy_quota_failure(sid, banner)
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
