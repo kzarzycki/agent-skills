@@ -630,4 +630,3 @@ The spec is the issue body, or its last comment whose first line is `## Spec`, w
 credentials as the person. issue-tracker.md's components and extra categories are the keys of its settings block's
 `components` and `categories` (tracker_settings). Reads and writes through `gh`. Stdlib, and PyYAML for the settings
 block (SKILL.md § Settings says how it is delivered).
-
