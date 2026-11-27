@@ -25,3 +25,20 @@ def no_origin_reads(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
         monkeypatch.setattr(agent, "lead_emit", lambda *_, **__: None)
     if not getattr(request.module, "READS_LEAD_DELEGATION", False):
         monkeypatch.setattr(agent, "lead_delegation", lambda *_, **__: "")
+
+
+@pytest.fixture(autouse=True)
+def harness_config_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The effort a session signs with comes from the harness's own config when a start names none (#2838), so a
+    test must not read the developer's: HOME is a folder holding a Codex config at medium effort and
+    Claude Code settings at high (a verifier start is refused without a resolvable effort), and the effort variables are unset."""
+    for var in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_EFFORT", "CLAUDE_CODE_EFFORT_LEVEL"):
+        monkeypatch.delenv(var, raising=False)
+    home = tmp_path_factory.mktemp("home")
+    (home / ".codex").mkdir()
+    (home / ".codex/config.toml").write_text('model_reasoning_effort = "medium"\n')
+    (home / ".claude").mkdir()
+    (home / ".claude/settings.json").write_text('{"effortLevel": "high"}')
+    monkeypatch.setenv("HOME", str(home))
