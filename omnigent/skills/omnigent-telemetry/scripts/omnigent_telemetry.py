@@ -323,8 +323,8 @@ def trees_of(api_sessions: list[dict], sessions: list[dict] | None, since: int) 
             "updated_at": max(
                 [a.get("updated_at") or 0] + [s.get("updated_at") or 0 for s in members]
             ),
-            "cost_usd": a["cost_usd"] if a else sum(cost(s["usage"]) for s in members),
-            "models": a.get("models") or {},
+            "cost_usd": (a.get("cost_usd") or 0.0) if a else sum(cost(s["usage"]) for s in members),
+            "models": {m: c or 0.0 for m, c in (a.get("models") or {}).items()},
         }
         if sessions is not None:
             row.update(
@@ -572,7 +572,7 @@ def cloud_rows(r: dict) -> list[list[str]]:
 
 
 def daily_total(r: dict) -> float:
-    return sum(d["cost_usd"] for d in r["daily"])
+    return sum(d["cost_usd"] or 0.0 for d in r["daily"])
 
 
 def text(r: dict) -> str:
@@ -686,7 +686,7 @@ def page(r: dict) -> str:
         )
         body.append(f"<p>Codex rate limits ({e(str(rl['timestamp']))}): {e(windows)}</p>")
     if r["daily"]:
-        top = max(d["cost_usd"] for d in r["daily"]) or 1
+        top = max(d["cost_usd"] or 0.0 for d in r["daily"]) or 1
         body.append("<h2>Daily spend</h2><div class=bars>")
         for d in r["daily"]:
             body.append(
