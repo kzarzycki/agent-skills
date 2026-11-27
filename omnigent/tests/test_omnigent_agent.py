@@ -12582,8 +12582,72 @@ def test_the_real_interrupt_posts_the_interrupt_event(monkeypatch: pytest.Monkey
     calls: list[tuple] = []
     og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
     og.call = lambda m, p, b=None: calls.append((m, p, b)) or {}  # type: ignore[method-assign]
+    og.info = lambda sid, usage=False: {"status": "idle"}  # type: ignore[method-assign]
     og.interrupt("s1")
     assert calls == [("POST", "/v1/sessions/s1/events", {"type": "interrupt"})]
+
+
+def real_interrupt(status: str, stop: Exception | None = None) -> list[tuple]:
+    calls: list[tuple] = []
+
+    def call(m: str, p: str, b: object = None, **_k: object) -> dict:
+        calls.append((m, p, b))
+        if stop and isinstance(b, dict) and b.get("type") == "stop_session":
+            raise stop
+        return {"queued": False}  # the server's answer to an interrupt, always
+
+    og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
+    og.call = call  # type: ignore[method-assign]
+    og.info = lambda sid, usage=False: {"status": status}  # type: ignore[method-assign]
+    og.interrupt("s1")
+    return calls
+
+
+def test_an_interrupt_that_leaves_the_session_running_sends_stop_session() -> None:
+    assert real_interrupt("running") == [
+        ("POST", "/v1/sessions/s1/events", {"type": "interrupt"}),
+        ("POST", "/v1/sessions/s1/events", {"type": "stop_session", "data": {}}),
+    ]
+
+
+def test_an_interrupt_that_stops_the_session_gets_no_stop_session() -> None:
+    assert real_interrupt("idle") == [("POST", "/v1/sessions/s1/events", {"type": "interrupt"})]
+
+
+def test_a_refused_stop_session_does_not_raise_so_reap_still_archives(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = real_interrupt("running", omnigent_agent.Fail("HTTP 403 Forbidden"))
+    assert len(calls) == 2
+    assert "stop_session failed: HTTP 403" in capsys.readouterr().err
+
+
+def test_reap_force_sends_stop_session_then_archives_a_runnerless_session() -> None:
+    og = running_session(10**5)
+    order: list[str] = []
+    real = omnigent_agent.Omnigent.interrupt
+    og.interrupt = lambda sid: (  # type: ignore[method-assign]
+        order.append("interrupt+stop"),
+        real(_Fake(order), sid),
+    )[0]
+    og.archive = lambda sid: order.append("archive")  # type: ignore[method-assign]
+    _lines, failed = omnigent_agent.reap(og, ["k"], force=True)
+    assert not failed and order == ["interrupt+stop", "stop_session", "archive"]
+
+
+class _Fake:
+    """The Omnigent calls ``interrupt`` makes, for a runner-less session that stays running."""
+
+    def __init__(self, order: list[str]) -> None:
+        self.order = order
+
+    def call(self, method: str, path: str, body: object = None, **_k: object) -> dict:
+        if isinstance(body, dict) and body.get("type") == "stop_session":
+            self.order.append("stop_session")
+        return {"queued": False}
+
+    def info(self, sid: str, usage: bool = False) -> dict:
+        return {"status": "running"}
 
 
 def test_reap_force_is_a_flag_of_the_command(monkeypatch: pytest.MonkeyPatch) -> None:
