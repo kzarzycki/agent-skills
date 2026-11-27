@@ -46,14 +46,48 @@ def heads(bare: Path, pattern: str) -> list[str]:
     return git(bare, "for-each-ref", "--format=%(refname)", pattern).split()
 
 
-def test_cloud_emit_also_pushes_the_branch_form(
-    clones: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+def refuse_refs_loop(bare: Path) -> None:
+    """Origin as a cloud session's proxy is: a push outside refs/heads/ is refused."""
+    hook = bare / "hooks" / "pre-receive"
+    hook.write_text(
+        '#!/bin/sh\nwhile read old new ref; do case "$ref" in refs/heads/*) ;; *) exit 1;; esac; done\n'
+    )
+    hook.chmod(0o755)
+
+
+def test_emit_pushes_the_ref_and_no_branch_where_origin_takes_it(
+    clones: tuple[Path, Path, Path],
+) -> None:
+    """#2821: a host's event is the `refs/loop/` ref alone, so no branch list shows it."""
+    bare, a, _ = clones
+    commit = events.emit("lead", "feat/x", "waiting", cwd=a)
+    assert git(bare, "rev-parse", "refs/loop/lead/feat/x").strip() == commit
+    assert heads(bare, "refs/heads/") == []
+
+
+def test_emit_falls_back_to_the_branch_where_origin_refuses_the_ref(
+    clones: tuple[Path, Path, Path],
 ) -> None:
     bare, a, _ = clones
-    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    refuse_refs_loop(bare)
     commit = events.emit("lead", "feat/x", "waiting", cwd=a)
     assert git(bare, "rev-parse", BRANCH).strip() == commit
-    assert heads(bare, "refs/loop/") == ["refs/loop/lead/feat/x"]
+    assert heads(bare, "refs/loop/") == []
+
+
+def test_read_ignores_a_gate_record_under_refs_loop_gate(
+    clones: tuple[Path, Path, Path],
+) -> None:
+    """#2821: a gate record is named `<tree>-<key>`, under the same prefix as the gate's events, and is no event."""
+    bare, a, b = clones
+    events.emit("gate", "feat/x", "ok", cwd=a)
+    git(
+        bare,
+        "update-ref",
+        f"refs/loop/gate/{'a' * 40}-{'b' * 12}",
+        git(bare, "rev-parse", "refs/loop/gate/feat/x").strip(),
+    )
+    assert [e["branch"] for e in events.read(cwd=b)] == ["feat/x"]
 
 
 def test_read_picks_up_a_branch_only_event(
@@ -61,8 +95,8 @@ def test_read_picks_up_a_branch_only_event(
 ) -> None:
     bare, a, b = clones
     monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    refuse_refs_loop(bare)  # the proxy takes only the branch
     events.emit("lead", "feat/x", "needs-owner", question="Which?\n", cwd=a)
-    git(bare, "update-ref", "-d", "refs/loop/lead/feat/x")  # the proxy took only the branch
     (got,) = events.read(cwd=b)
     assert (got["kind"], got["branch"], got["ref"], got["state"], got["question"]) == (
         "lead",
@@ -144,7 +178,8 @@ def test_clear_removes_the_branch_forms(
     bare, a, _ = clones
     monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
     events.emit("lead", "feat/x", "ok", cwd=a)
-    sha = git(bare, "rev-parse", BRANCH).strip()
+    sha = git(bare, "rev-parse", "refs/loop/lead/feat/x").strip()
+    git(bare, "update-ref", BRANCH, sha)
     git(bare, "update-ref", CLAUDE_BRANCH, sha)  # the `claude/` prefix too
     events.clear("feat/x", cwd=a)
     assert heads(bare, "refs/heads/") == []
