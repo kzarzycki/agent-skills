@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.35 - 2026-11-27
+
+- omnigent-agents: `claude-cloud-run` runs a detached HEAD on the remote branch that contains it (`--pr N` names it, else the single match) instead of exiting 125, so a host verifier's worktree can use it; verifier.md says exit 125 means take the host fallback, not ask (#2918).
+
 ## 0.1.34 - 2026-11-27
 
 - A Codex verifier `start` with no model or effort runs Terra at medium effort, and one on a PR head that already has a Codex pass is refused, naming that pass (#2870).
