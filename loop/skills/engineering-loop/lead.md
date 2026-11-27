@@ -113,10 +113,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    proof) with the branch's first push, made when you cut it (an empty commit when nothing
    is written yet), since the open PR is the claim another lead's search finds
    (github.md, Review trail; board: `Build`). Its body carries your guess at the run's spend,
-   `Token estimate: ~<N> (<basis>)`, and ends with `Impl: <the AGENT_SIGNATURE line atop your brief>` (its `· Session: <link>` part
-   included, so the link is in the PR from the start), e.g. `~2M, mostly two verifier passes`: the lead, its
+   `Token estimate: ~<N> (<basis>)`, e.g. `~2M, mostly two verifier passes`: the lead, its
    workers and verifiers together, cache reads included. It is for the owner's information and
-   nothing reads it, so a rough number beats a careful one. Then run `uv run <gatekeeper>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
+   nothing reads it, so a rough number beats a careful one. The body also ends with `Impl: <the AGENT_SIGNATURE line atop
+   your brief>`, its `· Session: <link>` part included, so the link is in the PR from the start. Then run `uv run <gatekeeper>/scripts/approvals.py check build <pr>`: build only once it exits 0. On
    that exit it assigns the issue's approver where no one is assigned, and the PR its
    issue's assignee (github.md, Assignee). Keep one scratchpad markdown for the run: the work items and what
    blocks what, environment facts, gates, the model and session id of each agent, and every worktree and

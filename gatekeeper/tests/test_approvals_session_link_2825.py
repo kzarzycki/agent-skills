@@ -86,6 +86,12 @@ def test_check_merge_fails_on_the_same_bodies(
     assert required == ["main"]
 
 
+def test_an_impl_line_quoted_in_a_code_block_is_no_impl_line() -> None:
+    """An example in a fenced block is not the PR's own signature, so it needs no session part."""
+    body = "## Evidence\n\n```\nImpl: cc/sonnet-5.5/?\n```\n"
+    assert approvals.session_gap(pull(body=body)) == []
+
+
 @pytest.mark.parametrize(
     "line",
     [
