@@ -9,7 +9,7 @@ command one of whose segments is heavy (``heavy``), when all of these hold:
 
 - the session is not a cloud one (``CLAUDE_CODE_REMOTE`` is not ``true``);
 - the call's ``cwd`` is inside a repository with ``docs/agents/loop.md``, whose ``Cloud worker:``
-  line is not ``none`` (a project that keeps its workers on hosts runs there);
+  line, or ``cloud_worker`` in its ``## Loop settings`` block, is not ``none`` (a project that keeps its workers on hosts runs there);
 - the segment is not prefixed ``LOOP_HOST_RUN=<reason>`` (nor the whole command), the host
   fallback: the cloud route failed, or the run needs this host;
 - the cloud route can run here: an Omnigent server is configured for this session
@@ -36,6 +36,10 @@ from pathlib import Path
 
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
 NO_CLOUD = re.compile(r"^Cloud worker:[ \t]*none\b", re.MULTILINE | re.IGNORECASE)
+# the same setting in the `## Loop settings` yaml block (gatekeeper.py's loop_setting reads it; this hook runs on every
+# Bash call with the stdlib only, so it reads this one key itself: a test holds the two to the same answer)
+LOOP_BLOCK = re.compile(r"^## Loop settings[ \t]*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+NO_CLOUD_KEY = re.compile(r"^cloud_worker:[ \t]*[\"']?none\b", re.MULTILINE | re.IGNORECASE)
 HOST_RUN = "LOOP_HOST_RUN"
 # the Omnigent server claude-cloud-run launches through; unset, the cloud route can't run here
 RUNNER = "RUNNER_SERVER_URL"
@@ -133,7 +137,8 @@ def loop_repo(cwd: Path) -> Path | None:
         text = (root / LOOP_FILE).read_text(errors="replace")
     except OSError:
         return None
-    return None if NO_CLOUD.search(text) else root
+    block = LOOP_BLOCK.search(text)
+    return None if NO_CLOUD.search(text) or (block and NO_CLOUD_KEY.search(block[1])) else root
 
 
 def drop_heredocs(command: str) -> str:
