@@ -526,6 +526,69 @@ RESETS = re.compile(
 MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
 
+# Antigravity's out-of-quota banner: "Individual quota reached ... Resets in 129h55m". The agent prints it and then
+# sits idle, so a turn that ended on it is a failure, and the reset time it names holds every later gemini start (#2919).
+AGY_QUOTA = re.compile(r"\bquota reached\b", re.IGNORECASE)
+AGY_RESETS_IN = re.compile(r"\bresets?\s+in\s+((?:\d+\s*[dhms]\s*)+)", re.IGNORECASE)
+AGY_QUOTA_UNKNOWN_SECONDS = 3600.0  # a banner that prints no reset time holds starts this long
+
+
+def agy_quota_reset(text: str, now: float) -> tuple[float, str] | None:
+    """The instant (epoch seconds) and the printed duration of an Antigravity quota banner in ``text``, else None.
+    A banner with no ``Resets in`` time resets ``AGY_QUOTA_UNKNOWN_SECONDS`` on, the duration then ``unknown``."""
+    if not AGY_QUOTA.search(text):
+        return None
+    match = AGY_RESETS_IN.search(text)
+    if not match:
+        return now + AGY_QUOTA_UNKNOWN_SECONDS, "unknown"
+    seconds = sum(
+        int(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[u.lower()]
+        for n, u in re.findall(r"(\d+)\s*([dhms])", match[1], re.IGNORECASE)
+    )
+    return now + seconds, match[1].strip()
+
+
+def agy_quota_path() -> Path:
+    """Where the last Antigravity quota-out is recorded, one file per host account."""
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "engineering-loop"
+    return cache / "agy-quota.json"
+
+
+def record_agy_quota(reset: float) -> None:
+    """Record that Antigravity's quota is out until ``reset``, never lowering an earlier, later reset."""
+    path = agy_quota_path()
+    try:
+        held = json.loads(path.read_text()).get("until", 0.0)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"until": max(float(held), reset)}))
+    except (OSError, ValueError, AttributeError):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"until": reset}))
+        except OSError:
+            pass  # the failed turn still names the reset; only the start's refusal is lost
+
+
+def agy_quota_until(now: float) -> float | None:
+    """The reset instant of a recorded quota-out still in force at ``now``, else None."""
+    try:
+        until = float(json.loads(agy_quota_path().read_text()).get("until", 0.0))
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None
+    return until if until > now else None
+
+
+def agy_quota_banner(items: list[dict]) -> tuple[float, str] | None:
+    """The quota banner an Antigravity session printed since the last user message, else None."""
+    now = time.time()
+    for item in reversed(items):
+        if item.get("role") == "user":
+            break
+        if found := agy_quota_reset(text_of(item), now):
+            return found
+    return None
+
+
 def backoff(count: int) -> float:
     """The seconds before the revive after ``count`` earlier ones in a transient chain."""
     return BACKOFF_MINUTES[min(count, len(BACKOFF_MINUTES) - 1)] * 60.0
@@ -5811,6 +5874,13 @@ def wait(
         if turn_ended and not counts():
             if stamp(question) is not None:
                 raise Asked(str(question))
+            if banner := agy_quota_banner(items):
+                record_agy_quota(banner[0])
+                raise Fail(
+                    f"session {sid} ended: Antigravity's quota is out (resets in {banner[1]}, at"
+                    f" {datetime.fromtimestamp(banner[0], timezone.utc):%Y-%m-%d %H:%MZ}); start the verifier on"
+                    " the Codex route (--verifier-route codex) until then"
+                )
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
                 kind = recovery(error, items)
@@ -8713,6 +8783,12 @@ def apply_route(args: argparse.Namespace) -> None:
                 "--verifier-route gemini cannot start from a cloud VM: it has no Omnigent server route to drive agy."
                 " The verifier must be started by the coordinator on a host with an Omnigent server route: ask"
                 " your coordinator to start it, or use --verifier-route claude only if it says Gemini can't run (#2572)"
+            )
+        if (until := agy_quota_until(time.time())) is not None:
+            raise Fail(
+                "--verifier-route gemini: Antigravity's quota is out until"
+                f" {datetime.fromtimestamp(until, timezone.utc):%Y-%m-%d %H:%MZ} (a recorded banner); use the Codex"
+                " route (--verifier-route codex) until then"
             )
         if not args.host:
             raise Fail(
