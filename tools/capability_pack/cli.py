@@ -144,6 +144,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             for release in releases:
                 issues = " ".join(release.entries)
                 print(f"{release.package} {release.version} ({issues})")
+                if args.command == "cut-release" and args.dry_run:
+                    print(release.section.rstrip("\n"))
             return 0
         if args.command == "release-tags":
             print("\n".join(release_tags(args.root)))

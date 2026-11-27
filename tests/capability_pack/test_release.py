@@ -194,6 +194,48 @@ def test_verify_refuses_a_release_that_leaves_a_package_out(tmp_path: Path) -> N
         verify_release(repo, base)
 
 
+def _adopt_repository(tmp_path: Path, with_adopt: bool) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    entry = "- alpha: new key (#5)"
+    if with_adopt:
+        entry += "\nadopt: In docs/agents/gatekeeper.md add `select:`.\n  Then run `mise run sync`."
+    _package(repo, "alpha", "0.1.0", {"5": entry})
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "initial")
+    _git(repo, "tag", "alpha-v0.1.0")
+    return repo
+
+
+def test_cut_release_dry_run_prints_the_section_and_writes_nothing(tmp_path: Path, capsys) -> None:
+    repo = _adopt_repository(tmp_path, with_adopt=False)
+    assert cli.main(["cut-release", "--root", str(repo), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha 0.1.1 (5)" in out and "- alpha: new key (#5)" in out
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_an_adopt_part_becomes_an_adopt_in_projects_section(tmp_path: Path, capsys) -> None:
+    repo = _adopt_repository(tmp_path, with_adopt=True)
+    assert cli.main(["cut-release", "--root", str(repo), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "- alpha: new key (#5)\n\n### Adopt in projects\n\n"
+        "- In docs/agents/gatekeeper.md add `select:`.\n  Then run `mise run sync`."
+    ) in out
+    assert "adopt:" not in out
+    assert _git(repo, "status", "--porcelain") == ""
+    cut_release(repo, today=TODAY)
+    assert "### Adopt in projects" in (repo / "alpha" / "CHANGELOG.md").read_text()
+
+
+def test_no_adopt_part_means_no_adopt_section(tmp_path: Path, capsys) -> None:
+    repo = _adopt_repository(tmp_path, with_adopt=False)
+    cut_release(repo, today=TODAY)
+    assert "Adopt in projects" not in (repo / "alpha" / "CHANGELOG.md").read_text()
+
+
 def test_cli_cut_and_verify(tmp_path: Path, capsys) -> None:
     repo = _repository(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
