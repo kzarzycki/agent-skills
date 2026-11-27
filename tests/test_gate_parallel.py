@@ -83,6 +83,23 @@ def test_the_nightly_test_map_run_stays_serial() -> None:
     assert all(" -n 0 " in f" {s['env']['PYTEST_ADDOPTS']} " for s in mapped)
 
 
+def test_the_nightly_test_map_run_is_sharded_to_fit_its_limit() -> None:
+    """One serial pytest took 52 minutes in November and grew past the 60-minute `timeouts.run` (#2804): the run starts
+    TEST_SHARDS serial pytest processes at once (tools/shard_plugin.py), each with its own per-test contexts."""
+    steps = yaml.safe_load((ROOT / ".github/workflows/engineering-ci.yml").read_text())
+    mapped = [
+        s
+        for job in steps["jobs"].values()
+        for s in job["steps"]
+        if "--cov-context=test" in s.get("env", {}).get("PYTEST_ADDOPTS", "")
+    ]
+    assert mapped and all(int(s["env"]["TEST_SHARDS"]) > 1 for s in mapped)
+    addopts = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"][
+        "addopts"
+    ]
+    assert "tools.shard_plugin" in addopts
+
+
 def test_a_bare_pytest_is_parallel_by_default() -> None:
     """A run with no mise task, as an agent types it, costs what `mise run test` does (#1610): `-n auto` is in addopts."""
     addopts = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"][

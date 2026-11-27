@@ -148,28 +148,28 @@ def stalls(monkeypatch, prs, cards=None, memo=None) -> dict[int, str]:
 
 
 @pytest.mark.parametrize(
-    "extra, blocker",
+    "extra, blocker",  # an extra is a function: its ages are read when the test runs, not at collection (#2804)
     [
         (  # #565's case: a red required check its diff didn't cause
-            {
+            lambda: {
                 "checks": [
                     {"name": "qualify", "conclusion": "failure", "completed_at": iso(3 * HOUR)}
                 ]
             },
             "a red required check: qualify",
         ),
-        ({"mergeable": False, "mergeable_state": "dirty"}, "a conflict with main"),
+        (lambda: {"mergeable": False, "mergeable_state": "dirty"}, "a conflict with main"),
         (  # a satisfied verdict over an hour old with no go: finding 7 of the waste audit
-            {"timeline_extra": [verdict(12, "yes", 90 * 60)]},
+            lambda: {"timeline_extra": [verdict(12, "yes", 90 * 60)]},
             "a verdict without a go (SATISFIED: yes, ",  # its age is read when the test runs, after collection
         ),
         (
-            {"timeline_extra": [verdict(12, "no", 90 * 60)]},
+            lambda: {"timeline_extra": [verdict(12, "no", 90 * 60)]},
             "a verdict asking a fix round (SATISFIED: no) with no push since",
         ),
-        ({"card": "needs-owner"}, "a card waiting: a `verify` loop event at needs-owner"),
+        (lambda: {"card": "needs-owner"}, "a card waiting: a `verify` loop event at needs-owner"),
         (
-            {
+            lambda: {
                 "timeline_extra": [
                     {
                         "event": "commented",
@@ -184,7 +184,7 @@ def stalls(monkeypatch, prs, cards=None, memo=None) -> dict[int, str]:
     ],
 )
 def test_a_pr_stalled_an_hour_names_its_blocker(monkeypatch, extra, blocker) -> None:
-    extra = dict(extra)
+    extra = extra()
     card = extra.pop("card", None)
     more = extra.pop("timeline_extra", [])
     p = pr(12, **extra)
@@ -206,28 +206,28 @@ def test_a_red_check_not_required_blocks_nothing_and_a_stall_with_no_blocker_sti
 
 
 @pytest.mark.parametrize(
-    "moved",
+    "moved",  # a function each: its ages are read when the test runs, not at collection (#2804)
     [
-        {"pushed": 20 * 60},  # a push
-        {"timeline_extra": [{"event": "head_ref_force_pushed", "created_at": iso(600)}]},
-        {"timeline_extra": [verdict(12, "yes", 600)]},  # a verdict
-        {  # a go, on a head whose CI started two hours ago: the go, not the status's first sight, moves it
+        lambda: {"pushed": 20 * 60},  # a push
+        lambda: {"timeline_extra": [{"event": "head_ref_force_pushed", "created_at": iso(600)}]},
+        lambda: {"timeline_extra": [verdict(12, "yes", 600)]},  # a verdict
+        lambda: {  # a go, on a head whose CI started two hours ago: the go, not the status's first sight, moves it
             "statuses": [{"context": "owner", "state": "success", "created_at": iso(600)}],
             "checks": [{"name": "qualify", "started_at": iso(2 * HOUR), "conclusion": "success"}],
         },
-        {
+        lambda: {
             "timeline_extra": [
                 {"event": "labeled", "label": {"name": "loop:queued"}, "created_at": iso(600)}
             ]
         },
-        {
+        lambda: {
             "checks": [{"name": "Queue: Embarked in merge queue", "started_at": iso(600)}]
         },  # queue progress
-        {"draft": True},  # its lead is still building it
+        lambda: {"draft": True},  # its lead is still building it
     ],
 )
 def test_a_pr_that_moved_within_the_hour_or_is_a_draft_is_no_stall(monkeypatch, moved) -> None:
-    moved = dict(moved)
+    moved = moved()
     more = moved.pop("timeline_extra", [])
     p = pr(12, **moved)
     p["timeline"] += more
