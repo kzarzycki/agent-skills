@@ -382,7 +382,9 @@ def measured_without(source: list[str]) -> set[str]:
 def coverage_source() -> list[str]:
     import tomllib
 
-    return tomllib.loads((REPOSITORY / "pyproject.toml").read_text())["tool"]["coverage"]["run"]["source"]
+    return tomllib.loads((REPOSITORY / "pyproject.toml").read_text())["tool"]["coverage"]["run"][
+        "source"
+    ]
 
 
 def test_the_coverage_list_measures_every_package() -> None:

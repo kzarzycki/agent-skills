@@ -27,7 +27,12 @@ def nightly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     def check() -> int:
         return approvals.durations_verb(
-            None, None, None, False, str(tmp_path / "durations.json"), str(tmp_path / "durations-tests.json")
+            None,
+            None,
+            None,
+            False,
+            str(tmp_path / "durations.json"),
+            str(tmp_path / "durations-tests.json"),
         )
 
     record.check = check  # type: ignore[attr-defined]
@@ -35,7 +40,12 @@ def nightly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def test_the_budgets_are_read_from_timeouts_beside_test_and_run() -> None:
-    assert approvals.timeouts(policy()) == {"test": 60, "run": 3600, "file_budget": 120, "test_budget": 5}
+    assert approvals.timeouts(policy()) == {
+        "test": 60,
+        "run": 3600,
+        "file_budget": 120,
+        "test_budget": 5,
+    }
     assert "file_budget" not in approvals.timeouts(LOOP)  # unset: nothing to check
 
 
@@ -48,7 +58,9 @@ def test_a_run_within_its_budgets_passes(nightly, capsys: pytest.CaptureFixture[
     nightly({"tests/test_a.py": 60.0}, {"tests/test_a.py::test_x": 3.0})
     assert nightly.check() == 0
     said = capsys.readouterr().out
-    assert "tests/test_a.py" in said and "within its budget" in said  # the slowest are listed, then the verdict
+    assert (
+        "tests/test_a.py" in said and "within its budget" in said
+    )  # the slowest are listed, then the verdict
 
 
 def test_a_file_over_its_budget_fails_the_check_naming_file_time_and_budget(
@@ -64,10 +76,16 @@ def test_a_file_over_its_budget_fails_the_check_naming_file_time_and_budget(
 def test_a_test_over_its_budget_fails_the_check_naming_file_test_time_and_budget(
     nightly, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    nightly({"tests/test_a.py": 20.0}, {"tests/test_a.py::test_slow": 7.25, "tests/test_a.py::test_ok": 1.0})
+    nightly(
+        {"tests/test_a.py": 20.0},
+        {"tests/test_a.py::test_slow": 7.25, "tests/test_a.py::test_ok": 1.0},
+    )
     assert nightly.check() == 1
     said = capsys.readouterr().out
-    assert "test tests/test_a.py::test_slow (file tests/test_a.py) took 7.2s, over its budget of 5s" in said
+    assert (
+        "test tests/test_a.py::test_slow (file tests/test_a.py) took 7.2s, over its budget of 5s"
+        in said
+    )
     assert "test_ok" not in said.split("over its budget")[1]
 
 
@@ -80,17 +98,30 @@ def test_without_budgets_the_check_lists_the_slowest_and_passes(
     assert "nothing to check" in capsys.readouterr().out
 
 
-def test_recording_writes_each_tests_time_beside_each_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recording_writes_each_tests_time_beside_each_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
     log = tmp_path / "durations.log"
     log.write_text(
         "0.500s setup tests/test_a.py::test_x\n2.000s call tests/test_a.py::test_x\n"
         "1.000s call tests/test_a.py::test_y\n0.250s call tests/test_b.py::test_z[p 1]\n"
     )
-    assert approvals.durations_verb(str(log), str(tmp_path / "f.json"), None, False, tests_out=str(tmp_path / "t.json")) == 0
-    assert json.loads((tmp_path / "f.json").read_text()) == {"tests/test_a.py": 3.5, "tests/test_b.py": 0.25}
-    assert json.loads((tmp_path / "t.json").read_text()) == {
-        "tests/test_a.py::test_x": 2.5,
-        "tests/test_a.py::test_y": 1.0,
-        "tests/test_b.py::test_z[p 1]": 0.25,  # an id with a space, as the nightly's own log writes it
+    assert (
+        approvals.durations_verb(
+            str(log), str(tmp_path / "f.json"), None, False, tests_out=str(tmp_path / "t.json")
+        )
+        == 0
+    )
+    assert json.loads((tmp_path / "f.json").read_text()) == {
+        "tests/test_a.py": 3.5,
+        "tests/test_b.py": 0.25,
     }
+    assert (
+        json.loads((tmp_path / "t.json").read_text())
+        == {
+            "tests/test_a.py::test_x": 2.5,
+            "tests/test_a.py::test_y": 1.0,
+            "tests/test_b.py::test_z[p 1]": 0.25,  # an id with a space, as the nightly's own log writes it
+        }
+    )

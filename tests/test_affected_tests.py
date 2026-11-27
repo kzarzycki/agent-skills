@@ -627,7 +627,9 @@ def test_an_empty_map_says_so_instead_of_naming_its_commit(mapped, capsys) -> No
     said = capsys.readouterr().err
     assert "affected-tests: map is empty" in said
     assert "affected-tests: map of " not in said
-    assert "tests/test_both.py" in picked and "tests/test_one.py" in picked  # the name match, as for no map
+    assert (
+        "tests/test_both.py" in picked and "tests/test_one.py" in picked
+    )  # the name match, as for no map
 
 
 def test_a_script_the_map_does_not_hold_says_the_map_has_no_entry_for_it(mapped, capsys) -> None:

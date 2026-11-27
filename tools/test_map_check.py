@@ -17,7 +17,11 @@ import sqlite3
 import sys
 from pathlib import Path
 
-PHASES = ("setup", "run", "teardown")  # the phases pytest-cov and tools/test_map_plugin.py name a context by
+PHASES = (
+    "setup",
+    "run",
+    "teardown",
+)  # the phases pytest-cov and tools/test_map_plugin.py name a context by
 SHOWN = 5  # the tests an error names, since the rest are the same fault
 
 
@@ -35,7 +39,9 @@ def prune(coverage: Path, failed: set[str]) -> int:
     names = [f"{node}|{phase}" for node in failed for phase in PHASES]
     with sqlite3.connect(coverage) as db:
         marks = ",".join("?" * len(names))
-        ids = [i for (i,) in db.execute(f"select id from context where context in ({marks})", names)]
+        ids = [
+            i for (i,) in db.execute(f"select id from context where context in ({marks})", names)
+        ]
         dropped = 0
         for table in ("line_bits", "arc"):
             try:
@@ -43,7 +49,9 @@ def prune(coverage: Path, failed: set[str]) -> int:
                 dropped += db.execute(
                     f"delete from {table} where context_id in ({marks})", ids
                 ).rowcount
-            except sqlite3.OperationalError:  # the data has no such table (lines only, or arcs only)
+            except (
+                sqlite3.OperationalError
+            ):  # the data has no such table (lines only, or arcs only)
                 pass
     return dropped
 
@@ -60,7 +68,9 @@ def named_tests(coverage: Path) -> tuple[set[str], set[str]]:
         paths = {p for (p,) in db.execute("select path from file")}
     tests = {c.rsplit("|", 1)[0] for c in used if c}
     sources = {
-        p for p in paths if "/tests/" not in f"/{p}" and not Path(p).name.startswith(("test_", "conftest"))
+        p
+        for p in paths
+        if "/tests/" not in f"/{p}" and not Path(p).name.startswith(("test_", "conftest"))
     }
     return tests, sources
 
@@ -89,10 +99,14 @@ def problems(root: Path) -> list[str]:
         return ["map is empty: it measures no source file"]
     if not tests:
         return ["map is empty: it names no test (a run under xdist records no contexts)"]
-    missing = sorted(ran_ok(root / "durations.log", lines(root / "failed"), lines(root / "skipped")) - tests)
+    missing = sorted(
+        ran_ok(root / "durations.log", lines(root / "failed"), lines(root / "skipped")) - tests
+    )
     if missing:
         shown = ", ".join(missing[:SHOWN]) + (" ..." if len(missing) > SHOWN else "")
-        return [f"map names fewer tests than ran: {len(missing)} passed with no context, e.g. {shown}"]
+        return [
+            f"map names fewer tests than ran: {len(missing)} passed with no context, e.g. {shown}"
+        ]
     return []
 
 

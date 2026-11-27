@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 from coverage import CoverageData
 
 from tools import affected_tests as a
@@ -50,8 +49,24 @@ def run_suite(project: Path, tests: dict[str, str]) -> Path:
     }
     env.pop("PYTEST_ADDOPTS", None)
     subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "tools.test_map_plugin", "-p", "no:cacheprovider",
-         "-p", "no:xdist", "-o", "addopts=", "--cov=pkg", "--cov-context=test", "--cov-report=", "tests"],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "tools.test_map_plugin",
+            "-p",
+            "no:cacheprovider",
+            "-p",
+            "no:xdist",
+            "-o",
+            "addopts=",
+            "--cov=pkg",
+            "--cov-context=test",
+            "--cov-report=",
+            "tests",
+        ],
         cwd=project,
         env=env,
         check=False,
@@ -75,7 +90,9 @@ def test_a_map_with_no_coverage_file_fails_the_map_step(tmp_path, monkeypatch, c
     assert "map is empty" in capsys.readouterr().err
 
 
-def test_a_map_short_of_a_test_that_passed_fails_the_map_step(tmp_path, monkeypatch, capsys) -> None:
+def test_a_map_short_of_a_test_that_passed_fails_the_map_step(
+    tmp_path, monkeypatch, capsys
+) -> None:
     root = run_suite(
         tmp_path,
         {
@@ -85,14 +102,20 @@ def test_a_map_short_of_a_test_that_passed_fails_the_map_step(tmp_path, monkeypa
     )
     monkeypatch.chdir(tmp_path)
     assert check.main(["test_map_check.py", str(root)]) == 0
-    with sqlite3.connect(root / "coverage") as db:  # lose one test's contexts, as a run that recorded none would
-        db.execute("delete from line_bits where context_id in (select id from context where context like '%test_two%')")
+    with sqlite3.connect(
+        root / "coverage"
+    ) as db:  # lose one test's contexts, as a run that recorded none would
+        db.execute(
+            "delete from line_bits where context_id in (select id from context where context like '%test_two%')"
+        )
     assert check.main(["test_map_check.py", str(root)]) == 1
     said = capsys.readouterr().err
     assert "fewer tests than ran" in said and "tests/test_two.py::test_two" in said
 
 
-def test_a_map_from_a_run_with_one_failing_test_still_selects_by_lines(tmp_path, monkeypatch, capsys) -> None:
+def test_a_map_from_a_run_with_one_failing_test_still_selects_by_lines(
+    tmp_path, monkeypatch, capsys
+) -> None:
     root = run_suite(
         tmp_path,
         {
@@ -106,7 +129,9 @@ def test_a_map_from_a_run_with_one_failing_test_still_selects_by_lines(tmp_path,
     git("commit", "-qm", "base")
     (root / "sha").write_text(git("rev-parse", "HEAD"))
     assert (root / "failed").read_text().split() == ["tests/test_red.py::test_red"]
-    assert check.main(["test_map_check.py", str(root)]) == 0  # the failure no longer leaves the map unfit
+    assert (
+        check.main(["test_map_check.py", str(root)]) == 0
+    )  # the failure no longer leaves the map unfit
     monkeypatch.setattr(a, "MAP", root)
     (tmp_path / "pkg/mod.py").write_text(MOD.replace("return 1", "return 11"))
     git("commit", "-qam", "edit good")

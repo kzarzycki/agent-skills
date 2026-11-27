@@ -29,7 +29,12 @@ import pytest
 SHARDS = "TEST_SHARDS"
 INDEX = "SHARD_INDEX"
 COUNT = "SHARD_COUNT"
-OWN = "COVERAGE_FILE", "TEST_MAP_SKIPPED", "TEST_DURATIONS", "TEST_MAP_FAILED"  # the files a shard keeps apart
+OWN = (
+    "COVERAGE_FILE",
+    "TEST_MAP_SKIPPED",
+    "TEST_DURATIONS",
+    "TEST_MAP_FAILED",
+)  # the files a shard keeps apart
 NO_TESTS = 5  # pytest's exit status for a run that collected nothing
 
 

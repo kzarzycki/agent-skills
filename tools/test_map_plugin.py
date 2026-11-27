@@ -67,7 +67,9 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.skipped and (path := os.environ.get(SKIPPED)):
         with open(path, "a") as out:
             out.write(f"{report.nodeid}\n")
-    if getattr(report, "failed", False) and (path := os.environ.get(FAILED)):  # a failed setup, call or teardown: the test is no map entry
+    if getattr(report, "failed", False) and (
+        path := os.environ.get(FAILED)
+    ):  # a failed setup, call or teardown: the test is no map entry
         with open(path, "a") as out:
             out.write(f"{report.nodeid}\n")
     if path := os.environ.get(DURATIONS):

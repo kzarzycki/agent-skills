@@ -11733,7 +11733,10 @@ def parse_test_durations(text: str) -> dict[str, float]:
 
 
 def budget_problems(
-    files: dict[str, float], tests: dict[str, float], file_budget: int | None, test_budget: int | None
+    files: dict[str, float],
+    tests: dict[str, float],
+    file_budget: int | None,
+    test_budget: int | None,
 ) -> list[str]:
     """One line for each test file whose total time is over `file_budget` and each test over `test_budget` (seconds; None:
     no budget set), naming the file, the test, its time and the budget; the slowest first."""
@@ -11778,7 +11781,9 @@ def durations_check(root: Path, files_path: str, tests_path: str | None) -> int:
             print(f"  {seconds:8.1f}s  {node}")
     budgets = (limits.get("file_budget"), limits.get("test_budget"))
     if budgets == (None, None):
-        print("durations: no `timeouts.file_budget` or `timeouts.test_budget` is set: nothing to check")
+        print(
+            "durations: no `timeouts.file_budget` or `timeouts.test_budget` is set: nothing to check"
+        )
         return 0
     found = budget_problems(files, tests, *budgets)
     if found:

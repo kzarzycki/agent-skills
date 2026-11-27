@@ -283,7 +283,9 @@ def load_map():
         )
         data = CoverageData(basename=str(MAP / "coverage"))
         data.read()
-        measured = data.measured_files()  # opens the data now: a truncated file raises here, not mid-selection
+        measured = (
+            data.measured_files()
+        )  # opens the data now: a truncated file raises here, not mid-selection
         # a map that measures no file is (sha, None): targets() says it is empty, which no map at all is not (#1400)
         return (sha, data if measured else None) if known.returncode == 0 else None
     except OSError, CoverageException:
@@ -375,8 +377,12 @@ def targets(
     picked: set[str] = set()
     product = False  # a changed path some test can fail on: only a change with none selects zero
     mapped = load_map()
-    if mapped and mapped[1] is None:  # a map that holds nothing decides nothing: say so, once (#1400)
-        say(f"map is empty (map of {mapped[0][:12]} measures no file): a script runs every test that names it")
+    if (
+        mapped and mapped[1] is None
+    ):  # a map that holds nothing decides nothing: say so, once (#1400)
+        say(
+            f"map is empty (map of {mapped[0][:12]} measures no file): a script runs every test that names it"
+        )
         mapped = None
     else:
         say(
