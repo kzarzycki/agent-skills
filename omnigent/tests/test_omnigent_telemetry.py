@@ -519,17 +519,30 @@ def test_a_window_past_the_servers_90_days_is_refused(capsys) -> None:
     assert "1 to 90" in capsys.readouterr().err
 
 
-def test_an_unpriced_session_with_a_null_cost_is_summed_sorted_and_shown_without_a_crash() -> None:
+def test_an_unpriced_session_with_a_null_cost_is_summed_sorted_and_shown_as_a_dash() -> None:
     """`GET /v1/usage` gives `cost_usd: null` (and null per-model costs) for a session with no known price."""
     unpriced = {"id": "u1", "title": "gemini", "updated_at": SINCE + 1, "cost_usd": None}
     unpriced["models"] = {"model-g": None}
     priced = {"id": "p1", "title": "lead", "updated_at": SINCE + 1, "cost_usd": 2.0}
     priced["models"] = {"model-a": 2.0}
-    usage = {"cost_today": 0, "cost_last_7d": 0, "cost_last_30d": 0, "sessions": [unpriced, priced]}
+    usage = {"cost_today": 1, "cost_last_7d": 2, "cost_last_30d": 3, "sessions": [unpriced, priced]}
     r = telemetry.build(usage, None, None, 7, NOW)
-    assert [(t["id"], t["cost_usd"]) for t in r["trees"]] == [("p1", 2.0), ("u1", 0.0)]
-    assert {m["model"]: m["cost_usd"] for m in r["models"]} == {"model-a": 2.0, "model-g": 0.0}
-    assert "gemini" in telemetry.text(r) and "gemini" in telemetry.page(r)
+    assert [(t["id"], t["cost_usd"]) for t in r["trees"]] == [("p1", 2.0), ("u1", None)]
+    assert {m["model"]: m["cost_usd"] for m in r["models"]} == {"model-a": 2.0, "model-g": None}
+    for out in (telemetry.text(r), telemetry.page(r)):
+        assert "$0.00" not in out
+        shown = [x for x in out.splitlines() if "model-g" in x or "u1" in x]
+        assert len(shown) == 2 and all(" - " in x or ">-<" in x for x in shown), shown
     rows = telemetry_rows({**TELEMETRY, "daily_cost": [{"day": "2027-01-15", "cost_usd": None}]})
     with_daily = telemetry.build(usage, rows, None, 7, NOW)
-    assert telemetry.daily_total(with_daily) == 0.0 and telemetry.text(with_daily)
+    assert telemetry.daily_total(with_daily) == 0.0
+    assert telemetry.text(with_daily) and telemetry.page(with_daily)
+
+
+def test_an_unpriced_model_in_a_sessions_usage_shows_a_dash_not_zero() -> None:
+    rows = [
+        session("a", "a", usage={"cost_usd": None, "by_model": {"model-g": {"cost_usd": None}}})
+    ]
+    models = telemetry.models_of(rows)
+    assert [(m["model"], m["cost_usd"]) for m in models] == [("model-g", None)]
+    assert telemetry.model_cells(models[0])[2] == "-"

@@ -144,6 +144,11 @@ def window_start(days: int, now: float) -> int:
     return int((today - timedelta(days=days - 1)).timestamp())
 
 
+def num(x: float | None) -> float:
+    """A server cost for arithmetic: `null` (unpriced) is 0 here, and stays `None` in the rows shown."""
+    return float(x or 0.0)
+
+
 def cost(usage: dict) -> float:
     return float(usage.get("cost_usd") or 0.0)
 
@@ -250,7 +255,7 @@ def cloud_of(sessions: list[dict], kids: dict[str, list[dict]]) -> dict:
             {
                 "id": s["id"],
                 "title": s["title"] or "",
-                "cost_usd": cost(s["usage"]),
+                "cost_usd": s["usage"].get("cost_usd"),
                 "models": sorted(by),
                 "status": s.get("live_status") or "",
                 "children": [
@@ -262,14 +267,14 @@ def cloud_of(sessions: list[dict], kids: dict[str, list[dict]]) -> dict:
                     }
                     for c in children
                 ],
-                "child_cost_usd": sum(float(c.get("cost_usd") or 0) for c in children),
+                "child_cost_usd": sum(num(c.get("cost_usd")) for c in children),
             }
         )
     return {
         "sessions": len(rows),
-        "cost_usd": sum(r["cost_usd"] for r in rows),
+        "cost_usd": sum(num(r["cost_usd"]) for r in rows),
         "child_cost_usd": sum(r["child_cost_usd"] for r in rows),
-        "rows": sorted(rows, key=lambda r: -r["cost_usd"]),
+        "rows": sorted(rows, key=lambda r: -num(r["cost_usd"])),
     }
 
 
@@ -295,13 +300,16 @@ def models_of(sessions: list[dict]) -> list[dict]:
         for name, u in (s["usage"].get("by_model") or {}).items():
             row = rows[name]
             row["sessions"] += 1
-            row["cost_usd"] += cost(u)
+            if u.get("cost_usd") is not None:
+                row["cost_usd"] = num(row["cost_usd"]) + cost(u)
+            elif not row["sessions"] - 1:  # first sighting of an unpriced model stays unpriced
+                row["cost_usd"] = None
             row["input_tokens"] += u.get("input_tokens") or 0
             row["cache_read_tokens"] += u.get("cache_read_input_tokens") or 0
             row["output_tokens"] += u.get("output_tokens") or 0
     return sorted(
         ({"model": m, **r} for m, r in rows.items()),
-        key=lambda r: (-r["cost_usd"], -r["cache_read_tokens"]),
+        key=lambda r: (-num(r["cost_usd"]), -r["cache_read_tokens"]),
     )
 
 
@@ -323,8 +331,8 @@ def trees_of(api_sessions: list[dict], sessions: list[dict] | None, since: int) 
             "updated_at": max(
                 [a.get("updated_at") or 0] + [s.get("updated_at") or 0 for s in members]
             ),
-            "cost_usd": (a.get("cost_usd") or 0.0) if a else sum(cost(s["usage"]) for s in members),
-            "models": {m: c or 0.0 for m, c in (a.get("models") or {}).items()},
+            "cost_usd": a.get("cost_usd") if a else sum(cost(s["usage"]) for s in members),
+            "models": a.get("models") or {},
         }
         if sessions is not None:
             row.update(
@@ -332,7 +340,7 @@ def trees_of(api_sessions: list[dict], sessions: list[dict] | None, since: int) 
                 agent=root.get("agent") or "",
                 workspace=root.get("workspace") or "",
                 status=root.get("live_status") or "",
-                root_cost_usd=cost(root.get("usage") or {}),
+                root_cost_usd=(root.get("usage") or {}).get("cost_usd"),
                 subagents=len(children),
                 nested_codex=sum(1 for s in children if s.get("sub_agent_name") == "Codex"),
                 items=sum(s.get("items") or 0 for s in members),
@@ -344,7 +352,7 @@ def trees_of(api_sessions: list[dict], sessions: list[dict] | None, since: int) 
                 ),
             )
         rows.append(row)
-    return sorted(rows, key=lambda r: -r["cost_usd"])
+    return sorted(rows, key=lambda r: -num(r["cost_usd"]))
 
 
 def flags_of(db: dict, trees: list[dict], since: int) -> list[str]:
@@ -354,7 +362,7 @@ def flags_of(db: dict, trees: list[dict], since: int) -> list[str]:
         if t["subagents"] >= SUBAGENTS or t["nested_codex"] >= NESTED_CODEX:
             flags.append(
                 f"SUBAGENT_EXPLOSION {name}: {t['subagents']} sub-agents, {t['nested_codex']}"
-                f" nested Codex, ${t['cost_usd']:.2f}"
+                f" nested Codex, {usd(t['cost_usd'])}"
             )
         if t["late_verifiers"]:
             flags.append(
@@ -416,12 +424,13 @@ def build(
     if db:
         models = db.get("models") or models_of(db["sessions"])
     else:  # cost only: the API carries no tokens
-        totals: dict[str, float] = defaultdict(float)
+        totals: dict[str, float | None] = {}
         for t in trees:
             for m, c in t["models"].items():
-                totals[m] += c
+                if c is not None or m not in totals:
+                    totals[m] = None if c is None else num(totals.get(m)) + c
         models = [
-            {"model": m, "cost_usd": c} for m, c in sorted(totals.items(), key=lambda x: -x[1])
+            {"model": m, "cost_usd": c} for m, c in sorted(totals.items(), key=lambda x: -num(x[1]))
         ]
     if rate_limits is None:
         left_out.setdefault("Codex rate limits", "no Codex rollout with a rate-limit snapshot here")
@@ -572,7 +581,7 @@ def cloud_rows(r: dict) -> list[list[str]]:
 
 
 def daily_total(r: dict) -> float:
-    return sum(d["cost_usd"] or 0.0 for d in r["daily"])
+    return sum(num(d["cost_usd"]) for d in r["daily"])
 
 
 def text(r: dict) -> str:
@@ -686,11 +695,11 @@ def page(r: dict) -> str:
         )
         body.append(f"<p>Codex rate limits ({e(str(rl['timestamp']))}): {e(windows)}</p>")
     if r["daily"]:
-        top = max(d["cost_usd"] or 0.0 for d in r["daily"]) or 1
+        top = max(num(d["cost_usd"]) for d in r["daily"]) or 1
         body.append("<h2>Daily spend</h2><div class=bars>")
         for d in r["daily"]:
             body.append(
-                f"<span>{e(d['day'])}</span><div class=bar style='width:{100 * d['cost_usd'] / top:.1f}%'>"
+                f"<span>{e(d['day'])}</span><div class=bar style='width:{100 * num(d['cost_usd']) / top:.1f}%'>"
                 f"</div><span>{usd(d['cost_usd'])}</span>"
             )
         body.append("</div>")
