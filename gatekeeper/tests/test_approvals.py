@@ -2517,6 +2517,11 @@ def test_brief_fills_the_facts_from_the_pr_and_refuses_a_stale_proof(
         f"- Reviewed head: {HEAD}",
         "- Spec: #12",
         f"- Acceptance tests: uv run {os.path.relpath(SCRIPTS / 'acceptance.py')} 12",
+        "- Diff: not available here; run `git diff --stat <base> <head>`",
+        (
+            f"- Budget: {loop_script.TOOL_CALL_BUDGET} tool calls. Read the changed files above, not the tree; at the budget"
+            " stop, write the report with what you checked and what you did not, and say so on a `Budget:` line"
+        ),
         "- Report: tmp/loop/pr7-v3.md",
         f"- Previous report: tmp/loop/pr7-v2.md, on {earlier}: review the diff since that head and rerun its repros",
         f"- Proof log: {proof} (its first line is the head)",
@@ -2624,6 +2629,11 @@ def test_a_far_brief_names_the_verifier_host_s_paths_and_the_worktree_it_makes(
         (
             f"- Worktree: first, in /there/repo, run `git fetch origin pull/7/head` and"
             f" `git worktree add --detach {tree} {HEAD}`, then run every command of this brief in {tree}"
+        ),
+        "- Diff: not available here; run `git diff --stat <base> <head>`",
+        (
+            f"- Budget: {loop_script.TOOL_CALL_BUDGET} tool calls. Read the changed files above, not the tree; at the budget"
+            " stop, write the report with what you checked and what you did not, and say so on a `Budget:` line"
         ),
         "- Report: /there/repo/tmp/loop/pr7-v2.md",
         (

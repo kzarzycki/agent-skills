@@ -119,7 +119,7 @@ def test_verify_without_a_harness_still_runs_codex(checkout) -> None:  # noqa: F
     assert seen["cmd"][:2] == ["codex", "exec"] and posted == [
         cv.folded_report("final\nSATISFIED: yes\n")
     ]
-    assert seen["brief"].startswith("AGENT_SIGNATURE=codex/?/?\n")
+    assert seen["brief"].startswith("AGENT_SIGNATURE=codex/terra-6.1/med\n")
 
 
 def test_the_signature_names_a_claude_model_as_the_launcher_does() -> None:
