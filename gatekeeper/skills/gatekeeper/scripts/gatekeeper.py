@@ -6870,11 +6870,22 @@ def mark_base_red(named: list[dict[str, Any]], base: str) -> None:
 def ready_pulls(base: str) -> list[dict[str, Any]]:
     """Every open PR into `base` that is no draft, read in full: a bare land's candidates, for an outcome no judging
     reached (a held lock, a red base)."""
-    return [
-        pull_request(each["number"])
-        for each in open_pulls()
-        if each["baseRefName"] == base and not each["isDraft"]
-    ]
+    pulls = []
+    try:
+        listed = [
+            each["number"]
+            for each in open_pulls()
+            if each["baseRefName"] == base and not each["isDraft"]
+        ]
+    except Exception as exc:  # noqa: BLE001 -- no list of candidates, no lines
+        print(f"no outcome lines: {stderr_of(exc)}", file=sys.stderr)
+        return []
+    for number in listed:
+        try:
+            pulls.append(pull_request(number))
+        except Exception as exc:  # noqa: BLE001 -- one PR that can't be read leaves the others their lines
+            print(f"PR #{number}: no outcome line: {stderr_of(exc)}", file=sys.stderr)
+    return pulls
 
 
 def mark_unjudged(pr: int | Sequence[int] | None) -> None:
@@ -6885,7 +6896,7 @@ def mark_unjudged(pr: int | Sequence[int] | None) -> None:
     if not pulls:
         try:
             pulls = {pull["number"]: pull for pull in ready_pulls(default_branch())}
-        except Exception as exc:  # noqa: BLE001 -- no list of candidates, no lines
+        except Exception as exc:  # noqa: BLE001 -- the default branch can't be read: no lines
             print(f"no outcome lines: {stderr_of(exc)}", file=sys.stderr)
     for number, pull in pulls.items():
         if number in OUTCOMES:

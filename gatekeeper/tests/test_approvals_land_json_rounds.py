@@ -11,6 +11,7 @@ from approvals_harness import (
     approvals,
     lands,  # noqa: F401
 )
+from test_approvals import lock_commit
 from test_approvals_batch_wait import (  # noqa: F401
     Clock,
     check,
@@ -122,18 +123,26 @@ def test_a_queue_merged_pr_names_the_landed_comment_it_posted(
     )
 
 
-def test_a_failed_label_write_keeps_the_bare_candidate_in_the_lines(
+def test_a_failed_label_write_keeps_the_candidate_already_judged_when_github_cannot_list_again(
     queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     head = queue["opened"](7)
     original = approvals.label
+    listing, listed = approvals.open_pulls, []
 
     def refused(number: int, name: str, *, add: bool) -> None:
         if name == approvals.QUEUED and add:
             raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403: label refused")
         return original(number, name, add=add)
 
+    def once() -> Any:
+        listed.append(1)
+        if len(listed) > 1:  # the fallback's own listing
+            raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: listing failed")
+        return listing()
+
     monkeypatch.setattr(approvals, "label", refused)
+    monkeypatch.setattr(approvals, "open_pulls", once)
     code, lines = queue["land"]("--json")
     assert code == 1, lines
     found = line_of(lines, 7)
@@ -158,3 +167,47 @@ def test_an_error_before_any_candidate_is_judged_names_every_ready_pr_of_a_bare_
         (7, seven, "github"),
         (8, eight, "github"),
     ]
+
+
+def test_one_unreadable_pr_leaves_the_others_their_lines_after_an_error_ends_a_bare_land(
+    queue: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seven = queue["opened"](7)
+    queue["opened"](8)
+
+    def refused(*_args: Any, **_kwargs: Any) -> None:
+        raise approvals.Refused("signing is not possible here")
+
+    monkeypatch.setattr(approvals, "signed", refused)
+    original = approvals.pull_request
+
+    def read(number: int) -> Any:
+        if number == 8:
+            raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: PR read failed")
+        return original(number)
+
+    monkeypatch.setattr(approvals, "pull_request", read)
+    code, lines = queue["land"]("--json")
+    assert code == 1, lines
+    found = line_of(lines, 7)
+    assert (found["head"], found["cause"]) == (seven, "github")
+
+
+def test_one_unreadable_pr_leaves_the_others_their_lines_behind_a_held_lock(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seven = lands["open"](7, {"7.txt": "7\n"})
+    lands["open"](8, {"8.txt": "8\n"})
+    lock_commit(lands, 10 * 60)
+    original = approvals.pull_request
+
+    def read(number: int) -> Any:
+        if number == 8:
+            raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 502: PR read failed")
+        return original(number)
+
+    monkeypatch.setattr(approvals, "pull_request", read)
+    code, lines = lands["land"]("--json")
+    assert code == approvals.WAITING, lines
+    found = line_of(lines, 7)
+    assert (found["head"], found["state"], found["cause"]) == (seven, "waiting", "lock")
