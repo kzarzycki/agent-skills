@@ -95,7 +95,9 @@ def test_a_detached_head_whose_own_policy_names_another_remote_still_uses_origin
 
 
 @pytest.mark.parametrize("remotes", ["origin\n", ""])
-def test_a_checkout_with_only_origin_asks_git_for_its_remotes_and_nothing_else(remotes: str) -> None:
+def test_a_checkout_with_only_origin_asks_git_for_its_remotes_and_nothing_else(
+    remotes: str,
+) -> None:
     """Every rule ends in `origin` there, so the five other git calls it saved are never made (#1400)."""
     asked: list[tuple[str, ...]] = []
 
