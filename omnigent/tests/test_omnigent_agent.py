@@ -6269,7 +6269,16 @@ def test_a_prompt_still_pending_after_the_confirm_wait_is_posted_to_the_owner_on
         before.append(len(posted(og)))
         offset[0] = at[poll]
 
-    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        5,
+        later,
+        notify="cos",
+        console=True,
+        decisions=steward_board(tmp_path),
+    )
     assert before == [0, 0, 0, 1]
     [post] = posted(og)
     assert "[owner] a t-a: blocked on a prompt: e1: Bash(ls) (an approval prompt" in post
@@ -6292,7 +6301,16 @@ def test_a_new_prompt_id_restarts_the_confirm_wait(
         offset[0] = at[poll]
         og.snap = blocked_on("e2")
 
-    supervised(og, registry, monkeypatch, 5, later, notify="cos", console=True)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        5,
+        later,
+        notify="cos",
+        console=True,
+        decisions=steward_board(tmp_path),
+    )
     assert before == [0, 0, 0, 1]  # e2's wait, not e1's, which would have passed by poll 3
     assert len(posted(og)) == 1
 
@@ -8523,7 +8541,13 @@ ROUTES = [
         None,
         ("rule", "act"),
     ),
-    ("approval prompt", {"kind": "blocked"}, None, ("rule", "owner")),
+    (
+        "approval prompt, steward mode on",
+        {"kind": "blocked", "steward": True},
+        None,
+        ("rule", "owner"),
+    ),
+    ("approval prompt, steward mode off", {"kind": "blocked"}, None, ("rule", "record")),
     ("question", {"kind": "blocked", "question": True}, None, ("rule", "act")),
     (
         "owed report, outcome",
@@ -8558,7 +8582,10 @@ def test_each_row_of_the_routing_table_settles_its_event(
 
 @pytest.mark.parametrize("answer", ["none", "act", "owner"])
 def test_no_model_answer_routes_an_approval_prompt_anywhere_but_the_owner(answer: str) -> None:
-    for event in ({"kind": "blocked"}, {"kind": "terminal", "line": "a: blocked on a prompt: x"}):
+    for event in (
+        {"kind": "blocked", "steward": True},
+        {"kind": "terminal", "line": "a: blocked on a prompt: x"},
+    ):
         assert omnigent_agent.route(event, lambda: (answer, "x"))[1] == "owner"
 
 
@@ -9164,7 +9191,16 @@ def test_twenty_events_in_a_minute_make_one_post_then_one_combined_post_with_eve
             waiting.extend(line["status.line"] for s, line in og.labels if s == "cos")
             offset[0] = 301.0
 
-    supervised(og, registry, monkeypatch, 21, later, notify="cos", console=True)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        21,
+        later,
+        notify="cos",
+        console=True,
+        decisions=steward_board(tmp_path),
+    )
     first, combined = posted(og)
     assert first.startswith("Supervisor [owner] b-") and "1 event\n" in first
     assert combined.startswith("Supervisor [owner] b-") and "19 events\n" in combined
@@ -10638,6 +10674,13 @@ def test_a_new_instruction_to_an_idle_lead_starts_a_new_progress_chain(
     og.snap = {"status": "running"}  # the relay woke it
     supervised(og, registry, monkeypatch, 1, notify="cos", console=True, fyi="post")
     assert bool(deadlines(registry)) is deadline
+
+
+def steward_board(tmp_path: Path) -> Path:
+    """A standing-decisions file with steward mode on, where an approval prompt or a waiting card still posts (#2824)."""
+    board = tmp_path / "steward-board.md"
+    board.write_text("- **Steward mode**: **ON**, the chief of staff answers in the owner's name\n")
+    return board
 
 
 def typed(text: str, n: int, **extra: object) -> dict:
@@ -13275,7 +13318,16 @@ def owner_posts_for(
         offset[0] = poll * 400.0
         og.snap = prompt(poll) if poll < len(previews) else {"status": "running"}
 
-    supervised(og, registry, monkeypatch, len(previews) + 1, later, notify="cos", console=True)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        len(previews) + 1,
+        later,
+        notify="cos",
+        console=True,
+        decisions=steward_board(tmp_path),
+    )
     return posted(og)
 
 
@@ -13340,7 +13392,16 @@ def owner_routes(
         else:
             og.snap = {"status": "running"}
 
-    supervised(og, registry, monkeypatch, len(looks) + 1, later, notify="cos", console=True)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        len(looks) + 1,
+        later,
+        notify="cos",
+        console=True,
+        decisions=steward_board(tmp_path),
+    )
     return [re.match(r"Supervisor \[(\w+)\]", p).group(1) for p in posted(og)]  # type: ignore[union-attr]
 
 
