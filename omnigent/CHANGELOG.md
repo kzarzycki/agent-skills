@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.24 - 2026-11-27
+
+- omnigent-agents: `reap --merged --pr N` (started by `land`) spares its caller and every session whose `omni.role` is a lead or manager, and still finishes the PR's workers and role-less children (#2794).
+
 ## 0.1.23 - 2026-11-26
 
 - omnigent-agents: `start` passes a model unchecked when the host answers its model-options call with HTTP 501 (a current Omnigent host on an ACP harness such as `claude-cloud`), as it did for the older "unsupported for harness" text (#2797).
