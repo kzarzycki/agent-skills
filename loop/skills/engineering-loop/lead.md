@@ -233,10 +233,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    worktree for it, `wait --verdict` copies its report to your `tmp/loop/`, and a check that
    host can't run comes back as a proof-run question as above.
    **Verifier route.** The setup's default verifier is its values file's `verifier:` block (`route`, `model`,
-   `fallback`: chief-of-staff's `cos_values.py` checks it), which a verifier start with no `--verifier-route` or
+   `fallback`: the setup's `cos_values.py` checks it), which a verifier start with no `--verifier-route` or
    `--model` reads and prints; `$COS_VALUES` names the file, and the flags and `$OMNIGENT_VERIFIER_ROUTE`
    override it. With no block, Codex is the default whenever it has quota. When the default refuses (the quota error
-   text goes to the owner at once), `--verifier-route gemini|claude` on the same verifier start, or
+   text goes to the owner at once), `--verifier-route <route>` on the same verifier start, or
    `$OMNIGENT_VERIFIER_ROUTE`, picks the next route in the block's `fallback` order (else `gemini`, then `claude`), with the same brief, report format and `verdict` post:
    `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode (a lead in a cloud VM can't start it, since the VM has no Omnigent server route: it asks its coordinator to start the Gemini verifier, and `start` refuses at once from the cloud), with the setting's model, else one
    from that host's `agy models` (verifier.md's `Verifier:` line names it as

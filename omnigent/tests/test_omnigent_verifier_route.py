@@ -544,7 +544,10 @@ def test_setting_route_and_model_start_agy_on_that_model_without_flags(
 ) -> None:
     created = verifier_start(tmp_path, monkeypatch, role_file, SETTING)
     assert created == [("antigravity-native-ui", "setup-model-x")]
-    assert "verifier route: gemini, model: setup-model-x" in capsys.readouterr().err
+    assert (
+        "verifier route: gemini (from setup values file), model: setup-model-x"
+        in capsys.readouterr().err
+    )
 
 
 def test_no_setting_keeps_the_codex_default(
@@ -596,8 +599,6 @@ def test_verifier_setting_reads_the_block_named_by_cos_values(
     )
     monkeypatch.setenv("COS_VALUES", str(f))
     assert omnigent_agent.verifier_setting() == {"route": "gemini", "fallback": ["codex", "claude"]}
-    monkeypatch.setenv("COS_VALUES", str(tmp_path / "missing.yml"))
-    assert omnigent_agent.verifier_setting() == {}
 
 
 def test_lead_md_names_no_verifier_model_and_points_to_the_setting() -> None:
@@ -605,3 +606,32 @@ def test_lead_md_names_no_verifier_model_and_points_to_the_setting() -> None:
     para = text[text.index("**Verifier route.**") :].split("Triage every finding")[0]
     assert "gemini-" not in para and "agy models" in para
     assert "`verifier:` block" in para and "values file" in para
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "verifier:\n  route: gemini\n  model: m\n  fallback:\n    - codex\n    - claude\n",
+        "verifier:\n  route: gemini\n# a comment at column 0\n  model: m\n  fallback: [codex, claude]\n",
+        "verifier: {route: gemini, model: m, fallback: [codex, claude]}\n",
+    ],
+)
+def test_verifier_setting_reads_every_form_the_values_checker_accepts(
+    block: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    f = tmp_path / "v.yml"
+    f.write_text(block)
+    monkeypatch.setenv("COS_VALUES", str(f))
+    assert omnigent_agent.verifier_setting() == {
+        "route": "gemini",
+        "model": "m",
+        "fallback": ["codex", "claude"],
+    }
+
+
+def test_a_cos_values_that_names_a_missing_file_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COS_VALUES", str(tmp_path / "missing.yml"))
+    with pytest.raises(omnigent_agent.Fail, match="COS_VALUES names"):
+        omnigent_agent.verifier_setting()

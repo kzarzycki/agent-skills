@@ -8424,35 +8424,65 @@ def record_collected(og: Omnigent, sid: str, report: Path, pr: int, far: bool) -
 
 
 def verifier_setting() -> dict[str, Any]:
-    """The setup's default verifier, the `verifier:` block (`route`, `model`, `fallback`) of its values file
-    (chief-of-staff's `cos_values.py` owns the schema and checks it): `$COS_VALUES`, else `cos-values.yml` in the
-    current folder. Empty where there is no file or no block, so the pack's own order holds (#2840). Read with the
-    standard library only, since this script runs without PyYAML: a scalar or a `[a, b]` list per line."""
+    """The setup's default verifier, the `verifier:` block (`route`, `model`, `fallback`) of its values file (the
+    setup's own checker, `cos_values.py`, owns the schema): `$COS_VALUES`, else `cos-values.yml` in the current
+    folder. Empty where the folder has no file or the file no block, so the pack's own order holds (#2840). A
+    `$COS_VALUES` that names a file that can't be read is refused, as the checker does, since a broken variable is
+    no "no setting". Read with the standard library only, since this script runs without PyYAML: the block in its
+    block or flow form, `fallback` as a `[a, b]` list or a `- a` list."""
     named = os.environ.get(VALUES_ENV)
     path = Path(named).expanduser() if named else Path(VALUES_FILE)
     try:
         lines = path.read_text().splitlines()
-    except OSError:
+    except OSError as e:
+        if named:
+            raise Fail(f"${VALUES_ENV} names {path}, which can't be read: {e.strerror or e}") from e
         return {}
+
+    def scalar(text: str) -> str:
+        return text.strip().strip("'\"")
+
+    def put(setting: dict[str, Any], key: str, value: str) -> None:
+        if key == "fallback":
+            setting[key] = [scalar(x) for x in value.strip().strip("[]").split(",") if x.strip()]
+        elif key in ("route", "model") and scalar(value):
+            setting[key] = scalar(value)
+
     setting: dict[str, Any] = {}
     inside = False
     for raw in lines:
-        line = raw.split(" #")[0].rstrip()
-        if not line.strip():
+        if not raw.strip() or raw.lstrip().startswith("#"):
             continue
+        text = raw.split(" #")[0].strip()
         if not raw.startswith((" ", "\t")):
-            inside = line.strip() == "verifier:"
+            inside = False
+            key, _, rest = text.partition(":")
+            if key != "verifier":
+                continue
+            rest = rest.strip()
+            if rest.startswith("{"):  # {route: gemini, model: m, fallback: [codex, claude]}
+                depth, part, parts = 0, "", []
+                for ch in rest.strip("{}"):
+                    depth += ch == "["
+                    depth -= ch == "]"
+                    if ch == "," and depth == 0:
+                        parts.append(part)
+                        part = ""
+                    else:
+                        part += ch
+                for item in [*parts, part]:
+                    k, _, v = item.strip().partition(":")
+                    put(setting, k.strip(), v)
+            else:
+                inside = not rest
             continue
-        if not inside or ":" not in line:
+        if not inside:
             continue
-        key, _, value = line.strip().partition(":")
-        value = value.strip().strip("'\"")
-        if key == "fallback":
-            setting[key] = [
-                x.strip().strip("'\"") for x in value.strip("[]").split(",") if x.strip()
-            ]
-        elif key in ("route", "model") and value:
-            setting[key] = value
+        if text.startswith("-") and "fallback" in setting:
+            setting["fallback"].append(scalar(text[1:]))
+        elif ":" in text:
+            key, _, value = text.partition(":")
+            put(setting, key.strip(), value)
     return setting
 
 
@@ -13618,6 +13648,15 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 )
             setting = verifier_setting() if verifier else {}
             # the flag, then $OMNIGENT_VERIFIER_ROUTE, then the setup's setting, then Codex
+            source = (
+                "flag"
+                if args.verifier_route
+                else "$OMNIGENT_VERIFIER_ROUTE"
+                if os.environ.get("OMNIGENT_VERIFIER_ROUTE")
+                else "setup values file"
+                if setting.get("route")
+                else "default"
+            )
             args.verifier_route = (
                 args.verifier_route
                 or os.environ.get("OMNIGENT_VERIFIER_ROUTE")
@@ -13634,7 +13673,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 args.model = setting.get("model")
             if verifier:
                 print(
-                    f"verifier route: {args.verifier_route}, model: {args.model or 'the agent default'}"
+                    f"verifier route: {args.verifier_route} (from {source}), model: {args.model or 'the agent default'}"
                     + (
                         f" (setup fallback: {', '.join(setting['fallback'])})"
                         if setting.get("fallback")
