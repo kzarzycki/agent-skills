@@ -157,6 +157,25 @@ def test_all_skips_a_known_red_check_naming_its_issue_and_a_named_issue_runs_it(
     assert acceptance(repo, "6").returncode == 1
 
 
+def test_a_skip_marker_without_an_issue_link_is_not_honoured_and_skips_are_counted(
+    repo: Path,
+) -> None:
+    """The verifier's F1 and F2 (#2811): a known-red check hides only behind its linked issue, and `TOTAL` counts
+    what was skipped, so passed + failed + skipped is every script found."""
+    check(repo, "acceptance/5/01-ok.sh", PASSING)
+    check(repo, "acceptance/6/nolink.sh", "#!/bin/sh\n# acceptance: skip\nexit 3\n")
+    check(
+        repo,
+        "acceptance/7/linked.sh",
+        "#!/bin/sh\n# acceptance: skip https://example.test/i/1\nexit 3\n",
+    )
+    check(repo, "acceptance/8/live.sh", "#!/bin/sh\n# acceptance: live\nexit 3\n")
+    result = acceptance(repo, "--all")
+    assert result.returncode == 1  # the unlinked skip ran, and failed
+    assert verdicts(result.stdout) == ["PASS acceptance/5/01-ok.sh", "FAIL acceptance/6/nolink.sh"]
+    assert "TOTAL 2 checks, 1 passed, 1 failed, 2 skipped" in result.stdout
+
+
 def test_all_exits_0_when_every_folder_passes(repo: Path) -> None:
     check(repo, "acceptance/9/ok.sh", PASSING)
     check(repo, "acceptance/10/ok.sh", PASSING)

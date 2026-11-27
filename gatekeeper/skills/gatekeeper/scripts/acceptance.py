@@ -24,7 +24,8 @@ says `# acceptance: skip <issue link>` is known red with its issue linked; `--al
 
 A file that cannot be started (no shebang, say) is a FAIL with the reason. `--all` runs every
 `acceptance/*/` folder in issue order, for the nightly. The last line is the total:
-`TOTAL <n> checks, <passed> passed, <failed> failed (<s>s)`.
+`TOTAL <n> checks, <passed> passed, <failed> failed, <k> skipped (<s>s)`, the `--all` run's SKIP lines counted in
+`<k>` (a `skip` marker with no issue linked is not honoured: that check runs).
 
 The budget: one spec's run should finish within 10 min and the `--all` run within 90 min, or the
 minutes loop.md sets with `Acceptance budget: <spec minutes>, <nightly minutes>`. Over it, one more
@@ -109,11 +110,10 @@ def skipped(check: Path) -> str | None:
         return None
     if not found:
         return None
-    return (
-        "needs a live environment"
-        if found[1].lower() == "live"
-        else f"known red, tracked in {found[2] or 'no issue linked'}"
-    )
+    if found[1].lower() == "live":
+        return "needs a live environment"
+    # a `skip` with no issue linked is not honoured: the check runs, so a known-red check is never hidden
+    return f"known red, tracked in {found[2]}" if found[2] else None
 
 
 def issue_order(folder: Path) -> tuple[int, int, str]:
@@ -175,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     started = time.monotonic()
-    passed = failed = 0
+    passed = failed = skips = 0
     empty = []
     for folder in folders:
         found = checks(folder)
@@ -185,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.all:
             for check in (c for c in found if skipped(c)):
                 print(f"SKIP {check.relative_to(root).as_posix()} ({skipped(check)})", flush=True)
+                skips += 1
             found = [c for c in found if not skipped(c)]
         for check in found:
             if run(check, root):
@@ -193,7 +194,9 @@ def main(argv: list[str] | None = None) -> int:
                 failed += 1
     seconds = time.monotonic() - started
 
-    print(f"TOTAL {passed + failed} checks, {passed} passed, {failed} failed ({seconds:.1f}s)")
+    print(
+        f"TOTAL {passed + failed} checks, {passed} passed, {failed} failed, {skips} skipped ({seconds:.1f}s)"
+    )
     spec_minutes, nightly_minutes = budget(root)
     minutes = nightly_minutes if args.all else spec_minutes
     if seconds > minutes * 60:
