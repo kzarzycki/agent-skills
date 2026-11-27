@@ -76,7 +76,7 @@ def test_claude_route_start_on_the_author_s_own_model_starts_a_child(
 def test_signature_names_agy() -> None:
     assert (
         omnigent_agent.signature("antigravity-native", "gemini-4-hydrogen-medium", None)
-        == "agy/gemini-4-hydrogen-medium/?"
+        == "agy/gemini-4-hydrogen-medium/med"
     )
 
 
@@ -114,6 +114,7 @@ def test_gemini_route_on_the_callers_own_host_starts_a_child(
     (tmp_path / "b.md").write_text("review")
     argv = ["start", "codex", "t", "b.md", str(tmp_path / "r.md")]
     argv += ["--role", role_file("verifier.md"), "--verifier-route", "gemini", "--host", "host"]
+    argv += ["--model", "gemini-4-hydrogen-medium"]  # an id that carries agy's effort
     assert omnigent_agent.main(argv) == 0
     assert list(og.sessions) == ["s0"]
 
@@ -263,6 +264,7 @@ def test_verifier_start_reads_a_remote_workspace_head_through_a_session_there(
     def start(head: str, name: str) -> int:
         (tmp_path / "b.md").write_text(f"- Reviewed head: {head}\n")
         argv = ["start", "codex", name, "b.md", "/there/r.md", "--role", role_file("verifier.md")]
+        argv += ["--effort", "medium"]  # a far host's config is not readable from here (#2838)
         return omnigent_agent.main(
             [*argv, "--top-level", "--host", "kris", "--workspace", "/there"]
         )
@@ -323,6 +325,8 @@ def test_env_route_on_a_verifier_start_routes_to_agy(
         "h",
         "--workspace",
         "/w",
+        "--model",
+        "gemini-4-hydrogen-medium",
     ]
     assert omnigent_agent.main(argv) == 0
     assert agents == ["antigravity-native-ui"]
@@ -428,6 +432,7 @@ def test_gemini_route_run_records_its_verdict_like_every_route(
     argv = ["run", "codex", "t", "b.md", str(tmp_path / "r.md"), "--confirm-seconds", "0"]
     argv += ["--role", role_file("verifier.md"), "--pr", "7"]
     argv += ["--verifier-route", "gemini", "--host", "host"]
+    argv += ["--model", "gemini-4-hydrogen-medium"]
     assert omnigent_agent.main(argv) == 0
     assert calls.read_text() == f"record verdict 7 {tmp_path / 'r.md'}"
 
@@ -508,7 +513,7 @@ def verifier_start(
     og.filesystem = lambda sid, path, method, body=None: None  # type: ignore[attr-defined]
     models = og.models
     og.models = lambda agent, host_id=None: (  # type: ignore[method-assign]
-        ["setup-model-x", "flag-model-y"]
+        ["setup-model-medium", "flag-model-high"]
         if agent == "antigravity-native-ui"
         else models(agent, host_id)
     )
@@ -528,12 +533,16 @@ def verifier_start(
     report = "/w/r.md" if host else str(tmp_path / "r.md")
     argv = ["start", "codex", "t", "b.md", report, "--role", role_file("x/verifier.md")]
     argv += ["--top-level", "--workspace", "/w", "--host", "h"] if host else []
+    if host and "gemini" not in (
+        values or ""
+    ):  # a far host's codex config is not readable from here (#2838)
+        argv += ["--effort", "medium"]
     argv += extra or []
     assert omnigent_agent.main(argv) == 0
     return created
 
 
-SETTING = "verifier:\n  route: gemini\n  model: setup-model-x\n  fallback: [codex, claude]\n"
+SETTING = "verifier:\n  route: gemini\n  model: setup-model-medium\n  fallback: [codex, claude]\n"
 
 
 def test_setting_route_and_model_start_agy_on_that_model_without_flags(
@@ -543,9 +552,9 @@ def test_setting_route_and_model_start_agy_on_that_model_without_flags(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     created = verifier_start(tmp_path, monkeypatch, role_file, SETTING)
-    assert created == [("antigravity-native-ui", "setup-model-x")]
+    assert created == [("antigravity-native-ui", "setup-model-medium")]
     assert (
-        "verifier route: gemini (from setup values file), model: setup-model-x"
+        "verifier route: gemini (from setup values file), model: setup-model-medium"
         in capsys.readouterr().err
     )
 
@@ -565,14 +574,18 @@ def test_flags_and_the_variable_override_the_setting(
     created = verifier_start(
         tmp_path, monkeypatch, role_file, SETTING, ["--verifier-route", "claude"], host=False
     )
-    assert [a for a, _ in created] == ["claude"] and created[0][1] != "setup-model-x"
+    assert [a for a, _ in created] == ["claude"] and created[0][1] != "setup-model-medium"
     # a flag model on the setting's route
-    created = verifier_start(tmp_path, monkeypatch, role_file, SETTING, ["--model", "flag-model-y"])
-    assert created == [("antigravity-native-ui", "flag-model-y")]
+    created = verifier_start(
+        tmp_path, monkeypatch, role_file, SETTING, ["--model", "flag-model-high"]
+    )
+    assert created == [("antigravity-native-ui", "flag-model-high")]
     # the variable outranks the setting's route, and the setting's model goes with the setting's route
     monkeypatch.setenv("OMNIGENT_VERIFIER_ROUTE", "codex")
     monkeypatch.setattr(
-        omnigent_agent, "verifier_setting", lambda: {"route": "gemini", "model": "setup-model-x"}
+        omnigent_agent,
+        "verifier_setting",
+        lambda: {"route": "gemini", "model": "setup-model-medium"},
     )
     og = FakeOmnigent()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
@@ -587,7 +600,7 @@ def test_flags_and_the_variable_override_the_setting(
         role_file("x/verifier.md"),
     ]
     assert omnigent_agent.main(argv) == 0
-    assert og.overrides["s0"] != "setup-model-x"
+    assert og.overrides["s0"] != "setup-model-medium"
 
 
 def test_verifier_setting_reads_the_block_named_by_cos_values(

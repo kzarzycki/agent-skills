@@ -94,6 +94,7 @@ class FakeOmnigent:
             "claude-sonnet-5-5",
             "gpt-6.1-sol",
             "gpt-6.1-terra",
+            "gemini-4-hydrogen-medium",
         ]
         self.overrides: dict[str, str | None] = {}  # the model_override each session took
         self.efforts: dict[str, str | None] = {}  # the reasoning_effort each session took
@@ -389,10 +390,10 @@ def test_start_sends_preamble_and_confirms(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("agent", "model", "env", "expected"),
     [
-        ("claude", "claude-sonnet-5-5", None, "cc/sonnet-5.5/?"),
-        ("codex", "gpt-6.1-terra", None, "codex/terra-6.1/?"),
-        ("codex", None, "gpt-6.1-sol", "codex/sol-6.1/?"),
-        ("claude", None, None, "cc/?/?"),
+        ("claude", "claude-sonnet-5-5", None, "cc/sonnet-5.5/high"),
+        ("codex", "gpt-6.1-terra", None, "codex/terra-6.1/med"),
+        ("codex", None, "gpt-6.1-sol", "codex/sol-6.1/med"),
+        ("claude", None, None, "cc/?/high"),
     ],
 )
 def test_start_gives_the_child_its_signature_from_what_it_passes(
@@ -497,7 +498,7 @@ def test_the_brief_signs_with_the_model_the_session_took_not_the_one_asked(tmp_p
     omnigent_agent.start(
         og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model="gpt-6.1-terra"
     )
-    assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=codex/?/?\n")
+    assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=codex/?/med\n")
 
 
 RELAY_RULE = (
@@ -2345,7 +2346,7 @@ def test_start_takes_the_effort_from_omnigent_effort_agent_unless_one_is_given(
     assert [(tmp_path / f"{n}.md.brief").read_text().split("\n")[0] for n in "abc"] == [
         "AGENT_SIGNATURE=codex/?/high",
         "AGENT_SIGNATURE=codex/?/low",
-        "AGENT_SIGNATURE=codex/?/?",
+        "AGENT_SIGNATURE=codex/?/med",
     ]
 
 
@@ -3658,7 +3659,7 @@ def test_without_top_level_the_create_body_and_brief_are_unchanged(
     lock = f"LOOP_HEAVY_LOCK={tmp_path / 'engineering-loop/heavy-coord.lock'}\n"
     assert (
         tmp_path / "r.md.brief"
-    ).read_text() == "AGENT_SIGNATURE=cc/?/?\n" + lock + DEFAULT_PREAMBLE.format(
+    ).read_text() == "AGENT_SIGNATURE=cc/?/high\n" + lock + DEFAULT_PREAMBLE.format(
         report=tmp_path / "r.md", role="Your role file is roles/worker.md; read it first.\n"
     ).removesuffix("\n") + omnigent_agent.HOST_RUN_NOTE + "\n" + "do X"  # a host child (#1233)
     assert og.top_level == [False] and og.roles == ["roles/worker.md"]
@@ -3742,7 +3743,7 @@ def test_a_top_level_start_has_no_parent_and_the_lead_preamble(
     text = (tmp_path / "r.md.brief").read_text()
     assert (
         text
-        == f"AGENT_SIGNATURE=cc/?/?\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/{sid}\n"
+        == f"AGENT_SIGNATURE=cc/?/high\nOMNIGENT_SESSION_LINK=https://omnigent.test/c/{sid}\n"
         + omnigent_agent.LEAD_PREAMBLE.format(report=tmp_path / "r.md", role="")
         + "do X"
     )
@@ -10293,6 +10294,7 @@ def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
         "verifier.md",
         0,
         permission_mode="bypassPermissions",
+        model="gemini-4-hydrogen-medium",
     )
     calls = _agent_server(
         monkeypatch,
@@ -12774,6 +12776,7 @@ def far_verifier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hosts: str) ->
 VERIFY_FAR = ["start", "claude", "v", "b.md", "/there/repo/tmp/loop/pr7-v1.md", "--top-level"]
 VERIFY_FAR += ["--host", "mac", "--pr", "7", "--role", str(VERIFIER_MD)]
 VERIFY_FAR += ["--workspace", "/there/repo", "--confirm-seconds", "0"]
+VERIFY_FAR += ["--effort", "high"]  # a far host's harness config is not readable from here (#2838)
 
 
 def test_a_cloud_pr_start_on_another_host_says_its_launch_dir_head_is_not_moved(
@@ -12933,6 +12936,9 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     worker[worker.index(str(VERIFIER_MD))] = str(VERIFIER_MD.with_name("worker.md"))
     worker[worker.index("--pr") : worker.index("--pr") + 2] = []
     worker[1] = "w"
+    del worker[
+        worker.index("--effort") : worker.index("--effort") + 2
+    ]  # an unregistered agent takes none
     assert omnigent_agent.main(worker) == 1
     err = capsys.readouterr().err
     assert "is in use on host mac by live session" in err and "L lead" in err
@@ -12940,6 +12946,7 @@ def test_a_far_verifier_starts_on_a_clone_other_sessions_hold_and_others_are_sti
     here[here.index("mac")] = "h"
     here[here.index("/there/repo")] = str(tmp_path)
     here[1], here[4] = "u", str(tmp_path / "tmp/loop/pr7-v1.md")
+    del here[here.index("--effort") : here.index("--effort") + 2]
     assert omnigent_agent.main(here) == 1
     err = capsys.readouterr().err
     assert "is in use on host h by live session" in err and "M lead" in err
@@ -14762,7 +14769,15 @@ def test_brief_prints_the_body_the_start_command_sends_with_pr(
     argv = ["b.md", "r.md", "--role", role_file(role), "--pr", "7"]
     assert (
         omnigent_agent.main(
-            ["start", agent, "t", *argv, *(["--same-family"] if role == "verifier.md" else [])]
+            [
+                "start",
+                agent,
+                "t",
+                *argv,
+                "--effort",
+                "high",
+                *(["--same-family"] if role == "verifier.md" else []),
+            ]
         )
         == 0
     )
