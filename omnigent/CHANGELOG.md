@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.32 - 2026-11-27
+
+- `supervise --console` stops posting the owner's own conversations to the chief of staff: a followed session the owner writes in is marked `direct` once (`direct <session> --off` holds until a newer owner message), `[Message from session` counts as a session's post (so `reap` no longer reads it as the owner talking), and an approval prompt or a card open past 4 h is recorded, not posted, unless a `- **Steward mode` bullet in the standing decisions holds `**ON` (#2824).
+
 ## 0.1.31 - 2026-11-27
 
 - `reap` releases a session whose PR label names an issue once that issue is closed: `pr_hold()` reads the issues endpoint, which answers for issues and PRs alike, instead of `gh pr view`, which fails on an issue number and so kept the session for good. An open issue or PR and a failed read still hold it (#2823).
