@@ -503,9 +503,12 @@ gatekeeper.md's policy (Settings) holds:
   for byte needs no such commit, and may rename what the tag renames: a cloud worker's
   `noreply@anthropic.com` is another person's account on GitHub, so its commits name who
   pushed nothing. Such a PR whose `apm.yml`
-  changes only its pack dependency's `ref:` line, to a release, the rest being the lock and generated
+  changes only `ref:` lines of dependencies on this repository's packs (`kzarzycki/agent-skills/<pack>`:
+  `engineering`, `gatekeeper`, `omnigent`, `loop` and the rest), one or several in one bump, each to a
+  release of its own pack (a version, or the pack's tag `<pack>-vX.Y.Z` or its `-next` tag
+  `<pack>-vX.Y.Z-next`, never a branch or a commit), the rest being the lock and generated
   files `paths` covers, is a pack bump: its issue's spec needs no approval, since the
-  release it pins was reviewed and tagged. Name the pack bump's section by the branch
+  releases it pins were reviewed and tagged. The verifier still reviews it. Name the pack bump's section by the branch
   `claude/ready-pack-bump-<tag>`, which a cloud session may push. A PR labelled
   `verify` (a major update) needs the review either way. Without the section, every PR needs
   one.
