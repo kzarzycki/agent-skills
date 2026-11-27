@@ -283,3 +283,59 @@ def test_a_sibling_release_alone_is_updated_and_committed(world):
         check=True,
     ).stdout
     assert "compare/loop-v1.0.0...loop-v1.1.0" in msg
+
+
+def _tags(w, *tags):
+    for t in tags:
+        sh(w["remote"], "git", "tag", t)
+
+
+def _pin(w, *refs):
+    deps = "".join(f"  - git: acme/pack/{r.split('-v')[0]}\n    ref: {r}\n" for r in refs)
+    (w["repo"] / "apm.yml").write_text("dependencies:\n  apm:\n" + deps)
+    sh(w["repo"], "git", "commit", "-qam", "pins")
+
+
+def _refs(w):
+    return (w["repo"] / "apm.yml").read_text()
+
+
+def test_a_next_pin_moves_up_past_an_older_stable_tag(world):
+    """#2772: the stable engineering-v1.10.0 is older than the pin, the -next tag is newer."""
+    _tags(world, "engineering-v1.10.5-next", "engineering-v1.11.0-next")
+    _pin(world, "engineering-v1.10.5-next")
+    r = run(world)
+    assert r.returncode == 0, r.stderr
+    assert "ref: engineering-v1.11.0-next" in _refs(world)
+
+
+def test_a_next_pin_never_moves_down(world):
+    _tags(world, "engineering-v1.10.5-next")
+    _pin(world, "engineering-v1.10.5-next")
+    run(world)
+    assert "ref: engineering-v1.10.5-next" in _refs(world)
+
+
+def test_a_next_pin_moves_to_a_newer_stable_release(world):
+    _tags(world, "engineering-v1.2.0-next")
+    _pin(world, "engineering-v1.2.0-next")
+    run(world)
+    assert "ref: engineering-v1.10.0" in _refs(world)
+
+
+def test_a_stable_pin_ignores_next_tags(world):
+    _tags(world, "engineering-v1.11.0-next")
+    run(world)
+    assert "ref: engineering-v1.10.0" in _refs(world)
+
+
+def test_sibling_tag_pins_move_each_to_its_own_newest_tag(world):
+    _tags(world, "gatekeeper-v0.1.0-next", "gatekeeper-v0.2.0-next", "gatekeeper-v0.1.5")
+    _tags(world, "engineering-v1.3.0-next", "engineering-hooks-v0.4.0", "engineering-hooks-v0.5.0")
+    _pin(world, "engineering-v1.2.0-next", "gatekeeper-v0.1.0-next", "engineering-hooks-v0.4.0")
+    r = run(world)
+    assert r.returncode == 0, r.stderr
+    text = _refs(world)
+    assert "ref: engineering-v1.10.0" in text
+    assert "ref: gatekeeper-v0.2.0-next" in text
+    assert "ref: engineering-hooks-v0.5.0" in text
