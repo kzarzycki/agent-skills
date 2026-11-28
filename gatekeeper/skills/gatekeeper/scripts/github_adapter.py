@@ -1139,9 +1139,7 @@ def read_required(base: str) -> Required:
     except subprocess.CalledProcessError as error:
         if "(HTTP 403)" not in (error.stderr or "") or PLAN_LIMIT not in error.stderr:
             raise
-        print(
-            f"GitHub enforces no rules on {base} here (its plan has none): land's proofs are the only gate"
-        )
+        print(f"GitHub enforces no rules on {base} here (its plan has none)")
         rulesets = ""
     protection = gh(
         "api",
