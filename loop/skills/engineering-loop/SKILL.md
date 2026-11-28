@@ -1121,8 +1121,10 @@ or the owner's private network.
   `STILL WORKING` or `USER NEEDED`; a `USER NEEDED` line wins over an earlier `DONE`, since an ask
   after it still needs its answer. A status reply opens with a tl;dr: the loop step with
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
-  "nothing"), and each open question restated. Past about 150K tokens of context, at a
-  natural break, offer the owner a ready compact command with the summary it should keep.
+  "nothing"), and each open question restated. A report naming an automation change (skills, hooks,
+  settings, task prompts, gatekeeper or board rules) carries its diff: the PR's `/files` link, or,
+  outside git, an inline diff logged with `decisions.py log --diff`. Past about 150K tokens of
+  context, at a natural break, offer the owner a ready compact command with the summary it should keep.
 - **Landing.** Land starts once the last verdict is satisfied and triaged with no core finding open (or, at
   the cap, the exception The cap's `Cap:` rule gives) and
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,

@@ -10438,6 +10438,55 @@ FINDING = re.compile(
 # a `### ` heading with a severity in parentheses is meant as a finding; any other is a sub-heading, and a finding written
 # without one is caught by verdict()'s count check
 SEVERITY = re.compile(r"\((blocker|major|minor)\)", re.IGNORECASE)
+# the field lines a blocker or major carries in its body (R1, R5): what it breaks, its concrete path when that is a standing bar,
+# and, from pass 2, where it came from. A `present at` finding is a minor unless it breaks an Acceptance line.
+BREAKS = re.compile(
+    r"Breaks:[ \t]*(acceptance|repro|standing bar)\b[ \t:—–-]*(\S.*)", re.IGNORECASE
+)
+ORIGIN = re.compile(
+    r"Origin:[ \t]*(prior F\d+ not fixed|regression of \S+|present at \S+|new)[ \t]*",
+    re.IGNORECASE,
+)
+PATHED = re.compile(r"Path:[ \t]*\S", re.MULTILINE)
+
+
+def check_finding(report: Path, number: int, finding: tuple[str, ...]) -> None:
+    """A blocker or major states what it breaks (an Acceptance line, a repro in documented use, or a standing bar with a
+    concrete path), and from pass 2 where it came from; a finding that can't say so is a minor. Refused, naming the fix."""
+    name, severity, _path, _at, _title, body = finding
+    lines = [line.strip() for line in body.splitlines()]
+    origins = [line for line in lines if line.lower().startswith("origin:")]
+    if origins and not ORIGIN.fullmatch(origins[-1]):
+        raise Refused(
+            f"{report}: {name}: can't read `{origins[-1]}`: write `Origin: prior F<n> not fixed|regression of "
+            "<commit>|present at <head>|new`"
+        )
+    if severity == "minor":
+        return
+    broken = [m for line in lines if (m := BREAKS.fullmatch(line))]
+    if not broken:
+        raise Refused(
+            f"{report}: {name} is a {severity} with no `Breaks: Acceptance <line>|repro <command>|standing bar <kind>` "
+            "line: a finding that breaks none of them is a minor (the verifier role, Major)"
+        )
+    kind = broken[-1][1].lower()
+    if kind == "standing bar" and not PATHED.search(body):
+        raise Refused(
+            f"{report}: {name} breaks a standing bar with no `Path: <input, steps, impact>` line: without a concrete "
+            "path it is a minor"
+        )
+    if number > 1:
+        if not origins:
+            raise Refused(
+                f"{report}: {name} is a {severity} on a delta pass with no `Origin:` line"
+            )
+        if origins[-1].lower().startswith("origin: present at") and kind != "acceptance":
+            raise Refused(
+                f"{report}: {name} `{origins[-1]}` breaks no Acceptance line: a finding present at an earlier head "
+                "is a minor"
+            )
+
+
 # the verdict's counts, which every finding heading must add up to
 COUNTED = re.compile(r"VERDICT:[ \t]*(\d+) blockers?,[ \t]*(\d+) majors?,[ \t]*(\d+) minors?\b.*")
 
@@ -10574,6 +10623,8 @@ def parse_report(
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
+    for one in found:
+        check_finding(report, int(passes[-1][2]), one)
     # the criteria come from the spec before the worker's evidence, so its framing can't narrow the review
     if not criteria(text):
         raise Refused(
@@ -10600,6 +10651,15 @@ def parse_report(
             f"{report}: `{satisfied[-1]}` lists a `Not run:` line, so a run it relies on was never made: "
             "end the turn in `<report>.question` (the verifier role, A run the sandbox refuses)"
         )
+    # a run not made, as the closing lines keep it (below)
+    not_run = [
+        line for line in lines if re.match(r"Not run:(?!\s*none\.?\s*$)", line, re.IGNORECASE)
+    ]
+    # the counts decide (R6): an open blocker or major is unsatisfied, and 0 of both with nothing not run is satisfied, whatever the line says
+    if tally[0] or tally[1]:
+        satisfied[-1] = "SATISFIED: no"
+    elif not not_run:
+        satisfied[-1] = "SATISFIED: yes"
     # an unsatisfied pass with nothing found spends a pass on a run the verifier couldn't make: that ends in a question
     if (
         not any(tally)
@@ -10628,9 +10688,6 @@ def parse_report(
             " rerun pushed"
         )
     # a `Not run:` line stays in the posted verdict, since the cap decision must not waive a run never made (reviewed)
-    not_run = [
-        line for line in lines if re.match(r"Not run:(?!\s*none\.?\s*$)", line, re.IGNORECASE)
-    ]
     closing = [
         verdicts[-1],
         satisfied[-1],

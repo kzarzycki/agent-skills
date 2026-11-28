@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.33 - 2026-11-28
+
+- `approvals.py report` and `verdict` refuse a blocker or major with no `Breaks:` line (and no `Path:` line for a standing bar), refuse a delta finding with no `Origin:` line or a `present at` major that breaks no Acceptance line, and read `SATISFIED:` from the counts (#3031).
+
 ## 0.1.32 - 2026-11-28
 
 - The `reviewed()`, `carries()` and `rerun_tests()` docstrings and `engineering-loop`'s R5 say what the code does: a clean merge of the base or a clean rebase carries a verdict with no setting, and only a failed test the change did not select again is a flake candidate (#2966).

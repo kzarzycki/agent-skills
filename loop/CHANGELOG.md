@@ -5,6 +5,14 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.27 - 2026-11-28
+
+- A verifier report's major now states what it breaks (an Acceptance line, a repro in documented use, or a standing bar with a concrete path) and, from pass 2, where it came from; `SATISFIED:` follows the counts, and the one-shot verifier's P1 uses the same definition (#3031).
+
+## 0.1.26 - 2026-11-28
+
+- The skill says a report that names an automation change carries its diff: the PR's files page, or an inline unified diff logged with the chief of staff's decision log (#3028).
+
 ## 0.1.25 - 2026-11-28
 
 - `engineering-loop`'s R5 says only a failed test the change did not select again is a flake candidate, as `rerun-tests` does (#2966).
