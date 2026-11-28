@@ -469,6 +469,10 @@ gatekeeper.md's policy (Settings) holds:
   a short one holding every merge. Paths it can't judge hold. `merge_paths`, its old name,
   is deprecated for one release: read as `critical_paths` with one `deprecated:` line, and
   refused beside it, since two sources of one list would drift.
+- `verifier.same_family` (`never`, the default, `low` or `high`) is the highest risk level at which a verdict from the
+  author's own family (a heading naming `same-family`, or the family of the PR body's `Impl:` signature) may land;
+  `verifier.same_family_until`, a quoted `YYYY-MM-DD`, lifts it to `high` through that day for an outage the owner
+  approved. `check merge` and `land` refuse above it, naming the setting (#609).
 - `levels` says what each level of the rating needs, so a project changes the rule without
   changing the rating: `low` (everything the rating doesn't raise), `high` and `critical`,
   each with `spec`, `policy` (`spec.auto` decides) or `owner` (a spec rated at that level
@@ -984,7 +988,7 @@ or the owner's private network.
   is of the other model family when that family is installed, within quota and the
   backend can start it (native starts only its own harness's subagents; Omnigent starts
   either), since it misses different things; otherwise, as for a user with one family installed, a fresh
-  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled; a satisfied one lands a change of any risk like a Codex verdict. The PR body names which ran
+  session of the same family is the normal path. When Codex refuses, lead.md's Verifier route names the two fallbacks, Gemini through agy and then a same-family Claude, each labelled; a satisfied Gemini one lands a change of any risk like a Codex verdict, a same-family one only up to the level loop.md's `verifier.same_family` allows (default `never`; `same_family_until` lifts it for an outage). The PR body names which ran
   (`verifier: same family` for the latter). A PR with code from both families gets a
   verifier for each family's changes where both are available, integration edits
   included; each writes its own report, and the cap counts rounds they share. The family

@@ -251,8 +251,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    the host route above; the VM runs the same `agy`, so use an id the host's `agy models` lists; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
    author context, the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
-   of quota)". A satisfied fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
-   its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. agy on another host takes the brief
+   of quota)". A satisfied Gemini fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
+   its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. A same-family verdict lands only up to the risk level loop.md's `verifier.same_family` names (default `never`, or `low` or `high`), or through the date of its `verifier.same_family_until`, and `check merge` names the setting when it refuses. agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), and
    the fix round runs the PR's affected tests only (worker.md, Gates and push). A correctness finding's fix

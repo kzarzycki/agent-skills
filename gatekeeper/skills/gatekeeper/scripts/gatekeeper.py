@@ -1340,6 +1340,12 @@ def settings(loop: str | None) -> dict[str, Any]:
                     )
             if name == "carry_over_main":
                 deprecated(name)
+            if name == "verifier" and "same_family_until" in section:
+                until = section["same_family_until"]
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", until) or not valid_date(until):
+                    raise Refused(
+                        f"{file}'s `verifier.same_family_until` is {until!r}: write a quoted date as YYYY-MM-DD"
+                    )
             if name == "risk" and "merge_paths" in section:
                 # two sources of one list would drift, so the old name is read only alone
                 if "critical_paths" in section:
@@ -3628,6 +3634,36 @@ RULE_FILES = (
 )
 
 
+def valid_date(text: str) -> bool:
+    """Whether `text` is a calendar date (date.fromisoformat's)."""
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def kindred(family: str, author: str | None) -> bool:
+    """Whether a verdict's heading family is the author's own: it names `same-family`, its harness word (kin) is the
+    author's (the PR body's last `Impl:` signature, `cc/sonnet-5.5/?` being `claude`), or it names no family
+    (`unknown`, `?` or nothing), which can't be told apart from the author's. A verdict is independent only when it
+    names a family that is not the author's, or when the author's is unknown and it is not marked."""
+    if SAME_FAMILY.search(family):
+        return True
+    word = kin(family)
+    return word in ("", "?", "unknown") or word == author
+
+
+def author_family(pull: dict[str, Any]) -> str | None:
+    """The harness word (kin) of the PR body's last `Impl:` signature, None for a body with none or a `?` one."""
+    found = IMPL.findall(QUOTED.sub("", pull.get("body") or ""))
+    if not found:
+        return None
+    signature = found[-1].split(":", 1)[1].split("·")[0].strip().split()
+    word = kin(signature[0]) if signature else ""
+    return None if word in ("", "?", "unknown") else word
+
+
 def same_family(
     pull: dict[str, Any],
     issues: list[dict[str, Any]],
@@ -3635,31 +3671,25 @@ def same_family(
     verdicts: list[tuple[str, int, dict[str, str]]] | str,
     today: date | None = None,
 ) -> str | None:
-    """Why the newest verifier pass, if every verdict in it is a same-family one (a heading naming `same-family`), may not
-    land this PR, or None: loop.md's `verifier.same_family` (`never`, `low` or `high`) is the highest risk level
-    (LEVELS) at which such a verdict lands, and the change's level is its highest risk term (terms). `same_family_until`
-    (an ISO date, quoted) lifts the limit to `high` through that day, for an outage the owner approved, and falls back
-    to `same_family` once past. Without `same_family` a same-family verdict lands at any level, as before the setting
-    (#1115); a verdict of another family, or a mixed pass, is never held."""
+    """Why the newest verifier pass, when every verdict in it is the author's own family (kindred), may not land this
+    PR, or None: loop.md's `verifier.same_family` (`never`, the default, `low` or `high`) is the highest risk level
+    (LEVELS) at which such a verdict lands, and the change's level is its highest risk term (terms).
+    `same_family_until` (an ISO date, settings() checks it) lifts the limit to `high` through that day, for an outage
+    the owner approved, and falls back to `same_family` once past. A pass with a verdict of another family is never
+    held (#609)."""
     terms_ = settings(loop).get("verifier", {})
-    limit = terms_.get("same_family")
-    if limit is None or isinstance(verdicts, str) or not verdicts:
+    limit = terms_.get("same_family", "never")
+    if isinstance(verdicts, str) or not verdicts:
         return None
     head = verdicts[-1][0]
     on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
     last = max(number for number, _ in on_head)
-    newest = [lines for number, lines in on_head if number == last]
-    if not all(SAME_FAMILY.search(lines["Family"]) for lines in newest):
+    author = author_family(pull)
+    if not all(kindred(lines["Family"], author) for number, lines in on_head if number == last):
         return None
-    if until := terms_.get("same_family_until"):
-        try:
-            end = date.fromisoformat(until)
-        except ValueError:
-            raise Refused(
-                f"loop.md's `verifier.same_family_until` must be an ISO date (YYYY-MM-DD), not {until!r}"
-            ) from None
-        if (today or datetime.now(timezone.utc).date()) <= end:
-            limit = "high"
+    until = terms_.get("same_family_until")
+    if until and (today or datetime.now(timezone.utc).date()) <= date.fromisoformat(until):
+        limit = "high"
     found = [level for level, _, _ in terms(pull, issues, loop)]
     level = "critical" if "critical" in found else "high" if found else "low"
     order = (
@@ -3671,7 +3701,7 @@ def same_family(
     if order.index(level) <= order.index(limit):
         return None
     return (
-        f"its newest verdict is same-family and the change rates {level}, above loop.md's"
+        f"its newest verdict is from the author's own family and the change rates {level}, above loop.md's"
         f" `verifier.same_family: {limit}`: a verdict of the other family first"
         " (or the owner's `verifier.same_family_until` date for an outage)"
     )
