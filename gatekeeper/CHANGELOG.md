@@ -5,6 +5,18 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.29 - 2026-11-28
+
+- `gatekeeper.py --help`, `SKILL.md` and `verbs.md` say what the code does, in six places: check setup's Mergify drift check is named among the reads of the checkout's policy (and the differing-copy warning only where the base's copy is read); the verifier-review paragraph states its two exceptions; the `check`, `rerun-tests`, `gate-record` and `record approval` listings and usages say when the whole selection reruns, how a step is found by its inputs, what a head with no tree prints, and that a breakglass withdrawal still takes `--head`. Tests pin the wording (#2952).
+
+## 0.1.28 - 2026-11-28
+
+- `check merge`, `land` and `record verdict` print the risk a PR's `risk:*` label and the verifier's `Risk:` line state (`risk: medium`) instead of `risk: low` when no gate rule rates it higher, and name both when they disagree; `land` no longer reports "the PR closes no open issue" for a merged PR whose `Closes #n` issue the merge closed (#2876).
+
+## 0.1.27 - 2026-11-28
+
+- `gatekeeper.py`'s module docstring, and so `gatekeeper.py --help`, is a short summary (72 KB before); each verb has its own `--help`, and the full usage lines and prose it held are in the new `verbs.md` (#2834).
+
 ## 0.1.26 - 2026-11-28
 
 - A generated bump of any pack of this repository counts as a mechanical pack bump: its `apm.yml` may change the `ref:` lines of several `kzarzycki/agent-skills/<pack>` dependencies at once, each to a stable or `-next` tag of its own pack (`omnigent-v0.1.34-next`), and its spec needs no approval (#2926).

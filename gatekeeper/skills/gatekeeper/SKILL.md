@@ -12,7 +12,7 @@ proof on the forge (approval records, verifier reviews, check passes) and the te
 and never decides on an agent's word, so its answer on a laptop is CI's answer.
 
 Run `uv run <this skill's folder>/scripts/gatekeeper.py <verb>` anywhere in the checkout: it
-reads `docs/agents/` from `origin/<base>`, the ref `land` merges on, not the checkout's copy (the copy only with no origin ref or with `GATEKEEPER_POLICY_FROM_WORKING_TREE` set, and for `queue-config` and `timeouts`). `uv run` installs PyYAML, the one package it
+reads `docs/agents/` from `origin/<base>`, the ref `land` merges on, not the checkout's copy (the copy only with no origin ref or with `GATEKEEPER_POLICY_FROM_WORKING_TREE` set, and for `queue-config`, `timeouts` and `check setup`'s Mergify drift check). `uv run` installs PyYAML, the one package it
 needs beyond the standard library, from the script's inline header; a bare `python3` without
 it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged in, for GitHub.
 
