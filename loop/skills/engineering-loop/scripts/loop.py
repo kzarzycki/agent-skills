@@ -120,6 +120,42 @@ def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
     return found
 
 
+def deviations_gap(body: str) -> str | None:
+    """Why the PR body's `Spec deviations:` line (lead.md step 7) can't start a verifier, else None: the line is absent,
+    or a deviation it lists (inline, or as the `- ` bullets under it) carries no link to the owner's decision (a URL or
+    `#n`). `none` alone is fine."""
+    lines = NOISE.sub("", body).splitlines()
+    for at, line in enumerate(lines):
+        if found := re.match(r"\s*Spec deviations:[ \t]*(.*?)[ \t]*$", line):
+            break
+    else:
+        return "the body has no `Spec deviations:` line: write `none`, or each deviation with a link to the owner's decision"
+    items = [found[1]] if found[1] else []
+    for line in lines[at + 1 :]:
+        if not line.lstrip().startswith(("- ", "* ")):
+            break
+        items.append(line.strip()[2:])
+    if items and [item.strip("`*_ .").lower() for item in items] == ["none"]:
+        return None
+    if not items:
+        return "the `Spec deviations:` line lists nothing: write `none`, or each deviation with a link to the owner's decision"
+    if bare := [item for item in items if not re.search(r"https?://|(?<![\w&])#\d+", item)]:
+        return f"the `Spec deviations:` line lists a deviation with no link to the owner's decision: {bare[0]}"
+    return None
+
+
+def gates_line(head: str) -> str:
+    """The brief's `- Gates:` line: whether the gate has a recorded pass on the head's tree (the gatekeeper's `reusable`),
+    so the verifier reruns the full gate only when it has none (verifier.md, Gates and repros)."""
+    try:
+        record = gatekeeper.reusable(head)
+    except (gatekeeper.Refused, subprocess.CalledProcessError, OSError, ValueError):
+        record = None
+    if record is not None:
+        return f"- Gates: passed on the head's tree at {record.get('time', 'a recorded time')}, recorded: don't rerun the gate"
+    return "- Gates: no recorded pass on the head: run `approvals.py gate-record <head>` and run the gate only if it names a missing record"
+
+
 def brief(
     pr: int,
     priorities: Path | None,
@@ -161,11 +197,14 @@ def brief(
         raise gatekeeper.Refused(
             f"PR #{pr}: stale proof, its first line isn't the head {head}: {', '.join(stale)}; rerun it"
         )
+    if problem := deviations_gap(pull["body"] or ""):
+        raise gatekeeper.Refused(f"PR #{pr}: {problem}")
     reviewed = gatekeeper.passes(pull)
     if isinstance(reviewed, str):
         raise gatekeeper.Refused(f"PR #{pr} {reviewed}")
     number = max((n for _, n, _ in reviewed), default=0) + 1
-    base = gatekeeper.merge_base(pull["baseRepository"]["defaultBranchRef"]["name"], head)
+    # the PR's own base, so a stacked PR gets its real base and not the default branch's
+    base = gatekeeper.merge_base(pull["baseRefName"], head)
     issues = sorted(
         {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}
         | set(gatekeeper.named(pull["body"] or ""))
@@ -184,6 +223,7 @@ def brief(
         f"- Base: {base}",
         f"- Reviewed head: {head}",
         f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
+        gates_line(head),
     ]
     # the command the worker ran for each spec's checks, so the verifier runs the same one (SKILL.md, Acceptance checks)
     own = re.search(r"^Acceptance tests:[ \t]*(\S.*?)[ \t]*$", loop or "", re.MULTILINE)

@@ -21,7 +21,9 @@ def test_the_brief_quotes_the_priorities_file_as_written(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull(body="Closes #12.\n"))
+    monkeypatch.setattr(
+        approvals, "pull_request", lambda _n: pull(body="Closes #12.\nSpec deviations: none\n")
+    )
     monkeypatch.setattr(approvals, "merge_base", lambda base, head: "b" * 40)
     monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
     priorities = tmp_path / "priorities.md"

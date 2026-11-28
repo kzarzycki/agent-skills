@@ -61,7 +61,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     monkeypatch.setattr(approvals, "project", lambda: (None, LOOP))
 
     def pr(base: str = "trunk") -> None:
-        found = pull(body="Closes #12.\n")
+        found = pull(body="Closes #12.\nSpec deviations: none\n")
         found["headRefOid"], found["baseRefName"] = head, base
         monkeypatch.setattr(approvals, "pull_request", lambda _n: found)
 
@@ -96,7 +96,7 @@ def test_every_conflicted_file_is_named_and_a_clean_one_is_not(
     git(seed, "checkout", "-q", "feature")
     head = commit(seed, "other.txt", "head other\n")
     git(seed, "push", "-q", "-f", "origin", f"{head}:refs/pull/7/head")
-    found = pull(body="Closes #12.\n")
+    found = pull(body="Closes #12.\nSpec deviations: none\n")
     found["headRefOid"], found["baseRefName"] = head, "trunk"
     monkeypatch.setattr(approvals, "pull_request", lambda _n: found)
     advance(repo, "shared.txt", "base edit\n")
@@ -175,7 +175,7 @@ def test_lead_md_says_what_to_do_on_exit_1() -> None:
 def test_a_git_error_in_the_merge_is_not_read_as_clean(
     repo: dict[str, object], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    found = pull(body="Closes #12.\n")
+    found = pull(body="Closes #12.\nSpec deviations: none\n")
     found["headRefOid"], found["baseRefName"] = "f" * 40, "trunk"  # a commit git doesn't have
     monkeypatch.setattr(approvals, "pull_request", lambda _n: found)
     assert approvals.main(["brief", "7"]) == 1

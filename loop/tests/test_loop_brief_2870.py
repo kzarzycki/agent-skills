@@ -37,9 +37,16 @@ def clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str, s
     return work, base, git(work, "rev-parse", "HEAD")
 
 
-def stand_in(monkeypatch: pytest.MonkeyPatch, base: str, head: str, body: str) -> None:
+def stand_in(
+    monkeypatch: pytest.MonkeyPatch,
+    base: str,
+    head: str,
+    body: str,
+    base_ref: str = "main",
+    reusable: object = lambda head: None,
+) -> None:
     pull = {
-        "baseRefName": "main",
+        "baseRefName": base_ref,
         "headRefOid": head,
         "title": "Change it",
         "body": body,
@@ -58,13 +65,14 @@ def stand_in(monkeypatch: pytest.MonkeyPatch, base: str, head: str, body: str) -
         toplevel=Path.cwd,
         conflicted=lambda number, ref, sha: [],
         passes=lambda found: [],
-        merge_base=lambda ref, sha: base,
+        merge_base=lambda ref, sha: base if ref == pull["baseRefName"] else "wrong-base",
         named=lambda text: [],
         section=lambda text, name: "",
         levels=lambda policy: {},
         no_ci=lambda policy: False,
         unforced=lambda found: None,
         overlaps=lambda number: [],
+        reusable=reusable,
     )
     monkeypatch.setattr(loop, "gatekeeper", fake)
 
@@ -75,7 +83,7 @@ def test_the_brief_lists_the_changed_files_and_the_diff_stat(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _, base, head = clone
-    stand_in(monkeypatch, base, head, "Closes #2870\n")
+    stand_in(monkeypatch, base, head, "Closes #2870\nSpec deviations: none\n")
     assert loop.brief(7, None, []) == 0
     out = capsys.readouterr().out
     assert "- Changed files (3, status then path):" in out
@@ -90,9 +98,7 @@ def test_the_brief_carries_a_tool_call_budget_and_drops_the_pr_bodys_spend_lines
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _, base, head = clone
-    body = (
-        "Closes #2870\nToken estimate: ~2M (two passes)\nTokens spent: 1.9M\n## Evidence\nran it\n"
-    )
+    body = "Closes #2870\nSpec deviations: none\nToken estimate: ~2M (two passes)\nTokens spent: 1.9M\n## Evidence\nran it\n"
     stand_in(monkeypatch, base, head, body)
     assert loop.brief(7, None, []) == 0
     out = capsys.readouterr().out
@@ -105,3 +111,57 @@ def test_a_head_this_clone_lacks_is_fetched_and_a_failure_is_said_not_hidden(
     clone: tuple[Path, str, str],
 ) -> None:
     assert loop.diff_summary(clone[1], "0" * 40)[0].startswith("- Diff: not available here")
+
+
+def test_the_brief_refuses_while_the_body_has_no_spec_deviations_line(
+    clone: tuple[Path, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, base, head = clone
+    stand_in(monkeypatch, base, head, "Closes #629\n")
+    with pytest.raises(loop.gatekeeper.Refused, match="Spec deviations:"):
+        loop.brief(7, None, [])
+
+
+def test_a_deviation_without_a_link_is_refused_and_one_with_a_link_or_none_passes(
+    clone: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, base, head = clone
+    stand_in(monkeypatch, base, head, "Spec deviations:\n- drops the tracker's children\n")
+    with pytest.raises(loop.gatekeeper.Refused, match="no link"):
+        loop.brief(7, None, [])
+    for body in (
+        "Spec deviations:\n- drops the children, owner agreed in #630\n",
+        "Spec deviations: none\n",
+    ):
+        stand_in(monkeypatch, base, head, body)
+        assert loop.brief(7, None, []) == 0
+    capsys.readouterr()
+
+
+def test_a_stacked_pr_brief_names_the_merge_base_with_its_own_base_branch(
+    clone: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, base, head = clone
+    stand_in(monkeypatch, base, head, "Spec deviations: none\n", base_ref="stack-base")
+    assert loop.brief(7, None, []) == 0
+    assert f"- Base: {base}" in capsys.readouterr().out
+
+
+def test_the_brief_says_whether_the_head_has_a_recorded_gate_pass(
+    clone: tuple[Path, str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, base, head = clone
+    stand_in(monkeypatch, base, head, "Spec deviations: none\n")
+    loop.brief(7, None, [])
+    assert "- Gates: no recorded pass on the head" in capsys.readouterr().out
+    stand_in(monkeypatch, base, head, "Spec deviations: none\n", reusable=lambda h: {"time": "T1"})
+    loop.brief(7, None, [])
+    assert (
+        "- Gates: passed on the head's tree at T1, recorded: don't rerun" in capsys.readouterr().out
+    )
