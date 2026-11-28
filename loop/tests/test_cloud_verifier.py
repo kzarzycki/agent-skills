@@ -381,6 +381,8 @@ def checkout(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(
                 cmd, 0, json.dumps({"head": {"sha": head, "ref": "feat/pr"}}), ""
             )
+        if cmd == ("gh", "api", "user"):  # the account running the guard (#3003)
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"login": "runner"}), "")
         if cmd[:2] == ("gh", "api") and seen.get("post fails"):
             raise cv.Refused("`gh api` exited 1: HTTP 502")
         if cmd[:2] == ("git", "checkout") and "--detach" in cmd and "half" in seen:
