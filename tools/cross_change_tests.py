@@ -116,8 +116,15 @@ def select(
         if not found:
             missing.append(pull)
     mapped = a.load_map()
-    if mapped is None:
-        say(f"fallback to the batch's affected tests: no per-test map at {a.MAP}")
+    if mapped is None or mapped[1] is None:  # no map, or one that measures no file (#1400)
+        say(
+            "fallback to the batch's affected tests: "
+            + (
+                f"no per-test map at {a.MAP}"
+                if mapped is None
+                else f"the per-test map of {mapped[0][:12]} is empty"
+            )
+        )
         picked = a.targets(a.changed(base), base)
     else:
         own = {pull: files_between(pull.point, pull.head) for pull in pulls}

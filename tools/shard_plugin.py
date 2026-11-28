@@ -8,7 +8,7 @@ and finish in a fraction of the time. This plugin is that split; it does nothing
 
 - With `TEST_SHARDS=<n>` the outer pytest runs no test itself: it starts `n` pytest processes with the same arguments and
   environment, waits for them, and exits with their worst status (a shard that selected no test counts as passing). Each
-  shard writes its own coverage data (`COVERAGE_FILE-shard<i>`), skipped list (`TEST_MAP_SKIPPED-shard<i>`) and durations
+  shard writes its own coverage data (`COVERAGE_FILE-shard<i>`), skipped list (`TEST_MAP_SKIPPED-shard<i>`), failed list (`TEST_MAP_FAILED-shard<i>`) and durations
   (`TEST_DURATIONS-shard<i>`), so no two processes append to one file; the outer run folds them back into the names the nightly
   set (`coverage combine --append`, then the two lists appended), the one map and lists a serial run leaves.
 - A shard (`SHARD_INDEX` and `SHARD_COUNT` in its environment) keeps the test files whose greedy split by test count puts them
@@ -29,7 +29,12 @@ import pytest
 SHARDS = "TEST_SHARDS"
 INDEX = "SHARD_INDEX"
 COUNT = "SHARD_COUNT"
-OWN = "COVERAGE_FILE", "TEST_MAP_SKIPPED", "TEST_DURATIONS"  # the files a shard keeps apart
+OWN = (
+    "COVERAGE_FILE",
+    "TEST_MAP_SKIPPED",
+    "TEST_DURATIONS",
+    "TEST_MAP_FAILED",
+)  # the files a shard keeps apart
 NO_TESTS = 5  # pytest's exit status for a run that collected nothing
 
 
@@ -75,7 +80,7 @@ def fold(shards: int) -> None:
             ],
             check=False,
         )
-    for name in ("TEST_MAP_SKIPPED", "TEST_DURATIONS"):
+    for name in ("TEST_MAP_SKIPPED", "TEST_DURATIONS", "TEST_MAP_FAILED"):
         target = os.environ.get(name)
         if not target:
             continue

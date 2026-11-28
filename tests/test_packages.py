@@ -370,3 +370,41 @@ def test_every_forwarder_drops_its_resolver_before_running_its_target(package: s
         assert (
             0 <= text.find('sys.modules.pop("_installed", None)') < text.find("runpy.run_path(")
         ), path.name
+
+
+def measured_without(source: list[str]) -> set[str]:
+    """The packages of this repo (a top-level folder with `tests/`, `tools` and the top-level `tests`) a coverage `source` list
+    leaves out: the nightly's test map would hold none of their scripts (#1400)."""
+    packages = {p.name for p in REPOSITORY.iterdir() if (p / "tests").is_dir()} | {"tools", "tests"}
+    return packages - set(source)
+
+
+def coverage_source() -> list[str]:
+    import tomllib
+
+    return tomllib.loads((REPOSITORY / "pyproject.toml").read_text())["tool"]["coverage"]["run"][
+        "source"
+    ]
+
+
+def test_the_coverage_list_measures_every_package() -> None:
+    assert measured_without(coverage_source()) == set()
+
+
+def test_a_coverage_list_missing_a_package_fails_the_layout_check() -> None:
+    assert measured_without([p for p in coverage_source() if p != "gatekeeper"]) == {"gatekeeper"}
+
+
+def test_the_nightly_measures_the_one_list_with_a_bare_cov() -> None:
+    """A `--cov=<package>` of its own would be a second list that can fall behind (#1400)."""
+    workflow = yaml.safe_load((REPOSITORY / ".github/workflows/engineering-ci.yml").read_text())
+    measured = [
+        step["env"]["PYTEST_ADDOPTS"]
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if "--cov-context=test" in step.get("env", {}).get("PYTEST_ADDOPTS", "")
+    ]
+    assert measured
+    for options in measured:
+        words = options.split("#")[0].split()
+        assert "--cov" in words and not [w for w in words if w.startswith("--cov=")]

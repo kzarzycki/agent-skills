@@ -616,3 +616,27 @@ def test_a_non_product_file_a_test_names_by_its_file_name_runs_that_test(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(a, "CHEAP", [])
     assert a.targets([".claude/settings.json"]) == ["tests/test_settings.py"]
+
+
+def test_an_empty_map_says_so_instead_of_naming_its_commit(mapped, capsys) -> None:
+    """A map that holds no measured file decides nothing: the run says "map is empty", not "map of <sha>" (#1400)."""
+    for stale in a.MAP.glob("coverage*"):
+        stale.unlink()
+    CoverageData(basename=str(a.MAP / "coverage")).write()
+    picked = a.targets(mapped("return 2", "return 22"))
+    said = capsys.readouterr().err
+    assert "affected-tests: map is empty" in said
+    assert "affected-tests: map of " not in said
+    assert (
+        "tests/test_both.py" in picked and "tests/test_one.py" in picked
+    )  # the name match, as for no map
+
+
+def test_a_script_the_map_does_not_hold_says_the_map_has_no_entry_for_it(mapped, capsys) -> None:
+    Path("pkg/other.py").write_text("def two():\n    return 2\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "other")
+    Path("pkg/other.py").write_text("def two():\n    return 3\n")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "edit")
+    a.targets(["pkg/other.py"])
+    assert "map has no entry for pkg/other.py" in capsys.readouterr().err
