@@ -165,3 +165,36 @@ def test_the_counts_decide_satisfaction_whatever_the_satisfied_line_says(
 ) -> None:
     got = facts(tmp_path, report(findings, verdict, wrote, extra=extra))
     assert got["satisfied"] is satisfied
+
+
+@pytest.mark.parametrize(
+    "path_line", ["path: POST /pay with a forged token skips the auth check.", "  PATH: POST /pay"]
+)
+def test_a_path_line_reads_in_any_case_and_indented(tmp_path: Path, path_line: str) -> None:
+    got = facts(tmp_path, report(finding("major", STANDING, path_line), one("major"), "no"))
+    assert got["findings"][0]["severity"] == "major"
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ("File Path: auth.py",),
+        ("```", "Path: POST /pay", "```"),
+    ],
+)
+def test_a_path_that_is_not_a_line_of_its_own_does_not_count(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], lines: tuple[str, ...]
+) -> None:
+    out = refused(tmp_path, report(finding("major", STANDING, *lines), one("major"), "no"), capsys)
+    assert "no `Path: <input, steps, impact>` line" in out
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["Origin:  present at 9f8e7d6", "Origin:present at 9f8e7d6", "Origin:\tpresent at 9f8e7d6"],
+)
+def test_any_spacing_after_origin_is_refused_as_present_at(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], origin: str
+) -> None:
+    text = report(finding("major", STANDING, PATH, origin), one("major"), "no", 2)
+    assert "breaks no Acceptance line" in refused(tmp_path, text, capsys)
