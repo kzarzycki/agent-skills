@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.22 - 2026-11-28
+
+- The loop's docs no longer describe a project's own merge queue, `carry_over_main` or `ci: false`; the verifier brief's `- Rerun:` line for a repo with no CI is gone with them. (#654)
+
 ## 0.1.21 - 2026-11-28
 
 - `coding-standards.md`: a script's module docstring says what the script is and points to its docs; a rule goes in the docs and in a test, never only in `--help`. A test caps package scripts' docstrings at 4 KB (#2834).
