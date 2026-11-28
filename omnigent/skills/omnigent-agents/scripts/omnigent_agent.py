@@ -980,10 +980,11 @@ HOST_LIMITS: dict[str, dict[str, float]] = {
     "oz": {"max_load": 10},  # its 8 threads
 }
 # A row for every host whose name starts with the key, since burst boxes come and go every few days.
-# ``max_sessions`` counts the live sessions bound to the host (sub-agents included). An epic-* box
-# is 4 vCPU and 8 GB: about 4 sessions plus one gate; past that it thrashed and lost ssh.
+# ``max_sessions`` counts the sessions bound to the host with a turn running or queued (sub-agents
+# included); a finished idle one holds no slot. An epic-* box is 4 vCPU and 8 GB; agent sessions mostly wait
+# on I/O (about 350 MB each) and min_mb and max_load guard the box, so 8 running sessions fit (#3048).
 HOST_PREFIX_LIMITS: dict[str, dict[str, float]] = {
-    "epic-": {"min_mb": 1500, "max_load": 6, "max_sessions": 4},
+    "epic-": {"min_mb": 1500, "max_load": 6, "max_sessions": 8},
 }
 FAR_READS = 3  # live sessions on another host tried for its load and memory, newest first
 
@@ -3882,7 +3883,7 @@ def host_capacity(
     """``capacity`` for host ``host_id`` under its limits: measured here on this host, read
     through a session on another (``far_capacity``, None when unreadable); ``cpu=False`` for a
     cloud start, judged on memory (its own floor) alone: a bridged cloud session only relays, so it
-    is neither refused by the host's ``max_sessions`` nor counted toward it (#1950)."""
+    is neither refused by the host's ``max_sessions`` nor counted toward it (#1950). Only a session with a turn running or queued (status in RUNNING) counts toward it (#3048)."""
     min_mb, max_load = host_limits(name, cloud=not cpu)
     if host_id == og.host_id:
         ok, line = capacity(min_mb=min_mb, max_load=max_load, cpu=cpu)
@@ -3891,7 +3892,13 @@ def host_capacity(
     cap = None if not cpu else host_row(name).get("max_sessions")
     if cap is not None:
         # from the session list, so it holds where load and memory can't be read
-        live = len([s for s in live_sessions(og, host_id) if not cloud_session(og, s)])
+        live = len(
+            [
+                s
+                for s in live_sessions(og, host_id)
+                if str(s.get("status")) in RUNNING and not cloud_session(og, s)
+            ]
+        )
         if live >= cap:
             return False, f"{live} live sessions (max {cap:g})" + (
                 f"; {line}" if ok is not None else ""
