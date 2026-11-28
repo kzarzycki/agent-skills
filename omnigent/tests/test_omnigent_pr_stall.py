@@ -553,3 +553,57 @@ def test_a_card_only_the_notify_manager_holds_quiets_the_sweep_until_it_closes(
     supervised(og, registry, monkeypatch, 6, between=close, notify="cos", console=True)
     events = registry.with_suffix(".events.jsonl").read_text()
     assert events.count("pr-stall:o/r#12") >= 1 and "a verdict without a go" in events
+
+
+def test_a_session_read_that_raises_anything_stops_no_pr_check_and_reads_once_per_round(
+    tmp_path, monkeypatch
+) -> None:
+    """#2954 F5, F6: a manager read raising JSONDecodeError still lists the PRs and wakes the manager; three repos
+    due together read each session once, not once per repo."""
+    registry = following(tmp_path)
+    og = ManagerCard(told("brief", 9000), ending("STILL WORKING: waiting on CI\nWaits: CI", 8000))
+    reads: list[str] = []
+    real = ManagerCard.info
+
+    def info(self, sid: str) -> dict:
+        reads.append(sid)
+        if sid == "cos":
+            raise json.JSONDecodeError("bad", "", 0)
+        return real(self, sid)
+
+    monkeypatch.setattr(ManagerCard, "info", info)
+    in_checkout(og)
+    p = pr(12, mergeable=False)
+    github(monkeypatch, [p])
+    monkeypatch.setattr(omnigent_agent, "PR_STALL_POLL", 0.0)
+    monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 1e9)
+    supervised(og, registry, monkeypatch, 3, notify="cos", console=True)
+    events = registry.with_suffix(".events.jsonl").read_text()
+    assert "pr-stall:o/r#12" in events
+
+
+def test_the_session_reads_for_cards_do_not_grow_with_the_due_repos(tmp_path, monkeypatch) -> None:
+    """#2954 F6: the sessions are read once per round, however many repos are due."""
+
+    original = ManagerCard.info
+
+    def run(repos: tuple[str, ...], where) -> list[str]:
+        where.mkdir()
+        registry = following(where)
+        og = ManagerCard(
+            told("brief", 9000), ending("STILL WORKING: waiting on CI\nWaits: CI", 8000)
+        )
+        reads: list[str] = []
+        monkeypatch.setattr(
+            ManagerCard, "info", lambda self, sid: reads.append(sid) or original(self, sid)
+        )
+        in_checkout(og)
+        github(monkeypatch, [pr(12, mergeable=False)])
+        monkeypatch.setattr(omnigent_agent, "PR_STALL_POLL", 0.0)
+        monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 1e9)
+        supervised(og, registry, monkeypatch, 1, notify="cos", console=True, stall_repos=repos)
+        return reads
+
+    one = run(("o/r",), tmp_path / "one")
+    three = run(("o/r", "o/r2", "o/r3"), tmp_path / "three")
+    assert three == one

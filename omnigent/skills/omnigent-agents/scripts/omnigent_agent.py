@@ -2877,6 +2877,9 @@ def card_text(e: dict) -> str:
     return "\n".join(parts)
 
 
+CARD_READ_BUDGET = (
+    20.0  # seconds one stall round may spend reading sessions for their cards (#2954)
+)
 PR_REF = re.compile(
     r"(?<![\w./#-])(?:https?://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)|([\w.-]+/[\w.-]+)?#(\d+))(?![\w-])",
     re.IGNORECASE,
@@ -11612,6 +11615,25 @@ def supervise_registry(
         for sid, owes in owed.items():
             if owes[3] and not owes[5] and repos.get(sid) and not first.get(repos[sid]):
                 first[repos[sid]] = sid
+        mine: list[str] | None = None  # the sessions read for their cards, once per round
+
+        def read_cards() -> list[str]:
+            """Read each followed session and the notify manager once for this round, so a card answered or posted since
+            its last look counts (#2954). One unreadable session (any error) holds no card and stops no sweep; the
+            reads together stop at ``CARD_READ_BUDGET`` seconds, the sessions left keeping their last look."""
+            nonlocal mine
+            if mine is None:
+                mine = [*owed, *([notify] if notify else [])]
+                end = time.monotonic() + CARD_READ_BUDGET
+                for s in mine:
+                    if time.monotonic() >= end:
+                        break
+                    try:
+                        og.info(s)
+                    except Exception:  # noqa: BLE001 - an optional lookup: no card is the safe reading
+                        og.cards.pop(s, None)
+            return mine
+
         for repo, sid in sorted(first.items()):
             if time.monotonic() - swept.get(repo, -PR_STALL_POLL) < PR_STALL_POLL:
                 continue
@@ -11620,18 +11642,11 @@ def supervise_registry(
             swept[repo] = time.monotonic()
             try:
                 etags_load(etags_path)
-                mine = [*owed, *([notify] if notify else [])]
-                for (
-                    s
-                ) in mine:  # read now: a card answered or newly posted since its last look (#2954)
-                    try:
-                        og.info(s)
-                    except Fail:
-                        og.cards.pop(s, None)
+                at = read_cards()
                 # the lookup goes in only while a followed session holds a card at all (#2954)
                 look = (
-                    {"carded": lambda r, n, at=mine: cards_naming_pr(og, at, n, r)}
-                    if any(getattr(og, "cards", {}).get(s) for s in mine)
+                    {"carded": lambda r, n, at=at: cards_naming_pr(og, at, n, r)}
+                    if any(getattr(og, "cards", {}).get(s) for s in at)
                     else {}
                 )
                 found = pr_stalls(
