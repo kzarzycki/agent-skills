@@ -86,25 +86,37 @@ def test_a_cut_or_a_missing_input_is_named_and_nearby_code_and_rules_are_in_the_
     assert "nearby code: not supplied" in bare and "rules: not supplied" in bare
 
 
-def _fetch(check_runs, log="RAW\nlint ok"):
-    return lambda url: json.dumps({"check_runs": check_runs}) if "check-runs" in url else log
+def test_the_raw_gate_output_comes_from_running_the_gate_on_the_clean_head(
+    tmp_path, monkeypatch
+) -> None:
+    git = _repo(tmp_path)
+    (tmp_path / "f").write_text("x")
+    git("add", "-A")
+    git("commit", "-qm", "c")
+    head = git("rev-parse", "HEAD").strip()
+    monkeypatch.chdir(tmp_path)
+    ran = []
 
+    def run(words, **kw):
+        ran.append(words)
+        return subprocess.CompletedProcess(words, 0, "RAW lint ok\n", "")
 
-def test_the_raw_gate_log_is_the_forge_run_on_that_head_and_nothing_else_counts() -> None:
-    run = {"id": 7, "name": "qualify", "head_sha": H, "conclusion": "success"}
-    assert os_.ci_gate_log(H, repo="o/r", fetch=_fetch([run])) == "RAW\nlint ok"
-    other = "c" * 40
-    for bad in (
-        [],
-        [{**run, "head_sha": other}],
-        [{**run, "conclusion": "failure"}],
-        [{**run, "name": "lint"}],
-    ):
-        with pytest.raises(os_.Refused):
-            os_.ci_gate_log(H, repo="o/r", fetch=_fetch(bad))
+    plan = [
+        {"command": "mise run check-fast", "words": ["mise", "run", "check-fast"], "where": "any"},
+        {"command": "on host", "words": ["h"], "where": "host"},
+    ]
+    out = os_.run_gate(head, plan, run)
+    assert "RAW lint ok" in out and "[exit 0]" in out and "host-only step, not run" in out
+    assert ran == [["mise", "run", "check-fast"]]
+    # a failing step, another head and a dirty checkout are refused; a CI log is never an input
     with pytest.raises(os_.Refused):
-        os_.ci_gate_log(H, repo="o/r", fetch=_fetch([run], log=" "))
-    assert "RAW_GATE_OUTPUT: lint ok" in build()
+        os_.run_gate(head, plan, lambda w, **kw: subprocess.CompletedProcess(w, 1, "", "boom"))
+    with pytest.raises(os_.Refused):
+        os_.run_gate("c" * 40, plan, run)
+    (tmp_path / "f").write_text("dirty")
+    with pytest.raises(os_.Refused):
+        os_.run_gate(head, plan, run)
+    assert not hasattr(os_, "ci_gate_log")
 
 
 def _repo(tmp_path):
@@ -141,6 +153,22 @@ def test_a_rename_checks_both_sides_and_a_delta_uses_one_range(tmp_path, monkeyp
     assert "mise.toml" not in os_.range_diff(head, first, "origin/main")
 
 
+def test_a_copy_whose_source_is_unchanged_keeps_its_source(tmp_path, monkeypatch) -> None:
+    git = _repo(tmp_path)
+    (tmp_path / "mise.toml").write_text("[tasks]\nx = 1\ny = 2\nz = 3\n")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD").strip()
+    (tmp_path / "copied.md").write_text("[tasks]\nx = 1\ny = 2\nz = 3\n")
+    git("add", "-A")
+    git("commit", "-qm", "copy")
+    head = git("rev-parse", "HEAD").strip()
+    monkeypatch.chdir(tmp_path)
+    paths = os_.changed_paths(head, None, base)
+    assert paths == ["mise.toml", "copied.md"]
+    assert os_.tier(paths, ["*.md"], INPUTS)["review"] is True
+
+
 def test_a_path_with_spaces_reaches_nearby_code_and_the_gate_config_finding(
     tmp_path, monkeypatch
 ) -> None:
@@ -148,11 +176,16 @@ def test_a_path_with_spaces_reaches_nearby_code_and_the_gate_config_finding(
     (tmp_path / "keep").write_text("k")
     git("add", "-A")
     git("commit", "-qm", "base")
-    base = git("rev-parse", "HEAD").strip()
     (tmp_path / "dir").mkdir()
-    (tmp_path / "dir/test config.py").write_text("NEARBY_SOURCE = 1\n")
+    (tmp_path / "dir/test config.py").write_text("".join(f"line {n}\n" for n in range(1, 30)))
     git("add", "-A")
     git("commit", "-qm", "change")
+    first = git("rev-parse", "HEAD").strip()
+    (tmp_path / "dir/test config.py").write_text(
+        "changed\n" + "".join(f"line {n}\n" for n in range(2, 30))
+    )
+    git("add", "-A")
+    git("commit", "-qm", "edit")
     head = git("rev-parse", "HEAD").strip()
     (tmp_path / "spec.md").write_text("the spec")
     (tmp_path / "rules.md").write_text("RULE_TEXT: no mocks")
@@ -160,13 +193,15 @@ def test_a_path_with_spaces_reaches_nearby_code_and_the_gate_config_finding(
     (tmp_path / "policy.md").write_text(policy)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(os_, "trusted_gate", lambda h: GATE[:2])
-    monkeypatch.setattr(os_, "ci_gate_log", lambda h, job: GATE[2])
+    monkeypatch.setattr(os_, "run_gate", lambda h: GATE[2])
     out: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a))))
     argv = ["bundle", "--head", head, "--spec", "spec.md", "--policy", "policy.md"]
-    assert os_.main([*argv, "--against", base, "--rules", "rules.md", "--nearby-from-git"]) == 0
+    assert os_.main([*argv, "--against", first, "--rules", "rules.md", "--nearby-from-git"]) == 0
     text = out[0]
-    assert "NEARBY_SOURCE = 1" in text and "RULE_TEXT: no mocks" in text
+    nearby = text.split("## Nearby code")[1].split("## Diff")[0]
+    assert "line 29" in nearby and "line 29" not in text.split("## Diff")[1]  # outside the hunk
+    assert "RULE_TEXT: no mocks" in text.split("## Rules")[1].split("## Nearby code")[0]
     assert "FINDING (gate config): dir/test config.py" in text
     assert "RAW_GATE_OUTPUT: lint ok" in text
 
@@ -205,10 +240,35 @@ def test_the_verdict_is_read_by_the_real_report_parser_and_keeps_the_guard_marke
     assert got["satisfied"] is True and got["verifier"]["qualifier"] == ""
 
 
-def test_an_unrun_check_goes_to_the_proof_run_question_never_an_owner_action(tmp_path) -> None:
+UNRUN = {"check": "Pilot", "command": "mise run pilot -- --heads 10"}
+MUTATION = {
+    "check": "mutation: drop the guard",
+    "command": "uv run pytest -n 0 loop/tests/test_one_shot.py -k guard",
+    "mutation": {
+        "patch": "s/> MAX_CALLS/> 99/ in one_shot.py",
+        "undo": "git checkout -- one_shot.py",
+        "redo": "sed -i s/MAX/99/ one_shot.py",
+    },
+}
+
+
+def test_an_unrun_check_goes_to_the_proof_run_with_what_the_lead_needs(tmp_path) -> None:
     review = {**REVIEW, "findings": [], "overall_correctness": "patch is correct"}
-    report, question = os_.verdict({**review, "acceptance_not_run": ["Pilot"]}, H, "codex", 1)
-    assert report is None and "Pilot" in question and "owner action" not in question
+    report, question = os_.verdict(
+        {**review, "acceptance_not_run": [UNRUN, MUTATION]}, H, "codex", 1
+    )
+    assert report is None and "owner action" not in question
+    for needed in (
+        UNRUN["command"],
+        MUTATION["command"],
+        "s/> MAX_CALLS/> 99/",
+        "git checkout -- one_shot.py",
+        "sed -i s/MAX/99/",
+    ):
+        assert needed in question
+    for bad in ("Pilot", {"check": "x"}, {**MUTATION, "mutation": {"patch": "p"}}):
+        with pytest.raises(os_.Refused):
+            os_.verdict({**review, "acceptance_not_run": [bad]}, H, "codex", 1)
     # a step only the owner can take is the gatekeeper's own `Not run: ..., owner action:` line
     owner = {**review, "owner_only_not_run": ["sign the release"], "owner_action": "sign it"}
     got = facts(tmp_path, owner)
@@ -217,8 +277,15 @@ def test_an_unrun_check_goes_to_the_proof_run_question_never_an_owner_action(tmp
 
 def test_the_cli_writes_a_question_file_and_exits_3_for_an_unrun_check(tmp_path) -> None:
     review = tmp_path / "r.json"
-    review.write_text(json.dumps({**REVIEW, "findings": [], "acceptance_not_run": ["Pilot"]}))
+    review.write_text(
+        json.dumps({**REVIEW, "findings": [], "acceptance_not_run": [UNRUN, MUTATION]})
+    )
     out = tmp_path / "rep.md"
     argv = ["verdict", "--json", str(review), "--head", H, "--family", "codex", "--pass", "1"]
     assert os_.main([*argv, "--report", str(out)]) == 3
-    assert (tmp_path / "rep.md.question").exists() and not out.exists()
+    question = (tmp_path / "rep.md.question").read_text()
+    assert (
+        not out.exists()
+        and "undo: git checkout -- one_shot.py" in question
+        and UNRUN["command"] in question
+    )

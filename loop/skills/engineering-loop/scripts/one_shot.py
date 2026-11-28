@@ -4,13 +4,13 @@
     one_shot.py tier --head SHA [--base SHA | --against REF] --policy gatekeeper.md --low-risk GLOB...   # gates only, or a review, and why
     one_shot.py plan --head SHA --verdicts FILE           # first pass, a delta pass (its base), or refused
     one_shot.py bundle --head SHA --spec FILE --policy gatekeeper.md [--base SHA | --against REF]
-                       [--gate-job NAME] [--rules FILE] [--nearby-from-git] [--max-diff-bytes N]
+                       [--rules FILE] [--nearby-from-git] [--max-diff-bytes N]
     one_shot.py verdict --json FILE --head SHA --family F --pass N --report FILE [--calls N --credits X]
                        # FILE is a report `approvals.py report` reads, or FILE.question (exit 3) when a check was not run
 
 The model only judges. The gate result is the gatekeeper's own `gate-record` lookup of the pass record origin holds
-for the head's tree, plus the raw log of the gate's CI job on that same head, fetched from the forge (never a file a
-caller gives). One range, the delta's or the PR's, gives the paths, the diff and the heading. The build inputs come from the gatekeeper's parse of the policy. Changed paths are git's own
+for the head's tree, plus the raw output of the gate's own steps, run by this script on the head's clean checkout (a CI
+log is never taken: a job that reused the record ran nothing; never a file a caller gives). One range, the delta's or the PR's, gives the paths, the diff and the heading. The build inputs come from the gatekeeper's parse of the policy. Changed paths are git's own
 (`diff --name-status -z -M -C`: a rename or copy gives both sides). A cut, or an input not given, is named in the bundle. Standard library, and the gatekeeper skill.
 """
 
@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -114,43 +113,29 @@ def trusted_gate(head: str) -> tuple[int, str]:
     return run.returncode, (run.stdout + run.stderr).strip()
 
 
-GATE_JOB = "qualify"
-
-
-def _curl(url: str) -> str:
-    run = subprocess.run(
-        ["curl", "-sSL", "--fail", url], capture_output=True, text=True, check=False
-    )
-    if run.returncode:
-        raise Refused(f"could not fetch {url}: {run.stderr.strip()[:200]}")
-    return run.stdout
-
-
-def forge_repo() -> str:
-    m = re.search(
-        r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?\s*$", _git("remote", "get-url", "origin")
-    )
-    if not m:
-        raise Refused("origin is not a GitHub repository")
-    return m.group(1)
-
-
-def ci_gate_log(head: str, job: str = GATE_JOB, repo: str | None = None, fetch=_curl) -> str:
-    """The raw log of the successful `job` check run the forge lists for commit `head`, so the output is the head's
-    own run. Absent, failed, wrong-head or empty is refused."""
-    repo = repo or forge_repo()
-    runs = json.loads(
-        fetch(f"https://api.github.com/repos/{repo}/commits/{head}/check-runs?per_page=100")
-    )
-    found = [
-        r for r in runs.get("check_runs", []) if r.get("name") == job and r.get("head_sha") == head
-    ]
-    if not found or found[0].get("conclusion") != "success":
-        raise Refused(f"no successful `{job}` run on {head} to take the raw gate output from")
-    log = fetch(f"https://api.github.com/repos/{repo}/actions/jobs/{found[0]['id']}/logs")
-    if not log.strip():
-        raise Refused(f"the `{job}` run on {head} has an empty log")
-    return log
+def run_gate(head: str, plan=None, run=subprocess.run) -> str:
+    """The raw output of the gate's own steps run on `head`'s checkout now, by this script: the output is bound to the
+    head (the checkout must be that clean commit) and to the gate the base's policy defines (the gatekeeper's
+    `gate_plan`). A CI job that reused an existing record ran nothing, so no log fetched from one counts. A step that
+    fails is refused; a host-only step is named as not run here."""
+    if _git("rev-parse", "HEAD").strip() != head:
+        raise Refused(f"the checkout is not at {head}: the gate runs on the head's own tree")
+    if _git("status", "--porcelain").strip():
+        raise Refused(
+            "the checkout has uncommitted changes: the gate output would not be the head's"
+        )
+    out = []
+    for step in plan if plan is not None else gatekeeper.gate_plan():
+        if step.get("where") == "host":
+            out.append(f"$ {step['command']}\n[host-only step, not run in this session]")
+            continue
+        done = run(step["words"], capture_output=True, text=True, check=False)
+        out.append(f"$ {step['command']}\n{done.stdout}{done.stderr}[exit {done.returncode}]")
+        if done.returncode:
+            raise Refused(
+                f"the gate step `{step['command']}` fails on {head} (exit {done.returncode})"
+            )
+    return "\n".join(out)
 
 
 def cut(name: str, text: str, limit: int) -> tuple[str, list[str]]:
@@ -174,7 +159,7 @@ def bundle(
     base: str | None = None,
     max_part_bytes: int = 20_000,
 ) -> str:
-    """`gate` is (trusted_gate's exit, its record text, ci_gate_log's raw log); `paths` is changed_paths' list."""
+    """`gate` is (trusted_gate's exit, its record text, run_gate's raw output); `paths` is changed_paths' list."""
     if gate[0] != 0:
         raise Refused(f"no gate record on {head} (gate-record exit {gate[0]}): {gate[1]}")
     shown, cuts = cut("diff", diff, max_diff_bytes)
@@ -218,12 +203,27 @@ def bundle(
         "## Gate record (the gatekeeper's gate-record lookup)",
         gate[1].strip(),
         "",
-        "## Gate output (raw, from the gate's CI run on this head)",
+        "## Gate output (raw, run by this script on the head)",
         log.strip(),
     ]
     out += ["", "## Rules", rules_text.strip() or "none", "", "## Nearby code", *(near or ["none"])]
     out += ["", "## Diff", shown.strip(), ""]
     return "\n".join(out)
+
+
+def _unrun(item: object) -> str:
+    if not isinstance(item, dict) or not item.get("check") or not item.get("command"):
+        raise Refused(
+            "each `acceptance_not_run` item is {check, command[, mutation: {patch, undo, redo}]}: "
+            "the lead builds the proof run from the question alone"
+        )
+    text = f"- {item['check']}\n  command: {item['command']}"
+    if "mutation" in item:
+        m = item["mutation"]
+        if not isinstance(m, dict) or not all(m.get(k) for k in ("patch", "undo", "redo")):
+            raise Refused("a mutation not run needs its `patch` and the `undo` and `redo` commands")
+        text += f"\n  mutation patch: {m['patch']}\n  undo: {m['undo']}\n  redo: {m['redo']}"
+    return text
 
 
 def verdict(
@@ -253,8 +253,10 @@ def verdict(
             f"### F{i} ({kind}) {loc}: {f['priority']} {f['title']}\n{f.get('body', '')}{rules}"
         )
     if review.get("acceptance_not_run"):
-        # an ordinary run not made goes to the lead's proof run as `<report>.question`, never as an owner action
-        steps = "\n".join(f"- {x}" for x in review["acceptance_not_run"])
+        # an ordinary run not made goes to the lead's proof run as `<report>.question`, never as an owner action; the
+        # lead builds the proof brief from it alone, so each check names its exact command, and a mutation its patch
+        # with the commands that undo and redo it
+        steps = "\n".join(_unrun(x) for x in review["acceptance_not_run"])
         found = "\n".join(f"- {f['priority']} {f['title']}" for f in review.get("findings", []))
         return None, (
             f"Verifier: {family}, pass {number} could not run these checks on {head}:\n{steps}\n"
@@ -317,9 +319,15 @@ def diff_range(head: str, base: str | None, against: str) -> list[str]:
 def changed_paths(head: str, base: str | None = None, against: str = "origin/main") -> list[str]:
     """Every path the range changes, a rename's or copy's source as well as its destination (both sides are checked
     against the gate inputs), as git names them (NUL-separated, so a space or quote is no break)."""
-    out = _git("diff", "--name-status", "-z", "-M", "-C", *diff_range(head, base, against)).split(
-        "\0"
-    )
+    out = _git(
+        "diff",
+        "--name-status",
+        "-z",
+        "-M",
+        "-C",
+        "--find-copies-harder",
+        *diff_range(head, base, against),
+    ).split("\0")
     paths, i = [], 0
     while i < len(out) and out[i]:
         take = 2 if out[i][0] in "RC" else 1
@@ -329,7 +337,7 @@ def changed_paths(head: str, base: str | None = None, against: str = "origin/mai
 
 
 def range_diff(head: str, base: str | None, against: str) -> str:
-    return _git("diff", "-M", "-C", *diff_range(head, base, against))
+    return _git("diff", "-M", "-C", "--find-copies-harder", *diff_range(head, base, against))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -350,7 +358,6 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("head", "spec", "policy"):
         b.add_argument(f"--{name}", required=True)
     b.add_argument("--against", default="origin/main")
-    b.add_argument("--gate-job", default=GATE_JOB)
     b.add_argument("--rules")
     b.add_argument("--nearby-from-git", action="store_true")
     b.add_argument("--base")
@@ -394,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
                     read(a.spec),
                     diff,
                     paths,
-                    (*trusted_gate(a.head), ci_gate_log(a.head, a.gate_job)),
+                    (*trusted_gate(a.head), run_gate(a.head)),
                     build_inputs(read(a.policy)),
                     nearby,
                     read(a.rules) if a.rules else None,
