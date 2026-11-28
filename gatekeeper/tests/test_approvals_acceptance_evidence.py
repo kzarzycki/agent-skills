@@ -292,7 +292,7 @@ def test_lead_step_7_states_the_four_shared_worktree_conditions() -> None:
 
 def test_skill_states_the_verifier_session_setting() -> None:
     skill = flat("SKILL.md")
-    assert "`Verifier session: reuse | fresh`" in skill
+    assert "`Verifier session: reuse or fresh`" in skill
     assert "independent of the author but not fresh" in skill
 
 
