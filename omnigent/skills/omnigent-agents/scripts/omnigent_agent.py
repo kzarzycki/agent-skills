@@ -6,8 +6,6 @@
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
     python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--pr N] [--timeout S] -- <command...>
-    python3 scripts/omnigent_agent.py gate-host [--exclude HOST]...   # where a gate goes: PICK <host> here|far, or STAY <why>
-    python3 scripts/omnigent_agent.py gate-run --host H [--checkout DIR] [--timeout S] -- <command...>
     python3 scripts/omnigent_agent.py ssh <host> --why <purpose> -- <command...>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
