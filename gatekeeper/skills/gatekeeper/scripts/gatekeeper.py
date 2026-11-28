@@ -416,6 +416,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "delegate_spec": bool,
         "pack_staleness": Choice(("warn", "refuse")),
         "stalled_after_hours": int,
+        "required_checks": list,
         "rerun_pusher": str,
         "session_field_id": int,
     },
@@ -3575,7 +3576,7 @@ def waits(
 ) -> list[str]:
     """One line per thing the merge waits for: ran()'s checks (`checks`, when the caller read them), and the owner's go
     (owner_waits)."""
-    return (ran(pull) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
+    return (ran(pull, loop) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
 
 
 def opted_out(loop: str | None) -> bool:
@@ -3862,13 +3863,21 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
     )
 
 
-def ran(pull: dict[str, Any]) -> list[str]:
+def listed_checks(loop: str | None) -> set[str]:
+    """The check names `loop.required_checks` lists (#3023): checks that must be green on the head whether or not the
+    forge requires them, since a base with no branch protection or rules (a free plan's 403 reads as none) would
+    otherwise hold a merge on no CI check. The forge's own required checks stay the authority and the list adds to
+    them: a name both name is one check, and the loop's own statuses (OWN) are never listed."""
+    return {str(name) for name in settings(loop).get("required_checks") or ()} - OWN
+
+
+def ran(pull: dict[str, Any], loop: str | None = None) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s lines for the checks the base branch requires but the
     loop's own statuses (OWN), since GitHub merges nothing without them. A base that requires none waits for nothing:
     no aggregate `check`, and no local-ci pass, since the verifier's record is the merge's proof and no gate runs
     between it and the merge (#1872)."""
     # the approvals status is check merge's own output: waiting for it never ends
-    required = required_checks(pull["baseRefName"]) - OWN
+    required = (required_checks(pull["baseRefName"]) - OWN) | listed_checks(loop)
     return ci(f"PR #{pull['number']}", pull, required) if required else []
 
 
@@ -6309,7 +6318,7 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
     if point == "build" and not found:
         found = owner_record(pull)
-    covered = breakglass_cover(pull, loop, ran(pull)) if point == "merge" else Covered([], [])
+    covered = breakglass_cover(pull, loop, ran(pull, loop)) if point == "merge" else Covered([], [])
     waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
     if rated is not None:
@@ -7277,7 +7286,7 @@ def landing_run(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int
         )  # before any lock, draft or step: a host that can't run it refuses up front (#2577)
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
-        watched["required"] = set(rules) - OWN
+        watched["required"] = (set(rules) - OWN) | listed_checks(loop)
         # Mergify, like GitHub's queue, merges and signs each PR itself, so a cloud land needs no key for it
         with placed(loop, held_by(loop, rules) != "land"):
             code, again = landing_here(
@@ -7346,7 +7355,7 @@ def landing_here(
     # the base's rules and the policy pick the merge queue (held_by), never a mix of two;
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
-    required = rules - OWN
+    required = (rules - OWN) | listed_checks(loop)
     said, red = red_base(base, loop)
     for line in said:
         print(line)
