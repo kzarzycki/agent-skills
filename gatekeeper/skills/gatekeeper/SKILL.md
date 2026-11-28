@@ -165,10 +165,12 @@ is right. The owner approves the line into the spec, the code and the head stay 
 accepts the verdict on that head without a new pass when both hold for every finding in it:
 
 - a recorded spec approval newer than the verdict closes it: an `Approved: spec` record, the owner's (or the
-  delegate's, where delegated), of the spec's current text on an issue the PR links;
+  delegate's, where delegated), of the spec's current text on an issue the PR links, in a comment by the account
+  running the gate or a writer (the `By:` line is only what the comment says);
 - that record names it in its `Closes:` line, `F1, F2 of the pass-2 verdict on <sha>` (several verdicts joined by `;`),
   which `approve spec <n> --by owner --closes "F1 of the pass-2 verdict on <sha>"` writes.
 
 The verdict's finding headings must add up to its counts, and a verdict naming a run never made (`Not run:`) is never
-closed. One finding left open, an approval recorded before the verdict, or one that names no finding or another pass or
+closed, nor is a finding id that two verifiers of one pass both used, since the approval can't say which it means.
+One finding left open, an approval recorded before the verdict, or one that names no finding or another pass or
 commit still blocks. `check merge` prints each finding with the approval that closed it.

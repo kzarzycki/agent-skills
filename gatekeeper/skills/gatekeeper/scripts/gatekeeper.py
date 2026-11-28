@@ -3087,7 +3087,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
                 "Family": PASS.match(review["body"])[1],
                 # the findings' ids and when the review was posted, which a later spec approval that closes them reads
                 # (closing)
-                "Findings": " ".join(finding_ids(review["body"])),
+                "Findings": " ".join(finding_ids(review)),
                 "At": review.get("submittedAt") or "",
                 **{
                     key.strip(): value.strip()
@@ -3125,19 +3125,19 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     return [entry for i, entry in enumerate(read) if keys[i] not in keys[i + 1 :]]
 
 
-def finding_ids(body: str) -> list[str]:
-    """The ids of a review's finding headings (`### <id> (<severity>) ...`), outside a code fence, in order."""
-    found, fenced = [], False
-    for line in body.splitlines():
-        if line.lstrip().startswith(("```", "~~~")):
-            fenced = not fenced
-        elif not fenced and (
-            heading := re.match(
-                r"###[ \t]+(\S+)[ \t]+\((?:blocker|major|minor)\)", line, re.IGNORECASE
-            )
-        ):
-            found.append(heading[1])
-    return found
+# a finding as verdict() posts it, in an inline comment or, outside the diff, in the review's body:
+# `**<heading> · <id>** (<severity>): <title>`
+FOUND = re.compile(r" · (\S+)\*\* \((?:blocker|major|minor)\)")
+
+
+def finding_ids(review: dict[str, Any]) -> list[str]:
+    """The ids of the findings a verifier review posts (verdict): in its inline comments, and in its body for a file
+    outside the diff. Read from the review as GitHub returns it, since the body alone holds none of the inline ones."""
+    texts = [
+        review.get("body") or "",
+        *(c["body"] for c in (review.get("comments") or {}).get("nodes", [])),
+    ]
+    return [found[1] for text in texts for found in FOUND.finditer(text)]
 
 
 # a spec approval's `Closes:` clause: `<id>[, <id>...] of the pass-<n> verdict on <sha>`, several joined by `;`
@@ -3164,15 +3164,22 @@ def closing(
     number: int,
     head: str,
     lines: dict[str, str],
+    shared: set[str] = frozenset(),  # type: ignore[assignment]
 ) -> bool:
     """Whether a verdict that is not satisfied (pass `number` on `head`) has only findings a spec approval closes: each
     named by the `Closes:` line of an owner's record (or the delegate's, where delegated() lets it count) of a spec
-    linked to the PR, a record of the spec's current text, posted after the verdict. The verdict's findings must add up to
+    linked to the PR, a record of the spec's current text, posted after the verdict by an account that counts
+    (trusted: the one running this or a writer), since the `By:` line is only what the comment says. A finding id two
+    verdicts of the pass share (`shared`) is never closed. The verdict's findings must add up to
     its counts, and a verdict naming a run never made stays open. Prints each finding with the approval that closed it."""
     ids = lines.get("Findings", "").split()
     pair = counts(lines)
     minor = re.search(r"(\d+)\s+minors?\b", lines.get("VERDICT", ""))
     if not ids or pair is None or "Not run" in lines or not lines.get("At"):
+        return False
+    if shared & set(
+        ids
+    ):  # an id two verifiers of one pass both used: the approval cannot say which it closes
         return False
     if len(ids) != sum(pair) + int(minor[1] if minor else 0):
         return False
@@ -3183,6 +3190,9 @@ def closing(
             record = parsed(note["body"], "spec")
             if (
                 record is None
+                or not trusted(
+                    pull, note, author=False
+                )  # the comment's own author, not the `By:` it claims
                 or record.get("spec") not in versions(holder)
                 or (note.get("createdAt") or "")
                 <= lines["At"]  # ISO 8601 in UTC, so it orders as text
@@ -3647,8 +3657,11 @@ def reviewed(
     if decided:
         return found
     # a not-satisfied verdict whose every finding a newer spec approval names lands without another pass
+    ids = [word for lines in same for word in lines.get("Findings", "").split()]
+    shared = {word for word in ids if ids.count(word) > 1}
     if issues and all(
-        held(lines) or closing(where, pull, issues, loop, last, head, lines) for lines in same
+        held(lines) or closing(where, pull, issues, loop, last, head, lines, shared)
+        for lines in same
     ):
         return found
     if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same):

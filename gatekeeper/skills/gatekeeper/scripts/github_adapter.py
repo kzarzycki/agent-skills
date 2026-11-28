@@ -67,7 +67,7 @@ THREADS = "reviewThreads(first: 100) { totalCount nodes { isResolved comments(fi
 
 PULL = f"""id number url title isCrossRepository author {{ __typename login }} {ASSIGNEES} state isDraft mergeable autoMergeRequest {{ enabledAt }} isInMergeQueue body baseRefName baseRefOid headRefName headRefOid baseRepository {{ nameWithOwner defaultBranchRef {{ name }} }} labels(first: 50) {{ nodes {{ name }} }} comments(last: 100) {{ totalCount nodes {{ {NOTE} }} }}
   files(first: 100) {{ totalCount nodes {{ path changeType additions deletions }} }} latestReviews(first: 100) {{ nodes {{ state author {{ login }} }} }}
-  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body submittedAt commit {{ oid }} }} }}
+  reviews(last: 100) {{ totalCount nodes {{ author {{ login }} state body submittedAt commit {{ oid }} comments(first: 100) {{ nodes {{ body }} }} }} }}
   {THREADS}
   authored: commits(first: 100) {{ totalCount nodes {{ commit {{ author {{ user {{ login }} }} committer {{ user {{ login }} }} }} }} }}
   timelineItems(last: 100, itemTypes: [LABELED_EVENT, READY_FOR_REVIEW_EVENT]) {{ nodes {{ __typename
@@ -858,6 +858,18 @@ def rest_pull(pr: int) -> dict[str, Any]:
             "body": review.get("body") or "",
             "submittedAt": review.get("submitted_at"),
             "commit": {"oid": review.get("commit_id") or ""},
+            # a verifier's findings are its inline comments (verdict), which the gate reads for the ids a spec approval
+            # closes; another review's are no finding, so its call is spared
+            "comments": {
+                "nodes": [
+                    {"body": comment.get("body") or ""}
+                    for comment in rest_pages(
+                        f"pulls/{pr}/reviews/{review['id']}/comments?per_page=100"
+                    )
+                ]
+                if (review.get("body") or "").startswith("Verifier (")
+                else []
+            },
         }
         for review in rest_pages(f"pulls/{pr}/reviews?per_page=100")
     ]
