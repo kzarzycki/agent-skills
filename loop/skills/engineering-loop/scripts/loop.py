@@ -142,6 +142,7 @@ def brief(
     pull = gatekeeper.pull_request(pr)
     with gatekeeper.policy_from(pull["baseRefName"]):
         _, loop = gatekeeper.project()
+    policy = loop  # the cap's setting is the policy's, not loop.md's
     if isinstance(loop, gatekeeper.Policy):
         where = gatekeeper.toplevel() / gatekeeper.LOOP
         loop = gatekeeper.read(where) if where.exists() else None
@@ -165,7 +166,7 @@ def brief(
     if isinstance(reviewed, str):
         raise gatekeeper.Refused(f"PR #{pr} {reviewed}")
     number = max((n for _, n, _ in reviewed), default=0) + 1
-    if over := gatekeeper.over_cap(pull, number, loop):
+    if over := gatekeeper.over_cap(pull, number, policy):
         raise gatekeeper.Refused(f"PR #{pr}: {over}")
     base = gatekeeper.merge_base(pull["baseRepository"]["defaultBranchRef"]["name"], head)
     issues = sorted(

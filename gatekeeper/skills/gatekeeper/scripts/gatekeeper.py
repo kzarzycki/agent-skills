@@ -3504,7 +3504,7 @@ def over_cap(pull: dict[str, Any], number: int, loop: str | None) -> str | None:
     )
 
 
-# a blocker or major's sibling the verifier didn't run (verifier.md, Siblings): `Sibling: <case>: not run`
+# a blocker or major's sibling the verifier didn't run (the verifier role, Siblings): `Sibling: <case>: not run`
 UNRUN_SIBLING = re.compile(r"^Siblings?:.*\bnot run\b", re.IGNORECASE)
 
 
