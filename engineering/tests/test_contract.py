@@ -152,7 +152,8 @@ def test_no_skill_sends_the_user_to_a_setup_skill() -> None:
 
 def _lead_steps() -> dict[int, str]:
     """lead.md's numbered steps, by number, each up to the next step or paragraph heading."""
-    text = (LOOP / "lead.md").read_text()
+    # the loop's steps only: the Cloud lead section below them numbers its own points
+    text = (LOOP / "lead.md").read_text().split("\n## ", 1)[0]
     parts = re.split(r"^(\d+)\. \*\*", text, flags=re.MULTILINE)
     return {
         int(number): " ".join(body.split("\n\n")[0].split())
