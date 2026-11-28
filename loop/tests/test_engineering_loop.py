@@ -114,7 +114,9 @@ def test_the_cloud_is_the_default_and_none_opts_out() -> None:
     assert "`Cloud worker: <agent>, gate <task>, env <name>`" in section
     assert "`omnigent_agent.py cloud-env <checkout>`" in section
     row = next(line for line in skill.splitlines() if line.startswith("| `docs/agents/loop.md` |"))
-    assert "`Cloud worker: <agent>, gate <task>`" in row and "`Cloud worker: none`" in row
+    # the keys and their old lines are stated in policy.md, Loop settings, only: the row points there
+    assert "policy.md, Loop settings," in row
+    assert "`Cloud worker:" not in row and "loop-migrate" not in row and "Gate cost" not in row
 
 
 def test_placement_is_stated_once_and_the_role_files_point_to_it() -> None:
