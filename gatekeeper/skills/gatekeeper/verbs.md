@@ -425,9 +425,7 @@ when it is a whole number from 1; else, where loop.md has the line `Gate cost: <
 cost's cores and (total memory − reserve) ÷ the cost's GB, at least 1; without the line, a third of the cores, at least
 1. `GATE_SLOTS=off` takes no slot at all. `heavy --plan` prints the count and the limit that set it, `slots <n>:
 <cores|memory|GATE_SLOTS|off> (<cores> cores, <GB> GB, cost <c> cores <m> GB, reserve <r> GB)`, as the template's
-`gate-slot --plan` does, and a wait for a slot says the same line; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` runs the check, records
-nothing and exits with the check's code, so it is the gate while iterating too and its clean green run, the last one,
-records itself.
+`gate-slot --plan` does, and a wait for a slot says the same line; `local-ci --record` makes one on HEAD with no PR. On a checkout with changes `--record` is refused at once, listing the changed files, before any slot is taken or step runs, since such a run could record nothing: commit or remove them (a log or pid file written into the worktree root counts) and run it again.
 Unless it already leads its own session, `local-ci` starts itself again in a new one, stdin from /dev/null, and follows
 it, exiting with its exit code: a caller killed with its process group (a harness capping a background command) leaves
 the check running, and it still records its pass or failure. Beside the records it writes `<head>.log` (its output),

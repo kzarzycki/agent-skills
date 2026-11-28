@@ -423,17 +423,29 @@ def test_without_select_uncommitted_work_runs_the_selector(worker: dict[str, Any
     assert worker["ran"]() == ["selector"]
 
 
-def test_a_dirty_narrowed_record_runs_the_selector_and_records_nothing(
+def test_a_dirty_narrowed_record_is_refused_without_running_the_selector(
     worker: dict[str, Any], capsys: Any
 ) -> None:
-    """local-ci on a checkout with changes "runs the check and records nothing" (local_ci's docstring)."""
+    """local-ci --record on a checkout with changes is refused before any step runs (#3006, local_ci's docstring)."""
     worker["start"](SELECT)
     worker["commit"]("docs/guide.md")
     (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
-    assert approvals.main(["local-ci", "--record", "--base", base_of_work()]) == 0
-    assert worker["ran"]() == ["selector"]
+    assert approvals.main(["local-ci", "--record", "--base", base_of_work()]) == 1
+    assert worker["ran"]() == []
     out = capsys.readouterr().out
-    assert "nothing is recorded" in out and "select.checks" not in out
+    assert "the tree has changes" in out and "src/app.py" in out and "select.checks" not in out
+
+
+def test_a_dirty_affected_tests_record_is_refused_without_running_the_selector(
+    worker: dict[str, Any], capsys: Any
+) -> None:
+    """affected-tests --record is local-ci --record's narrowed run: the same refusal, before any step (#3006)."""
+    worker["start"](SELECT)
+    worker["commit"]("docs/guide.md")
+    (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
+    assert approvals.main(["affected-tests", "--record", "--base", base_of_work()]) == 1
+    assert worker["ran"]() == []
+    assert "src/app.py" in capsys.readouterr().out
 
 
 # `select` without `build_inputs` cuts nothing, on any diff

@@ -262,7 +262,7 @@ today's `paths` give its own tree the same key. Each step that runs
 holds the host gate slot (Rules, One heavy gate per host slot) for its own run only, so a land whose host steps all
 reuse never waits on it for them, and every record, a step's or the one gate's, carries the seconds it ran, the
 seconds it waited for the slot, and the host's 1-minute load average and swap in use when it started. A run on a
-checkout with changes records nothing. A project whose check reads environment variables (a
+checkout with changes is refused before it takes a slot. A project whose check reads environment variables (a
 tier, a scope) names them in gatekeeper.md's `local_ci_env`, and they are cleared for the run, so a
 host's own setting never changes what a pass proves; the tier the merge needs goes in
 front of the command in `gate`. `local-ci` runs the check in a session of

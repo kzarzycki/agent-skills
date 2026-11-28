@@ -220,15 +220,15 @@ def test_on_demand_must_be_a_bool_and_a_typo_is_still_refused(demand: dict[str, 
     assert json.dumps([one["name"] for one in approvals.gate_plan()]) == '["lint", "unit"]'
 
 
-def test_a_checkout_with_changes_skips_it_too_unless_named(
+def test_a_checkout_with_changes_is_refused_named_or_not(
     demand: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A step run, named or not, needs a clean checkout: refused before any step runs (#3006)."""
     (demand["repo"] / "app.py").write_text("value = 5\n")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert demand["ran"]() == ["lint", "unit"]
-    assert "reference: skipped, on demand" in capsys.readouterr().out
-    assert approvals.main(["local-ci", "--record", "--step", "reference"]) == 0
-    assert demand["ran"]() == ["lint", "unit", "reference"]
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert approvals.main(["local-ci", "--record", "--step", "reference"]) == 1
+    assert demand["ran"]() == []
+    assert "app.py" in capsys.readouterr().out
 
 
 def test_a_named_step_that_fails_writes_no_gate_failure(
