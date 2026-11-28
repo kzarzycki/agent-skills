@@ -274,3 +274,81 @@ def test_a_bump_that_names_an_issue_still_has_it_checked(monkeypatch: pytest.Mon
     monkeypatch.setattr(approvals, "adopted", lambda issues, loop: [held])
     found, _ = approvals.gated("merge", cloud_bump(*FILES), None, PACK_BUMP)
     assert f"#3 waits for the owner ({approvals.NEEDS_OWNER})" in found, found
+
+
+# a consumer's `apm.yml` that follows several packs of this repository
+MULTI_BUMP = (
+    "@@ -5,13 +5,13 @@ targets:\n"
+    " dependencies:\n"
+    "   apm:\n"
+    "   - git: kzarzycki/agent-skills/gatekeeper\n"
+    "-    ref: gatekeeper-v0.1.22-next\n"
+    "+    ref: gatekeeper-v0.1.23-next\n"
+    "   - git: kzarzycki/agent-skills/omnigent\n"
+    "-    ref: omnigent-v0.1.33-next\n"
+    "+    ref: omnigent-v0.1.34-next\n"
+    "   - git: someone/other-pack\n"
+    "     ref: ^1.0.0\n"
+    "   mcp: []"
+)
+NEXT_BUMP = REF_BUMP.replace(
+    "kzarzycki/agent-skills/engineering", "kzarzycki/agent-skills/omnigent"
+).replace(
+    "-    ref: ^0.35.1\n+    ref: ^0.36.0",
+    "-    ref: omnigent-v0.1.33-next\n+    ref: omnigent-v0.1.34-next",
+)
+
+
+def test_a_bump_to_a_next_tag_of_any_pack_skips_the_spec_gate() -> None:
+    """#2926: a `-next` tag of the pack's own, or a stable one, is a release of any pack of this repository."""
+    assert gate(cloud_bump(*FILES, patch=NEXT_BUMP)) == []
+    stable = NEXT_BUMP.replace("omnigent-v0.1.34-next", "omnigent-v0.1.34")
+    assert gate(cloud_bump(*FILES, patch=stable)) == []
+
+
+def test_a_bump_moving_several_packs_skips_the_spec_gate() -> None:
+    assert gate(cloud_bump(*FILES, patch=MULTI_BUMP)) == []
+
+
+@pytest.mark.parametrize(
+    ("why", "patch"),
+    [
+        (
+            "another pack's tag on the pack",
+            NEXT_BUMP.replace(
+                "+    ref: omnigent-v0.1.34-next", "+    ref: gatekeeper-v0.1.23-next"
+            ),
+        ),
+        (
+            "a next tag with a suffix",
+            NEXT_BUMP.replace("v0.1.34-next", "v0.1.34-next-evil"),
+        ),
+        ("a next branch name", NEXT_BUMP.replace("omnigent-v0.1.34-next", "next")),
+        ("a commit", NEXT_BUMP.replace("omnigent-v0.1.34-next", "0123abcd" * 5)),
+        (
+            "a ref of a dependency outside this repository moved beside a pack",
+            MULTI_BUMP.replace("     ref: ^1.0.0", "-    ref: ^1.0.0\n+    ref: ^2.0.0"),
+        ),
+        (
+            "a new dependency beside several moved refs",
+            MULTI_BUMP.replace("   mcp: []", "+  - git: kzarzycki/agent-skills/loop\n   mcp: []"),
+        ),
+        (
+            "a ref outside the pack repository moved to a pack tag",
+            NEXT_BUMP.replace("kzarzycki/agent-skills/omnigent", "someone/omnigent"),
+        ),
+        (
+            "one of two moved refs a branch",
+            MULTI_BUMP.replace("+    ref: omnigent-v0.1.34-next", "+    ref: main"),
+        ),
+    ],
+)
+def test_a_next_or_multi_pack_bump_that_is_anything_else_keeps_the_spec_gate(
+    why: str, patch: str
+) -> None:
+    assert gate(cloud_bump(*FILES, patch=patch)) == SPEC, why
+
+
+def test_a_next_bump_from_a_branch_no_bot_section_names_keeps_the_spec_gate() -> None:
+    other = cloud_bump(*FILES, patch=MULTI_BUMP, branch="feature/bump")
+    assert gate(other) == SPEC + UNREVIEWED

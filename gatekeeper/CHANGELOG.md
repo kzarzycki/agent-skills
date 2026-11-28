@@ -5,6 +5,38 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.31 - 2026-11-28
+
+- `check merge` and `land` read loop.md's new `verifier.same_family` (`never`, the default, `low` or `high`): the highest risk level at which a verdict from the author's own family may land (a heading naming `same-family`, the family of the PR body's `Impl:` signature, or none), refusing above it and naming the setting; `verifier.same_family_until` (a quoted `YYYY-MM-DD`, checked when the policy loads) lifts it to `high` through that day for an outage and falls back after (#609).
+
+## 0.1.30 - 2026-11-28
+
+- `carry_over_main`, `loop.ci` and `loop.batch_queue` are gone: a policy that sets one is refused, naming the key. A merge of the base into a PR head keeps the verdict only when git shows it added nothing (same tree, or a clean merge with an empty `--remerge-diff`). `check queue` and `batch` were already gone; the narrowed `local-ci` of a repo with no CI and its rerun warning go with `ci`. (#654)
+
+## 0.1.29 - 2026-11-28
+
+- `gatekeeper.py --help`, `SKILL.md` and `verbs.md` say what the code does, in six places: check setup's Mergify drift check is named among the reads of the checkout's policy (and the differing-copy warning only where the base's copy is read); the verifier-review paragraph states its two exceptions; the `check`, `rerun-tests`, `gate-record` and `record approval` listings and usages say when the whole selection reruns, how a step is found by its inputs, what a head with no tree prints, and that a breakglass withdrawal still takes `--head`. Tests pin the wording (#2952).
+
+## 0.1.28 - 2026-11-28
+
+- `check merge`, `land` and `record verdict` print the risk a PR's `risk:*` label and the verifier's `Risk:` line state (`risk: medium`) instead of `risk: low` when no gate rule rates it higher, and name both when they disagree; `land` no longer reports "the PR closes no open issue" for a merged PR whose `Closes #n` issue the merge closed (#2876).
+
+## 0.1.27 - 2026-11-28
+
+- `gatekeeper.py`'s module docstring, and so `gatekeeper.py --help`, is a short summary (72 KB before); each verb has its own `--help`, and the full usage lines and prose it held are in the new `verbs.md` (#2834).
+
+## 0.1.26 - 2026-11-28
+
+- A generated bump of any pack of this repository counts as a mechanical pack bump: its `apm.yml` may change the `ref:` lines of several `kzarzycki/agent-skills/<pack>` dependencies at once, each to a stable or `-next` tag of its own pack (`omnigent-v0.1.34-next`), and its spec needs no approval (#2926).
+
+## 0.1.25 - 2026-11-28
+
+- `check merge` accepts a pass at the cap or later with only minors open once the PR body carries the lead's `Cap: #<follow-up>` line, as it does for majors; a blocker, a pass below the cap, a verdict with nothing open, or a verdict whose posted summary carries a `Not run:` line (a run never made) still refuses. `verdict` now keeps that `Not run:` line in the posted summary (#2925).
+
+## 0.1.24 - 2026-11-28
+
+- `approvals.py land --json` prints, after its usual output, one JSON line per PR it judged: `pr`, `head`, `state` (`merged`, `queued`, `waiting`, `needs-owner`, `refused`), `cause` and `url`, so a caller that routes on the exit code can tell a queued PR from a merged one, a red base from a PR's fault, and a running check from a wait on a person. Exit codes and the output without `--json` are unchanged (#2829).
+
 ## 0.1.23 - 2026-11-27
 
 - `land` under `land.queue: mergify` tries a hand-over call GitHub answers with a 5xx again (after 2, 10 and 30 seconds); one that still fails ends `land` (and `land --wait`) with exit 1 and one line naming the error, so exit 0 means queued or merged (#2405).

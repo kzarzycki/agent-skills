@@ -13,7 +13,7 @@ from test_approvals import TRACKER, VERDICT, in_project, loop_md
 
 SERVER, LEAD = "https://example.test", "0123456789abcdef0123456789abcdef"
 LINK = f"{SERVER}/c/{LEAD}"
-LOOP = loop_md()
+LOOP = loop_md("verifier:\n  same_family: high\n")  # its verdict is from the author's own family
 LEAD_MD = Path(__file__).parents[2] / "loop/skills/engineering-loop/lead.md"
 
 WITH_SESSION = f"## Evidence\n\nlog line\n\nImpl: cc/sonnet-5.5/? · Session: {LINK}\n"

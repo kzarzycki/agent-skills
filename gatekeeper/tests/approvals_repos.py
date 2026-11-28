@@ -26,7 +26,9 @@ def git_in(where: Path, *args: str) -> str:
 def build_template(where: Path) -> Path:
     """The repo every `committed` copy starts from: one file, one commit. Built once per session (per xdist worker)."""
     where.mkdir(exist_ok=True)
-    git_in(where, "init", "-q")
+    git_in(
+        where, "init", "-q", "-b", "master"
+    )  # not the ambient init.defaultBranch: tests name the branch
     git_in(where, "config", "user.email", "loop@example.com")
     git_in(where, "config", "user.name", "loop")
     (where / "app.py").write_text("value = 1\n")
