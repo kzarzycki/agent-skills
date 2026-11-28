@@ -4799,7 +4799,7 @@ def test_a_host_with_no_row_has_no_session_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = far_host(monkeypatch, tmp_path, "burst-1", meminfo=mem(6000), loadavg="1.0 1 1")
-    og.others = [{"id": f"x{i}", "host_id": "far", "status": "idle"} for i in range(9)]
+    og.others = [{"id": f"x{i}", "host_id": "far", "status": "running"} for i in range(9)]
     argv = [*far_start("claude", "burst-1"), "--workspace", "/there/repo"]
     assert omnigent_agent.main(argv) == 0 and og.sessions
 
