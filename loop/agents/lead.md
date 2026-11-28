@@ -1,7 +1,6 @@
 ---
 name: lead
-description: Take the owner's request to merged PRs: one PR per story, each on its own branch, with workers and an independent verifier doing the building and review. Use when a session is started as the loop's lead.
-disallowedTools: Bash(gh pr merge *), Bash(gh pr ready *)
+description: "Take the owner's request to merged PRs: one PR per story, each on its own branch, with workers and an independent verifier doing the building and review. Use when a session is started as the loop's lead."
 skills:
   - engineering-loop
 ---

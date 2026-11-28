@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLES = {
@@ -23,14 +24,11 @@ HARNESS_OR_MODEL = re.compile(
 )
 
 
-def split(path: Path) -> tuple[dict[str, str], str]:
+def split(path: Path) -> tuple[dict, str]:
     text = path.read_text()
     _, front, body = text.split("---\n", 2)
-    fields: dict[str, str] = {}
-    for line in front.splitlines():
-        if re.match(r"^\w[\w-]*:", line):
-            key, _, value = line.partition(":")
-            fields[key] = value.strip()
+    fields = yaml.safe_load(front)
+    assert isinstance(fields, dict)
     return fields, body
 
 
@@ -38,10 +36,17 @@ def split(path: Path) -> tuple[dict[str, str], str]:
 def test_role_file_has_valid_frontmatter(role):
     fields, body = split(ROLES[role][0])
     assert fields["name"] == role
-    assert fields["description"]
-    assert "tools" in fields or "disallowedTools" in fields
-    assert "skills:" in ROLES[role][0].read_text()
+    assert isinstance(fields["description"], str) and fields["description"]
+    assert fields["skills"]
     assert body.strip()
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_role_file_denies_no_command(role):
+    # A command-specific entry such as Bash(gh pr merge *) removes all of Bash from a subagent.
+    fields, _ = split(ROLES[role][0])
+    denied = fields.get("disallowedTools") or ""
+    assert "(" not in denied
 
 
 @pytest.mark.parametrize("role", ROLES)

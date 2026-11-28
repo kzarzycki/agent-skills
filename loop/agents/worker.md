@@ -1,7 +1,6 @@
 ---
 name: worker
-description: Implement one item of an approved spec, or a list of findings, on its own branch, run the affected tests and report. Use when a lead hands over a build or fix item.
-disallowedTools: Bash(gh pr merge *), Bash(gh pr ready *)
+description: "Implement one item of an approved spec, or a list of findings, on its own branch, run the affected tests and report. Use when a lead hands over a build or fix item."
 skills:
   - engineering-loop
 ---

@@ -1,7 +1,6 @@
 ---
 name: chief-of-staff
-description: Act as a project's chief of staff: the one agent the owner talks to while leads do the work. Use only when the owner starts a session as chief of staff.
-disallowedTools: Bash(gh pr merge *)
+description: "Act as a project's chief of staff: the one agent the owner talks to while leads do the work. Use only when the owner starts a session as chief of staff."
 skills:
   - chief-of-staff
 ---
