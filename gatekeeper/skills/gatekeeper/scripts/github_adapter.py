@@ -1645,17 +1645,18 @@ PROXY_UNATTACHED = "not enabled for this session"
 
 def merge_refusal(number: int, stderr: str | None) -> str | None:
     """What to do when the proxy refused PR #number's REST merge, None for any other error (a 409 or 422 is a stale
-    head or a conflict). A path rule is per session or environment, so attaching the repo can't lift it: the land
-    runs from a host checkout. A repo the session has no access to is the one `add_repo` fixes. Whether a proxy will
+    head or a conflict). A path rule may lift once the repo is attached with push access, and a host checkout lands
+    it either way: both routes are named. A repo the session has no access to is the one `add_repo` fixes. Whether a proxy will
     refuse can't be told without a write, so this only maps the answer."""
     text = " ".join((stderr or "").split())
     if "HTTP 403" not in text:
         return None
     if PROXY_PATH in text:
         return (
-            f"PR #{number}: this cloud session's proxy refuses the merge call for this repo ({text}); it is a path rule,"
-            " and attaching the repo does not lift it. Run `land` from a host checkout of the repo (a clone of it on"
-            " a machine whose own GitHub login merges), where the same PR lands at the same head"
+            f"PR #{number}: this cloud session's proxy refuses the merge call for this repo ({text}); it is a path rule"
+            ' that may lift once the repo is attached with push access (`add_repo`, `access: "push"`). Attach it and land'
+            " again, or run `land` from a host checkout of the repo (a clone of it on a machine whose own GitHub login"
+            " merges), where the same PR lands at the same head"
         )
     if PROXY_UNATTACHED in text:
         return (

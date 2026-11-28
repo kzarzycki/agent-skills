@@ -5469,7 +5469,7 @@ def refused_merge(
     return rest_land["land"]("7")
 
 
-def test_a_proxy_path_403_on_the_rest_merge_names_the_host_land_not_add_repo(
+def test_a_proxy_path_403_on_the_rest_merge_names_add_repo_and_the_host_land(
     rest_land: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     code, lines = refused_merge(
@@ -5479,7 +5479,7 @@ def test_a_proxy_path_403_on_the_rest_merge_names_the_host_land_not_add_repo(
     )
     text = " ".join(lines)
     assert code == 1 and "from a host checkout" in text and "not permitted through" in text
-    assert "add_repo" not in text
+    assert "add_repo" in text and '"push"' in text
     assert rest_land["main"]() == rest_land["base"]
 
 
