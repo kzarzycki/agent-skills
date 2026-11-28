@@ -14157,7 +14157,9 @@ def local_ci(
         # or any host slot is taken (#3006)
         head, changes = checkout_state()
         if changes:
-            raise Refused(f"the tree has changes, so the check would not run on the head:\n{changes}")
+            raise Refused(
+                f"the tree has changes, so the check would not run on the head:\n{changes}"
+            )
         # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
         RAN["command"] = "\n".join(step["command"] for step in gate_plan(passed) if here(step))
         # a run of named steps (`--step`) says which, never that the gate passed

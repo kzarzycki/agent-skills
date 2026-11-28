@@ -6597,7 +6597,7 @@ def test_a_shallow_clone_that_already_reaches_the_base_is_not_deepened(
 def test_local_ci_record_on_a_changed_shallow_checkout_is_refused_and_records_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    clone, fork, _ = shallow_clone(tmp_path)
+    clone, _, _ = shallow_clone(tmp_path)
     (clone / "app.py").write_text("value = 99\n")
     seen = tmp_path / "seen"
     script = tmp_path / "gate.sh"
