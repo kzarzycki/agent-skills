@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.23 - 2026-11-28
+
+- `lead.md` hands a size M or larger change to "a worker" and names no model; the tier is `loop.md`'s `Worker model:` line (#1222).
+
 ## 0.1.22 - 2026-11-28
 
 - The loop's docs no longer describe a project's own merge queue, `carry_over_main` or `ci: false`; the verifier brief's `- Rerun:` line for a repo with no CI is gone with them. (#654)
