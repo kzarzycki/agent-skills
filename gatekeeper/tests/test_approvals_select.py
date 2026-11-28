@@ -201,13 +201,6 @@ def test_local_runs_a_whole_suite_selection_here(worker: dict[str, Any]) -> None
     assert worker["ran"]() == ["selector"]
 
 
-def test_without_ci_a_whole_suite_selection_runs_here_as_before(worker: dict[str, Any]) -> None:
-    worker["start"]("ci: false\n" + WHOLE)
-    worker["commit"]("conftest.py")
-    assert approvals.main(["affected-tests"]) == 0
-    assert worker["ran"]() == ["selector"]
-
-
 def test_a_whole_suite_selection_still_runs_the_checks_the_rest_touches(
     worker: dict[str, Any],
 ) -> None:
@@ -472,87 +465,9 @@ def test_without_select_an_empty_diff_runs_the_selector(worker: dict[str, Any]) 
 
 # `local-ci <pr>` from a checkout not on the PR's head: the cut is of the PR's head, not the checkout's
 
-NO_CI = "loop:\n  ci: false\n"
-
-
-def as_pr(monkeypatch: pytest.MonkeyPatch, head: str) -> list[str]:
-    """`local-ci 7` against a stand-in GitHub: the PR's head and base, and the comments it posts."""
-    monkeypatch.setattr(approvals, "leads_its_session", lambda: True)
-    monkeypatch.setattr(approvals, "settled_head", lambda pr, want: head)
-    monkeypatch.setattr(approvals, "pull_status", lambda pr: {"baseRefName": "main"})
-    monkeypatch.setattr(approvals, "base_branch", lambda pr: "main")
-    posted: list[str] = []
-    monkeypatch.setattr(approvals, "comment", lambda pr, body: posted.append(body))
-    return posted
-
 
 def head_of() -> str:
     return git_in(Path.cwd(), "rev-parse", "HEAD").strip()
-
-
-@pytest.mark.parametrize(
-    "policy",
-    [None, SELECT, "select:\n  unkeyed: [lint]\n"],
-    ids=["without-select", "select", "unkeyed-only"],
-)
-def test_a_build_input_prs_recorded_pass_posts_from_main(
-    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch, policy: str | None
-) -> None:
-    worker["start"]((policy or "") + NO_CI)
-    worker["commit"]("src/app.py")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert worker["ran"]() == ["selector"]
-    posted = as_pr(monkeypatch, head_of())
-    git_in(Path.cwd(), "checkout", "-q", "main")
-    assert approvals.main(["local-ci", "7"]) == 0
-    assert "(narrowed)" in posted[0] and "select.checks" not in posted[0]
-    assert worker["ran"]() == ["selector"]
-
-
-def test_a_docs_prs_recorded_pass_posts_from_a_checkout_on_a_code_branch(
-    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    worker["start"](SELECT + NO_CI)
-    worker["commit"]("docs/guide.md")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert worker["ran"]() == []
-    posted = as_pr(monkeypatch, head_of())
-    git_in(Path.cwd(), "checkout", "-q", "-b", "other", "main")
-    worker["commit"]("src/app.py")
-    assert approvals.main(["local-ci", "7"]) == 0
-    assert "select.checks: none" in posted[0]
-    assert worker["ran"]() == []
-
-
-def test_on_the_prs_head_a_docs_prs_recorded_pass_posts(
-    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    worker["start"](SELECT + NO_CI)
-    worker["commit"]("docs/guide.md")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    posted = as_pr(monkeypatch, head_of())
-    assert approvals.main(["local-ci", "7"]) == 0
-    assert "select.checks: none" in posted[0]
-    assert worker["ran"]() == []
-
-
-@pytest.mark.parametrize(
-    ("paths", "key"),
-    [(["docs/guide.md"], "select.checks: none"), (["apm.yml", "apm.lock.yaml"], "agent-sync")],
-)
-def test_a_cut_prs_recorded_pass_posts_from_a_dirty_checkout_on_main(
-    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch, paths: list[str], key: str
-) -> None:
-    """A lead's checkout with an uncommitted edit: the cut is of the PR's head, so a docs or pack-bump PR's record is
-    still found (a named head is exempt from the dirty-checkout rule)."""
-    worker["start"](SELECT + NO_CI)
-    worker["commit"](*paths)
-    assert approvals.main(["local-ci", "--record"]) == 0
-    posted = as_pr(monkeypatch, head_of())
-    git_in(Path.cwd(), "checkout", "-q", "main")
-    (Path.cwd() / "src" / "app.py").write_text("value = 2\n")
-    assert approvals.main(["local-ci", "7"]) == 0
-    assert "select.checks:" in posted[0] and key in posted[0]
 
 
 def test_a_move_inside_docs_runs_nothing(worker: dict[str, Any]) -> None:

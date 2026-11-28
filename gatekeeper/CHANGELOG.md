@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.30 - 2026-11-28
+
+- `carry_over_main`, `loop.ci` and `loop.batch_queue` are gone: a policy that sets one is refused, naming the key. A merge of the base into a PR head keeps the verdict only when git shows it added nothing (same tree, or a clean merge with an empty `--remerge-diff`). `check queue` and `batch` were already gone; the narrowed `local-ci` of a repo with no CI and its rerun warning go with `ci`. (#654)
+
 ## 0.1.29 - 2026-11-28
 
 - `gatekeeper.py --help`, `SKILL.md` and `verbs.md` say what the code does, in six places: check setup's Mergify drift check is named among the reads of the checkout's policy (and the differing-copy warning only where the base's copy is read); the verifier-review paragraph states its two exceptions; the `check`, `rerun-tests`, `gate-record` and `record approval` listings and usages say when the whole selection reruns, how a step is found by its inputs, what a head with no tree prints, and that a breakglass withdrawal still takes `--head`. Tests pin the wording (#2952).

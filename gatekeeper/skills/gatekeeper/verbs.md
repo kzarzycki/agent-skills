@@ -25,8 +25,8 @@ uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing pro
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
     uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py overlap <pr>|--files <path>... [--base <b>]  # other open PRs changing the same files: hunks, and whether the heads merge
-    uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; with `ci: false`: post the head's recorded pass, refuse without one; --run runs `mise run check:all` here then
-    uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed under `ci: false` or with --base (Narrowed mode)
+    uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; --run runs `mise run check:all` here then
+    uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed with --base (Narrowed mode)
     uv run scripts/approvals.py local-ci --status <head>   # the detached run on a head: running (exit 3), passed, failed
     uv run scripts/approvals.py local-ci --record --head-proof  # the same under the caller's env values: loop.md's head proof
     uv run scripts/approvals.py local-ci --record --rerun [--base <rev>] [--no-push]  # an independent rerun of HEAD's selection: nothing reused, its record keyed apart (levels' `rerun`); --no-push keeps the record commit as a local branch and names it, for a CI job without a write token
@@ -36,7 +36,7 @@ uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing pro
     uv run scripts/approvals.py queue-config               # the Mergify config `.mergify.yml` holds: the pack's mergify.yml with gatekeeper.md's `land` batch_size and batch_wait_seconds
     uv run scripts/approvals.py timeouts [--json|--mergify|--check]  # every limit the working tree's `timeouts` derive; --mergify prints .mergify.yml from it, as queue-config does; --check: exit 1, one line each, when .mergify.yml, a marked workflow job's `timeout-minutes`, loop.md's `Wall-clock variable:`, a hand-set `land.wait` or the nightly's push paths (against `select.build_inputs`) is out of step
     uv run scripts/approvals.py durations [--record <junit.xml|durations.txt> [--out <file>] [--setup <seconds>]] [--report]  # the nightly's per-test durations file (what `shards --durations` and `affected-tests`' estimate read); --report: a line per gate run whose time is over 25% from its estimate
-    uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) under `loop.ci` true prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
+    uv run scripts/approvals.py affected-tests [--base <rev>] [--record] [--local]  # a whole-suite selection (a declared `select.whole_suite` file; `select.checks` still run) prints `whole suite selected; CI runs it` and runs nothing, its record the head's tests pass; --local runs it here; the worker's test run on a head: loop.md's `Affected tests:` command against <rev>, else the merge base; the narrowest set when it can't tell; `check` under `Gate: full` or with no selector; --record: its pass pushed as `local-ci --record` pushes a narrowed one; stopped at `timeouts.run`, exit 124 and one line
     uv run scripts/approvals.py rerun-tests <failed-tests.json> --red <head> [--base <rev>]  # a red run's one rerun (R5): the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order (on a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id)); the red head's `Affected tests:` line, never the base's; exit 75 when the rerun ran no test
     uv run scripts/approvals.py prune-records [--head <sha>...]  # delete origin's gate records (`refs/loop/gate/` refs and `loop-gate/` branches) no open PR head needs, then run the one upgrade sweep (old `loop-gate/` and `loop-event/` branches moved to `refs/loop/`; `claude/*` branches whose PR is merged or closed deleted, #2821): the trees of the given (closed or merged) heads at once, any other tree over a day old with no open PR; every `land` ends with it, so a merge by Mergify or a queue, or a closed PR, leaves none (#1869); needs a token that can delete refs
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
@@ -108,7 +108,7 @@ each issue, where gatekeeper.md has a `signoff` rule (below); the verifier's PR
 reviews, a review counting only when its body starts `Verifier (<family>), pass <n>` (same-family included) and the
 PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
 public repo: every one on the newest
-pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, or the head carries that commit's verdict (`verdict on <old> carried`): it holds the same tree whatever its commits, or every commit since only takes the base in with no hand edit (clean merges of main, or a clean rebase; with `carry_over_main` in gatekeeper.md, only clean merges whose changes are disjoint from the PR's and touch no `except` path), since any other
+pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, or the head carries that commit's verdict (`verdict on <old> carried`): it holds the same tree whatever its commits, or every commit since only takes the base in with no hand edit (clean merges of main, or a clean rebase), since any other
 commit after a verdict needs one of its own; at the cap or later, a verdict with no blocker, no run missing and open majors or minors lands once the PR body records the lead's decision (`Cap: #<follow-up>`), which replaces the satisfied verdict (the merge policy still decides whether the PR needs a go); on a high-risk change (below), that pass came from the default tier, not
 one whose heading names `mid` or `small` (a `Verifier model:` tier, the verifier role), since a lower tier's review is enough
 only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or `same-family`, is no tier), and on a PR
@@ -116,8 +116,7 @@ that only bumps the pack's pin, the pin target's tier rule judges that pass inst
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
 author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head,
-since GitHub merges nothing without them (a base that requires none waits for no check, and `ci: false` asks no
-`local-ci` pass: the verifier's record is the merge's proof, and no gate runs after it), and, while the change's level asks a go of its merge
+since GitHub merges nothing without them (a base that requires none waits for no check), and, while the change's level asks a go of its merge
 (below), for the owner's go on that head: the newest commit status `owner` on the head commit by the account running this or a writer is
 green, and the PR holds the owner's record (`Approved by the owner.`, then `Approved: merge`, `By: owner`,
 `Head: <sha>`) naming that head. `approve merge <pr> --head <sha> --by owner` posts both on the owner's word, the
@@ -202,7 +201,7 @@ over and left in place. The base is fetched once the lock is taken, so the batch
 2. The candidates, oldest PR first, are every open PR into the base from this repository, not a draft, that holds every
 proof of `check merge` but its CI wait, is not outside the loop (`opt_out`, below), has the owner's go where it is high
 risk, and has the checks the base requires on GitHub (`required_checks`, but `loop:approvals`, which is check merge's
-own output) green on its head. Under `ci: false` the head needs no `local-ci` pass. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
+own output) green on its head. With loop.md's `head_proof`, the head also carries its head proof (below), else it is no candidate and `land`
 names the command that records it. `land <pr>` on a draft marks it ready, never on a missing proof, since ready starts CI, and does so before it
 waits for the lock, so the holder's next batch includes it; while the checks that starts are required, it waits (exit 3).
 `land` takes several PRs: each named draft is marked ready the same way, and the named PRs land in one batch with the other
@@ -378,10 +377,10 @@ section, the project's word that its base requires none (a ruleset that does pic
 a draft is marked ready and an evicted PR turned back to draft through the proxy's draft routes
 (`ccr/ready_for_review`, `ccr/convert_to_draft`). Off a cloud session only `where` is new.
 `land` (once it has fetched the base) and `check merge` refuse, naming the files, when this script or the tracker file, loop.md or gatekeeper.md differ from `origin/<base>`'s, so a PR is judged by the base's code and rules, never its own: run from a checkout of the base. `check merge` under `GITHUB_ACTIONS` also refuses when the checked-out commit is not on the base's history (an older base commit passes this step, and the drift check above judges its files). `land --wait` that meets the refusal because another land moved those files while it waited fast-forwards a clean checkout of the base (its branch checked out, no tracked file edited) and runs again from the new code, keeping its ceiling; any other checkout is left alone and the land runs again from a fresh detached worktree of `origin/<base>`, removed when it ends; the refusal stands only when nothing newer exists to run from (the checkout is the base's tip, or the base lacks the running script).
-loop.md's `carry_over_main` and `ci` work as below for one more release, each printing one `deprecated:` line on
-stderr. The keys that drove a gate at land, `batch_queue` under `loop` and `land`'s `gate_on`,
+loop.md's `carry_over_main` section, its `ci` and its `batch_queue` are gone (#654): a policy that sets one is refused,
+naming it. The keys that drove a gate at land, `land`'s `gate_on`,
 `cloud_gate_timeout_seconds` and `host_gate`, do nothing (#1872): a policy that still sets one parses, with one
-`ignored:` line on stderr naming it, and the `check queue` and `batch` verbs are gone.
+`ignored:` line on stderr naming it, and the queue verbs are gone.
 `local-ci` runs only on a clean checkout at the PR head, and records nothing if the check fails or changes the tree.
 In a shallow clone (a cloud session's), before the gate it fetches the base (the PR's, else the default branch) into
 `refs/remotes/origin/<base>` and deepens (`git fetch --deepen 50`, up to three times, then `--unshallow`) until `git
@@ -480,25 +479,14 @@ base SHA, a push's previous tip), else the merge base with the branch's base. Wh
 the narrowest set it can still name (#2217): a `<rev>` git can't resolve (all zeros, a new branch) selects against the
 merge base, and a loop.md without the line runs the `select` cut, then `mise run check` for a change the cut can't
 settle; zero runs only for a change of non-product paths, saying `0 selected: non-product`. The opt-out runs `mise run
-check`. Under
-`ci: false`, `local-ci --record` runs it against `--base`, else the merge base, and `local-ci <pr>` posts that pass on
-the head's tree, against the merge base of the head and the PR's base; `check merge` reads no local-ci pass (#1872). A
+check`. With `--base`,
+`local-ci --record` runs it against that rev; `check merge` reads no local-ci pass (#1872). A
 narrowed pass's command is the variable's assignment, the command, then ` (narrowed)`, which no gate command can hold,
 so its record and key never equal a full pass's, and nothing that wants a full pass takes it. `affected-tests
 --record` records its pass the same way (local_ci under narrowed_to its base), and `gate-record <head> -- <the narrowed
 command>` reads it, its last word `(narrowed)`. Its `gate` status and record branch say `narrowed vs <base>`, and `local-ci --status` says `narrowed against <base>`. A project with
 `gate_steps` keeps its steps everywhere, since each narrows by its `paths`. Without the `Affected tests:` line, `check
 build` says in one line that every gate runs the full check (not with the opt-out, which chose it).
-Deprecated: with loop.md's `carry_over_main` section (`except: <globs>`), merges of the base into a PR head H keep H's proofs:
-each commit from the head H' down its first-parent line to H is a merge whose second parent is on the base (an
-ancestor of its tip), whose tree is what `git merge-tree --write-tree` makes of its parents (no conflict resolved,
-nothing added), and where the base's changes since the merge base touch no file the PR's side changes and no path an
-`except` glob matches (fnmatch, as a rule's `paths`: the project's merge-check configuration, such as lint, type,
-test and gate config and lockfiles). So a PR commit after H, new, edited or rebased, carries nothing. Then H's newest
-verdict covers H' (`check merge` and `land`, the verifier's `Risk:` line included). It never carries
-a `local-ci` record: H' runs its own gate, as CI would run on it. `check merge` and `land` print one line per merge
-naming it, its first parent and the predicate, or why the head carries nothing. A git error, a second merge base or
-any failed condition carries nothing: the head needs its own verdict, as without the section, where `check merge` and `land` read no git for it.
 Every comment and review `approvals.py` posts is checked first against a local deny list, the file the environment
 variable `LOOP_DENY_LIST` names (denied): a line naming a listed term, outside an Omnigent session link, refuses the post before any call to GitHub.
 `verdict` posts a report in the verifier role's format as one PR review (event COMMENT, since GitHub refuses the others on
@@ -573,7 +561,7 @@ running this counts as a writer, by its own permissions on the repo.
 
 The policy block (policy.md beside SKILL.md has every key), YAML, holds the owner's standing policy, checked against SCHEMA: a
 section or key it doesn't know or a value of the wrong type is refused, naming the key, and so is a file without
-the block. `loop` holds `cap`, `ci`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
+the block. `loop` holds `cap`, `opt_out`, `gate`, `local_ci_env`, `owner`, `machine_exit`,
 `short_seconds` (mutate.py's), `pre_land` and `head_proof`; `mutate` holds `inconclusive_exit` (mutate.py's); `spec` holds `auto`; `levels` holds `low`,
 `high` and `critical`, each with `spec` and `merge` (above), and `rerun`, whether `check merge` and `land` need an
 independent rerun of the head's selection on its tree (default false at every level: a repo turns it on once a workflow pushes the rerun record): a
