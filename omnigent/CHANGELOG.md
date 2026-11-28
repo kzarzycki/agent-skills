@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.38 - 2026-11-28
+
+- `start` resolves a name held by identical copies to the highest `version` first, then the newest `created_at`, so `claude-cloud` no longer lands on an older definition that refuses `bypassPermissions` (#2917).
+
 ## 0.1.37 - 2026-11-28
 
 - `omnigent_agent.py`: the `--registry` file is written atomically (a temp file beside it, then `os.replace`) under a lock on a sidecar `<registry>.lock` file, so parallel `send`/`run` processes no longer leave it truncated and stop child notifications (#2406).

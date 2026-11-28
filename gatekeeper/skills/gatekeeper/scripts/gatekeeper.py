@@ -5,7 +5,7 @@
 # ///
 """The gatekeeper (engineering-loop): decides from proof on the forge and the team's policy whether a change may take
 its next step (be built, merge), records that proof, and lands PRs. It reads docs/agents/ from origin/<base>, the ref land merges on
-(so a PR can't loosen its own gate); the checkout's copy only with no origin ref or with GATEKEEPER_POLICY_FROM_WORKING_TREE set, and for queue-config and timeouts. It reaches the tracker, the forge and the evidence only through their ports (github_adapter.py by default).
+(so a PR can't loosen its own gate); the checkout's copy only with no origin ref or with GATEKEEPER_POLICY_FROM_WORKING_TREE set, and for queue-config, timeouts and check setup's Mergify drift check. It reaches the tracker, the forge and the evidence only through their ports (github_adapter.py by default).
 
 Run `uv run scripts/gatekeeper.py <verb> --help` for one verb; the verbs, in one line each:
 
@@ -1415,10 +1415,63 @@ class Rated(NamedTuple):
     source: str
     because: str
 
-    def line(self, pull: dict[str, Any]) -> str:
-        """The line `check merge` and `land` print: the level, why, and the action they applied."""
-        rated = f"{self.level} ({self.why})" if self.why else self.level
-        return f"PR #{pull['number']}: risk: {rated}; merge: {self.merge}"
+    def line(self, pull: dict[str, Any], loop: str | None = None) -> str:
+        """The line `check merge`, `land` and `record verdict` print: the level, why, and the action they applied.
+        The gate's rule only knows `low`, `high` and `critical`, so a PR whose `risk:*` label or verifier `Risk:` word
+        says more (`risk:medium`) shows that word instead of `low`, and when the label and the verdict disagree the line
+        names both (stated_risk)."""
+        label, said = stated_risk(pull, loop)
+        words = {*label, *([said] if said else [])}
+        level, why = self.level, self.why
+        if self.level == "low" and words:
+            level = max(words, key=risk_rank)
+            if risk_rank(level) > 0:
+                why = " and ".join(stated_parts(label, said)) + "; no gate rule rates it higher"
+        shown = f"{level} ({why})" if why else level
+        note = ""
+        extra = ""
+        if self.level == "low" and len(words) > 1:
+            note = f"; the PR's label and the verdict disagree: {' vs '.join(stated_parts(label, said))}"
+        elif self.level != "low" and (words - {self.level} or len(words) > 1):
+            # the gate's own rating and merge action stand, on the line as before; what the PR says beside it (the
+            # label and the verdict as stated, a low one included) goes on a line of its own, unless it only repeats
+            # the rating
+            kind = "disagree" if len(words) > 1 else "state"
+            extra = (
+                f"\nPR #{pull['number']}: the PR's label and the verdict {kind}:"
+                f" {' vs '.join(stated_parts(label, said))}"
+            )
+        return f"PR #{pull['number']}: risk: {shown}; merge: {self.merge}{note}{extra}"
+
+
+RISK_WORDS = ("low", "medium", "high", "critical")
+
+
+def risk_rank(word: str) -> int:
+    """How high a `risk:*` label's or verdict's word ranks: its place in RISK_WORDS, a word it does not list as medium's."""
+    return RISK_WORDS.index(word) if word in RISK_WORDS else 1
+
+
+def stated_risk(pull: dict[str, Any], loop: str | None = None) -> tuple[list[str], str | None]:
+    """What the PR itself says of its risk, apart from the gate's rating: the words of its `risk:*` labels, and the
+    `Risk:` word of the verifier's newest pass on the head (None when none is read, or none says one)."""
+    label = sorted(n.partition(":")[2].lower() for n in names(pull) if n.startswith("risk:"))
+    try:
+        found = head_passes(pull, loop)
+    except (Refused, OSError, subprocess.CalledProcessError):
+        return label, None
+    said = None
+    if not isinstance(found, str) and found[1]:
+        word = re.match(r"[A-Za-z]+", found[1][-1][1].get("Risk", ""))
+        said = word[0].lower() if word else None
+    return label, said
+
+
+def stated_parts(label: list[str], said: str | None) -> list[str]:
+    """stated_risk's words as the lines name them: each label, then the verdict's `Risk:` line."""
+    return [f"PR label `risk:{each}`" for each in label] + (
+        [f"verifier `Risk: {said}`"] if said else []
+    )
 
 
 def rating(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> Rated:
@@ -5792,7 +5845,9 @@ def closes_nothing(
     if not issues:
         return []
     mine = closed(pull, pull["baseRepository"]["nameWithOwner"], loop)
-    if any(i["number"] in mine and str(i.get("state", "OPEN")).upper() == "OPEN" for i in issues):
+    # a merged PR's issue is closed by that merge: it was open when the PR was judged, so closed now is no finding
+    live = {"OPEN", "CLOSED"} if pull.get("state") == "MERGED" else {"OPEN"}
+    if any(i["number"] in mine and str(i.get("state", "OPEN")).upper() in live for i in issues):
         return []
     if pin_target(pull) is not None:  # a verified release pin bump has no issue to close
         return []
@@ -6170,7 +6225,7 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     rated = rating(pull, issues, loop) if point == "merge" else None
     if rated is not None:
         # on stderr, so the lines a workflow or a lead reads as the gate's answer stay what holds the merge
-        print(rated.line(pull), file=sys.stderr)
+        print(rated.line(pull, loop), file=sys.stderr)
     used = (
         whose(pull, loop)
         if rated is not None and not found and not waiting and rated.merge != "gates"
@@ -7946,7 +8001,7 @@ def landable(
         )
     # after CI, so the owner is never asked about a head CI could still reject
     rated = rating(pull, issues, loop)
-    print(rated.line(pull), file=sys.stderr)
+    print(rated.line(pull, loop), file=sys.stderr)
     if owner := owner_waits(pull, issues, loop):
         for line in owner:
             print(line)
@@ -14286,7 +14341,7 @@ def main(argv: list[str]) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser(
         "check",
-        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun`: exit 0 once it has printed a state).",
+        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun`: exit 0 once it has printed a state, 1 for a missing PR or an unloadable policy).",
         description="Check the proofs a point needs. Points: build (the issue's spec approval, labels and claim; --issue <n> before the PR exists), merge (the PR's verdict, evidence, keyword and landing rules), ready (the PR body's evidence only), session (the Impl: line's session link), setup (a pack upgrade's gate), stalled (open PRs land would take that its queue does not hold and that are eligible to land, or verified and idle past loop.stalled_after_hours with no go or gate record, where verified is a satisfied verdict on the head, or an unsatisfied one once the cap is reached) and rerun (prints `rerun: needed`, `rerun: done` or `rerun: not needed (<why>)`, and exits 0 once it has printed a state; a missing PR or an unloadable policy exits 1). For the other points it prints one line per missing proof: exit 0 when none, 1 when a proof is missing, 3 when it only waits.",
     )
     checking.add_argument(
@@ -14309,8 +14364,8 @@ def main(argv: list[str]) -> int:
     ).add_subparsers(dest="kind", required=True)
     approving = records.add_parser(
         "approval",
-        help="Record a person's approval of a spec, plan or merge (`--by owner|delegate`).",
-        description="Record an approval of a spec, plan or merge. An agent never approves on its own judgment: --by owner on the owner's word, --by delegate under `loop.delegate`. Merge approvals name the head with --head; --withdraw takes one back. `breakglass` is the owner's alone (--by owner, --head and --reason, or --withdraw; see breakglass.md).",
+        help="Record a person's approval of a spec, plan, merge or breakglass (`--by owner|delegate`; breakglass: owner only).",
+        description="Record an approval of a spec, plan or merge. An agent never approves on its own judgment: --by owner on the owner's word, --by delegate under `loop.delegate`. Merge approvals name the head with --head; --withdraw takes one back. `breakglass` is the owner's alone: --by owner and --head, plus --reason unless --withdraw (see breakglass.md).",
     )
     approving.add_argument("point", choices=(*POINTS, "merge", BREAKGLASS))
     approving.add_argument("number", type=int)
@@ -14438,8 +14493,8 @@ def main(argv: list[str]) -> int:
     queueing.add_argument("base", nargs="?", default="origin/main")
     rerunning = commands.add_parser(
         "rerun-tests",
-        help="Rerun a red run's failed tests once (R5); a pass is a flake.",
-        description="Rerun the failed tests of a red run plus what the fix reaches, once; when the fix reselects no failed test, rerun the red run's whole selection in its order. A pass is a flake only on the whole selection. Exit 75 when the rerun ran no test.",
+        help="Rerun a red run once (R5): the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order; on a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id).",
+        description="Rerun a red run once: the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order. On a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id). Exit 75 when the rerun ran no test.",
     )
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
@@ -14465,8 +14520,8 @@ def main(argv: list[str]) -> int:
     sharding.add_argument("--shard", type=int)
     recording_read = commands.add_parser(
         "gate-record",
-        help="Read origin's pass record of the gate on a head's tree.",
-        description="The verifier's read of origin's pass record of the gate (or of the given command) on a head's tree, or of a step on another tree whose configured inputs match: exit 0, else 1 naming what to run.",
+        help="Read origin's pass record of the gate on a head's tree, or of a step on another tree whose configured inputs match: exit 1 names what to run (a head with no tree or a policy refusal prints that problem alone).",
+        description="The verifier's read of origin's pass record of the gate (or of the given command) on a head's tree, or of a step on another tree whose configured inputs match: exit 0, else 1 naming what to run (a head with no tree or a policy refusal prints that problem alone).",
     )
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
