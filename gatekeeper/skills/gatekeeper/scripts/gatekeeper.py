@@ -1442,14 +1442,13 @@ class Rated(NamedTuple):
         note = ""
         extra = ""
         if self.level == "low" and len(words) > 1:
-            note = f"; the PR's label and the verdict disagree: {' vs '.join(stated_parts(label, said))}"
+            note = f"; {stated_who(label, said, True)}: {' vs '.join(stated_parts(label, said))}"
         elif self.level != "low" and (words - {self.level} or len(words) > 1):
             # the gate's own rating and merge action stand, on the line as before; what the PR says beside it (the
             # label and the verdict as stated, a low one included) goes on a line of its own, unless it only repeats
             # the rating
-            kind = "disagree" if len(words) > 1 else "state"
             extra = (
-                f"\nPR #{pull['number']}: the PR's label and the verdict {kind}:"
+                f"\nPR #{pull['number']}: {stated_who(label, said, len(words) > 1)}:"
                 f" {' vs '.join(stated_parts(label, said))}"
             )
         return f"PR #{pull['number']}: risk: {shown}; merge: {self.merge}{note}{extra}"
@@ -1476,6 +1475,16 @@ def stated_risk(pull: dict[str, Any], loop: str | None = None) -> tuple[list[str
         word = re.match(r"[A-Za-z]+", found[1][-1][1].get("Risk", ""))
         said = word[0].lower() if word else None
     return label, said
+
+
+def stated_who(label: list[str], said: str | None, disagree: bool) -> str:
+    """The subject of the line that shows what the PR says of its risk: only the sources that gave a rating (the label,
+    the verdict or both), saying they `disagree` or `state` it."""
+    if label and said:
+        return f"the PR's label and the verdict {'disagree' if disagree else 'state'}"
+    if said:
+        return "the verdict states"
+    return "the PR's labels disagree" if disagree else "the PR's label states"
 
 
 def stated_parts(label: list[str], said: str | None) -> list[str]:
