@@ -8,9 +8,10 @@ On the host that starts cloud sessions:
     python3 scripts/cloud_verifier.py env-sync [--env ID] [--script PATH] [--apply]  # is the environment's setup script the base branch's?
 
 `env-sync` reads the environment's copy of the setup script (`config.init_script`, the same GET `seed` makes) and
-compares it with the file on the base branch (`origin/HEAD`, else `origin/main`, else `main`; the working file
-when none has it). `--script` is that file's path, `.claude/claude-cloud-setup.sh` or else the older
-`.claude/cloud-setup.sh`. It prints `in sync` and exits 0, or `environment setup is stale` with the command that
+compares it with the file on the base branch (`--base`, else `origin/HEAD`, `origin/main`, `main`; the working file
+only when the checkout has none of them). The file is `--script`, else loop.md's `Cloud setup script:` line, else
+`.claude/claude-cloud-setup.sh` or the older `.claude/cloud-setup.sh`; one the base lacks is refused. Only trailing
+newlines are ignored in the comparison. It prints `in sync` and exits 0, or `environment setup is stale` with the command that
 applies it and exits 1. `--apply` posts the base branch's file as `init_script`, every other config key as it
 was (as `store` does), reads it back and confirms (exit 1 when the read-back differs). Exit 2: no environment,
 login or script. `land` runs the same check after a landing whose diff touches the script (it never fails the landing).
@@ -506,10 +507,18 @@ def store(env: str, auth: dict, headers: dict) -> None:
 
 
 SETUP_SCRIPTS = (".claude/claude-cloud-setup.sh", ".claude/cloud-setup.sh")
+# loop.md's one line naming a setup script kept elsewhere; gatekeeper.py reads the same line
+CLOUD_SETUP = re.compile(r"^Cloud setup script:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+LOOP_MD = "docs/agents/loop.md"
 
 
-def base_ref() -> str | None:
-    """The base branch's ref in this checkout: origin's HEAD, else origin/main, else main; None when none exists."""
+def base_ref(base: str | None = None) -> str | None:
+    """The base branch's ref in this checkout: `base` when given, else origin's HEAD, else origin/main, else main;
+    None when none exists (an explicit `base` that does not exist is refused)."""
+    if base:
+        if run("git", "rev-parse", "--verify", "-q", base, check=False).returncode:
+            raise Refused(f"no base branch {base} in this checkout")
+        return base
     head = run("git", "symbolic-ref", "-q", "refs/remotes/origin/HEAD", check=False).stdout.strip()
     for ref in (head.removeprefix("refs/remotes/"), "origin/main", "main"):
         if ref and run("git", "rev-parse", "--verify", "-q", ref, check=False).returncode == 0:
@@ -517,35 +526,58 @@ def base_ref() -> str | None:
     return None
 
 
-def setup_script(script: str | None) -> tuple[str, str]:
-    """The setup script's path and its text on the base branch (else the working file): --script, else the first of
-    SETUP_SCRIPTS the base branch has."""
-    ref = base_ref()
+def setup_script(script: str | None, base: str | None = None) -> tuple[str, str]:
+    """The setup script's path and its text on the base branch: --script, else loop.md's `Cloud setup script:` line
+    on the base, else the first of SETUP_SCRIPTS the base has. Only a checkout with no base branch at all reads the
+    working file; a script the base lacks is refused, never read from the working tree."""
+    ref = base_ref(base)
+
+    def blob(path: str) -> str | None:
+        if ref is None:
+            file = Path(run("git", "rev-parse", "--show-toplevel").stdout.strip()) / path
+            return file.read_text() if file.is_file() else None
+        shown = run("git", "show", f"{ref}:{path}", check=False)
+        return shown.stdout if shown.returncode == 0 else None
+
+    if script is None and (loop := blob(LOOP_MD)) and (found := CLOUD_SETUP.search(loop)):
+        script = found[1].strip("`")
     for path in [script] if script else SETUP_SCRIPTS:
-        shown = run("git", "show", f"{ref}:{path}", check=False) if ref else None
-        if shown is not None and shown.returncode == 0:
-            return path, shown.stdout
-        file = Path(run("git", "rev-parse", "--show-toplevel").stdout.strip()) / path
-        if file.is_file():
-            return path, file.read_text()
-    raise Refused(
-        f"no setup script: {script or ' or '.join(SETUP_SCRIPTS)} is not on the base branch"
-    )
+        if (text := blob(path)) is not None:
+            return path, text
+    where = f"base branch {ref}" if ref else "this checkout"
+    raise Refused(f"no setup script: {script or ' or '.join(SETUP_SCRIPTS)} is not on the {where}")
 
 
-def env_sync(env: str | None, script: str | None, apply: bool) -> int:
+def same_script(a: str, b: str) -> bool:
+    """Equal but for the trailing newlines a store may add or drop: every other byte counts, a space included."""
+    return a.rstrip("\n") == b.rstrip("\n")
+
+
+def env_sync(env: str | None, script: str | None, apply: bool, base: str | None = None) -> int:
     """Compare the environment's `init_script` with the base branch's setup script; 0 in sync (or applied), 1 stale
     (or an apply that did not read back), the Refused of a missing environment, login or script is exit 2."""
-    path, wanted = setup_script(script)
+    path, wanted = setup_script(script, base)
     env = env or pinned_environment()
     headers = claude_headers()
     url = f"{environments_client().base()}/v1/environment_providers/{env}"
     current = post_json(url, None, headers)
     config = current["config"]
-    if (config.get("init_script") or "").rstrip() == wanted.rstrip():
+    if same_script(config.get("init_script") or "", wanted):
         print(f"in sync: {current['name']} ({env}) runs {path} as the base branch has it")
         return 0
-    command = f"python3 {Path(__file__).name} env-sync --env {env} --script {path} --apply"
+    command = shlex.join(
+        [
+            "python3",
+            str(Path(__file__).resolve()),
+            "env-sync",
+            "--env",
+            env,
+            "--script",
+            path,
+            *(["--base", base] if base else []),
+            "--apply",
+        ]
+    )
     if not apply:
         print(
             f"environment setup is stale: {current['name']} ({env}) runs another {path} than the base branch's;"
@@ -562,7 +594,7 @@ def env_sync(env: str | None, script: str | None, apply: bool) -> int:
         headers,
     )
     back = post_json(url, None, headers)
-    if (back["config"].get("init_script") or "").rstrip() != wanted.rstrip():
+    if not same_script(back["config"].get("init_script") or "", wanted):
         print(
             f"cloud_verifier: {env} did not keep the posted {path}: read back another",
             file=sys.stderr,
@@ -1764,6 +1796,10 @@ def command(argv: list[str] | None) -> int:
         "--script", help=f"the setup script's path; default: {' or '.join(SETUP_SCRIPTS)}"
     )
     y.add_argument(
+        "--base",
+        help="the base branch's ref to read the script from; default: origin's HEAD, else origin/main",
+    )
+    y.add_argument(
         "--apply", action="store_true", help="post the base branch's file, then read it back"
     )
     v = sub.add_parser(
@@ -1818,7 +1854,7 @@ def command(argv: list[str] | None) -> int:
         if args.command == "seed":
             return seed(args.env, args.min_days, args.host_min_days, args.host_refresh_days)
         if args.command == "env-sync":
-            return env_sync(args.env, args.script, args.apply)
+            return env_sync(args.env, args.script, args.apply, args.base)
         if args.command == "thread-exec":
             code, said = thread_exec(
                 Rpc(host_token()),
