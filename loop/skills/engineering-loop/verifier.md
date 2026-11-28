@@ -180,7 +180,7 @@ yourself, keeping standards and spec as separate axes.
   judge it on the diff, not on how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls; a delta pass cannot lower it, so a
   verdict that it falls needs the whole PR diff re-reviewed and a closing `Scope: full` line.
-- **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
+- **A run the sandbox refuses.** `claude-cloud-run` exiting 125 is no such refusal: it is the cloud route failing, so take the host fallback it prints (`LOOP_HOST_RUN=<reason> <command>`) and ask nothing. A detached worktree at the pushed head is fine for it (pass `--pr <n>` when more than one remote branch holds the head). A gate, mutation or instance run the sandbox won't let you
   make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
   at once, not a report: a report with no finding but `SATISFIED: no` spends a pass and can reach
   the cap. So does a gate or mutation run that waits for
