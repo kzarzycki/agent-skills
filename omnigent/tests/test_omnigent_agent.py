@@ -4713,17 +4713,50 @@ def test_an_epic_burst_box_is_refused_over_its_memory_load_or_session_line(
     assert omnigent_agent.main(argv) == 0 and og.sessions  # room: starts
     capsys.readouterr()
     og.sessions = {}
-    og.others = [  # four live sessions; an archived one doesn't count
-        {"id": f"x{i}", "host_id": "far", "status": "idle", "updated_at": i} for i in range(4)
-    ] + [{"id": "old", "host_id": "far", "status": "idle", "archived": True}]
-    assert omnigent_agent.main(argv) == 1  # a fifth is refused
-    assert "epic-t1 over capacity for 0s: 4 live sessions (max 4); load 1.0" in (
+    og.others = [  # eight running sessions; an archived one doesn't count
+        {"id": f"x{i}", "host_id": "far", "status": "running", "updated_at": i} for i in range(8)
+    ] + [{"id": "old", "host_id": "far", "status": "running", "archived": True}]
+    assert omnigent_agent.main(argv) == 1  # a ninth is refused
+    assert "epic-t1 over capacity for 0s: 8 live sessions (max 8); load 1.0" in (
         capsys.readouterr().err
     )
     assert og.sessions == {}
     og.procs = {}  # load and memory unreadable: the session count still refuses
     assert omnigent_agent.main(argv) == 1
-    assert "4 live sessions (max 4)" in capsys.readouterr().err
+    assert "8 live sessions (max 8)" in capsys.readouterr().err
+
+
+def test_idle_sessions_leave_room_under_the_session_cap_and_running_ones_fill_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(6000), loadavg="1.0 1 1")
+    idle = [{"id": f"i{i}", "host_id": "far", "status": "idle"} for i in range(4)]
+    run = [{"id": f"r{i}", "host_id": "far", "status": "running"} for i in range(3)]
+    og.others = idle + run  # 4 finished sessions hold no slot
+    ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
+    assert ok and "live sessions" not in line
+    og.others = idle + [{"id": f"r{i}", "host_id": "far", "status": "running"} for i in range(8)]
+    ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
+    assert ok is False and "8 live sessions (max 8)" in line
+    for status in ("queued", "launching", "starting"):  # a queued or starting turn counts too
+        og.others = [{"id": f"q{i}", "host_id": "far", "status": status} for i in range(8)]
+        assert omnigent_agent.host_capacity(og, "far", "epic-t1")[0] is False
+
+
+def test_an_archived_session_never_counts_toward_the_cap_even_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(6000), loadavg="1.0 1 1")
+    live = [{"id": f"r{i}", "host_id": "far", "status": "running"} for i in range(7)]
+    gone = [  # archived, yet their runner is still online and running a turn
+        {"id": f"a{i}", "host_id": "far", "status": "running", "archived": True} for i in range(5)
+    ]
+    og.others = live + gone
+    ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
+    assert ok and "live sessions" not in line  # 7 count, the 5 archived do not
+    og.others = live + [{"id": "r7", "host_id": "far", "status": "running"}] + gone
+    ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
+    assert ok is False and "8 live sessions (max 8)" in line
 
 
 def test_bridged_cloud_sessions_neither_hit_nor_fill_the_session_cap(
@@ -4734,13 +4767,13 @@ def test_bridged_cloud_sessions_neither_hit_nor_fill_the_session_cap(
     # harness is its agent's
     cloud = {"harness": "acp", "agent_name": "claude-cloud"}
     og.others = [
-        {"id": f"x{i}", "host_id": "far", "status": "idle", "updated_at": i} for i in range(4)
+        {"id": f"x{i}", "host_id": "far", "status": "running", "updated_at": i} for i in range(8)
     ]
     ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1", cpu=False)
     assert ok and "live sessions" not in line  # a cloud start isn't capped
-    og.others = [{**r, **cloud} for r in og.others[:3]] + og.others[3:]
+    og.others = [{**r, **cloud} for r in og.others[:7]] + og.others[7:]
     ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
-    assert ok and "live sessions" not in line  # 3 bridges and 1 local session leave room
+    assert ok and "live sessions" not in line  # 7 bridges and 1 local session leave room
 
 
 def test_local_sessions_still_fill_the_session_cap(
@@ -4748,19 +4781,25 @@ def test_local_sessions_still_fill_the_session_cap(
 ) -> None:
     og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(6000), loadavg="1.0 1 1")
     og.others = [
-        {"id": f"x{i}", "host_id": "far", "status": "idle", "harness": "acp", "agent_name": "codex"}
-        for i in range(4)
+        {
+            "id": f"x{i}",
+            "host_id": "far",
+            "status": "running",
+            "harness": "acp",
+            "agent_name": "codex",
+        }
+        for i in range(8)
     ]
     og.harnesses["codex"] = "acp:codex"
     ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
-    assert ok is False and "4 live sessions (max 4)" in line
+    assert ok is False and "8 live sessions (max 8)" in line
 
 
 def test_a_host_with_no_row_has_no_session_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = far_host(monkeypatch, tmp_path, "burst-1", meminfo=mem(6000), loadavg="1.0 1 1")
-    og.others = [{"id": f"x{i}", "host_id": "far", "status": "idle"} for i in range(9)]
+    og.others = [{"id": f"x{i}", "host_id": "far", "status": "running"} for i in range(9)]
     argv = [*far_start("claude", "burst-1"), "--workspace", "/there/repo"]
     assert omnigent_agent.main(argv) == 0 and og.sessions
 
