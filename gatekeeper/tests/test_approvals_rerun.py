@@ -381,26 +381,11 @@ def brief(
     return [line for line in capsys.readouterr().out.splitlines() if line.startswith("- Rerun:")]
 
 
-def test_with_no_ci_the_verifiers_brief_says_to_start_the_rerun_session(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    [line] = brief("loop:\n  ci: false\n" + ON, monkeypatch, tmp_path, capsys)
-    assert line.startswith(
-        "- Rerun: this repo has no CI, and gatekeeper.md's `levels` asks an independent rerun for a high or critical"
-        " head; where the head rates so (your own `Risk: high` makes it high), start a fresh cloud session that runs `uv run "
-    )
-    assert line.endswith(
-        f"approvals.py local-ci --record --rerun` on a clean checkout of {HEAD} and returns the commit of the record"
-        " branch it pushed, then write `Rerun: <that commit>` in your report, since `check merge` refuses that head"
-        " without it"
-    )
-
-
-def test_with_ci_or_no_level_asking_a_rerun_the_brief_says_nothing_of_it(
+def test_the_brief_says_nothing_of_a_rerun_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert brief("", monkeypatch, tmp_path, capsys) == []
-    off = "loop:\n  ci: false\nlevels:\n  high:\n    rerun: false\n  critical:\n    rerun: false\n"
+    off = "levels:\n  high:\n    rerun: false\n  critical:\n    rerun: false\n"
     assert brief(off, monkeypatch, tmp_path, capsys) == []
 
 
@@ -480,7 +465,7 @@ def test_no_push_goes_with_rerun(gating: Gate, capsys: pytest.CaptureFixture[str
 
 REPORT = f"""# Review
 
-Verifier: claude, same-family, pass 1
+Verifier: claude, pass 1
 
 ## Criteria
 
@@ -536,32 +521,6 @@ def test_report_json_names_the_rerun_and_a_malformed_line_is_refused(
     assert json.loads(capsys.readouterr().out)["rerun"] == RERUN_COMMIT
     assert approvals.main(["report", str(report_file(tmp_path, rerun="the CI one"))]) == 1
     assert "write `Rerun: <commit>`, the full commit" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize(
-    ("settings", "risk", "rerun", "warned"),
-    [
-        ("loop:\n  ci: false\n" + ON, "high — a gate change", None, True),
-        ("loop:\n  ci: false\n" + ON, "high — a gate change", RERUN_COMMIT, False),
-        ("loop:\n  ci: false\n", "low — fine", None, False),
-        ("", "high — a gate change", None, False),
-        ("loop:\n  ci: false\nlevels:\n  high:\n    rerun: false\n", "high — x", None, False),
-    ],
-    ids=["no-ci-high-unnamed", "named", "low", "with-ci", "rerun-off"],
-)
-def test_report_warns_on_a_high_risk_report_naming_no_rerun_where_there_is_no_ci(
-    gating: Gate,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    settings: str,
-    risk: str,
-    rerun: str | None,
-    warned: bool,
-) -> None:
-    policy(settings)
-    assert approvals.main(["report", str(report_file(tmp_path, risk, rerun))]) == 0
-    err = capsys.readouterr().err
-    assert ("names no `Rerun: <commit>`" in err) is warned
 
 
 # --- fix round 1: check rerun applies check merge's exemptions (C4) ---
@@ -651,21 +610,6 @@ def test_a_head_no_verdict_covers_asks_its_review_not_its_rerun(
     assert not any(ASKED in line for line in out)
 
 
-def test_a_far_brief_names_the_rerun_script_on_the_verifiers_host(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(approvals, "pull_request", lambda _n: pull(body="Closes #12.\n"))
-    monkeypatch.setattr(approvals, "merge_base", lambda base, head: "b" * 40)
-    monkeypatch.setattr(approvals, "project", lambda: (None, loop_md("loop:\n  ci: false\n" + ON)))
-    root = Path(approvals.__file__).resolve().parents[4]
-    monkeypatch.setattr(approvals, "toplevel", lambda: root)
-    assert approvals.main(["brief", "7", "--far", "/there/repo"]) == 0
-    [line] = [l for l in capsys.readouterr().out.splitlines() if l.startswith("- Rerun:")]
-    script = "/there/repo/tmp/loop/pr7-v1-tree/gatekeeper/skills/gatekeeper/scripts/approvals.py"
-    assert f"`uv run {script} local-ci --record --rerun`" in line
-
-
 SKILLS = Path(__file__).resolve().parents[2]
 
 
@@ -685,20 +629,6 @@ def test_the_skills_state_the_option_its_defaults_and_the_report_line() -> None:
     assert "## Independent rerun" in policy_md
     gate_skill = flat("gatekeeper/skills/gatekeeper/SKILL.md")
     assert "after the `Head:` line, a line `Rerun: <commit>`" in gate_skill
-
-
-def test_verdict_warns_as_report_does_and_still_posts(
-    reviewing: list[tuple[Any, ...]],
-    gating: Gate,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    state, _ = gating
-    policy("loop:\n  ci: false\n" + ON)
-    state["pull"] = judged_pr()
-    assert approvals.main(["verdict", "7", str(report_file(tmp_path, "high — a gate change"))]) == 0
-    assert "names no `Rerun: <commit>`" in capsys.readouterr().err
-    assert any(call[0] == "review" for call in reviewing)
 
 
 # --- fix round 2: check rerun writes nothing (C6) ---

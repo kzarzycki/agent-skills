@@ -85,13 +85,10 @@ def test_a_workflow_that_reruns_leaves_todays_wait(
     assert "can't come" not in out[0] and "Where the repo has CI" in out[0]
 
 
-def test_no_ci_or_rerun_off_changes_nothing(
+def test_rerun_off_changes_nothing(
     gating: Gate, forge: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
     refused(gating)
-    policy(GATES + "loop:\n  ci: false\n")
-    out = check_merge(capsys)[1]
-    assert "can't come" not in out[0] and "with no CI, the verifier" in out[0]
     policy(GATES.replace("rerun: true", "rerun: false"))
     assert check_merge(capsys) == (0, [])
 

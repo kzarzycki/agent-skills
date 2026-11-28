@@ -1,4 +1,4 @@
-"""approvals.py: a satisfied verdict from a fallback verifier (Gemini through agy, or same-family) lands a high-risk change; a Codex mid/small tier does not (#1115)."""
+"""approvals.py: a satisfied verdict from a fallback verifier (Gemini through agy) lands a high-risk change; a same-family one lands only under loop.md's verifier.same_family (#609); a Codex mid/small tier does not (#1115)."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def gate(family: str, risk: str, monkeypatch: pytest.MonkeyPatch, policy: str = 
 
 @pytest.mark.parametrize(
     "family",
-    ["agy/gemini-4-hydrogen-medium/?", "agy", "gemini-4", "claude, same-family"],
+    ["agy/gemini-4-hydrogen-medium/?", "agy", "gemini-4"],
 )
 @pytest.mark.parametrize("risk", ["low — a fixture", "high — CI permissions"])
 def test_a_satisfied_fallback_verdict_lands_at_any_risk(

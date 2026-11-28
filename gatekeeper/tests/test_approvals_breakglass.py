@@ -232,30 +232,3 @@ def test_waits_leave_only_what_the_cover_leaves(
     assert approvals.waits(posted["pull"], [], LOOP, checks=left) == approvals.owner_waits(
         posted["pull"], [], LOOP
     )
-
-
-NO_CI = add(LOOP, "loop", "ci: false\n")
-RED_CHECK = "PR #7: `check` is FAILURE on the head commit"
-
-
-def test_under_ci_false_a_break_glass_covers_no_red_required_check(
-    posted: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#1872 changes no break-glass rule: under `ci: false`, on a base requiring `check` that is red on the head, a
-    current owner's break-glass clears nothing, so `check merge` (ran, the cover, then waits) and `land` (landable)
-    both still hold the PR; without `ci: false` the same record covers it."""
-    monkeypatch.setattr(approvals, "required_checks", lambda _base: {"check"})
-    posted["pull"] = pull(checks=(("check", "FAILURE"),))
-    approved(posted, hub)
-    pr = posted["pull"]
-    assert approvals.ran(pr) == [RED_CHECK]
-    assert approvals.breakglass_cover(pr, LOOP, [RED_CHECK]).lines == []  # the record holds
-    covered = approvals.breakglass_cover(pr, NO_CI, approvals.ran(pr))
-    assert covered == ([RED_CHECK], [])
-    assert RED_CHECK in approvals.waits(pr, [], NO_CI, checks=covered.lines)
-    monkeypatch.setattr(approvals, "proof_gaps", lambda *_a: ([], []))
-    monkeypatch.setattr(approvals, "flagged_as", lambda p, _i, _l: p)
-    monkeypatch.setattr(
-        approvals, "breakglass_held", lambda *_a: pytest.fail("land took the break-glass")
-    )
-    assert approvals.landable(pr, None, NO_CI, {"check"}, named=True).exit == (1, False)

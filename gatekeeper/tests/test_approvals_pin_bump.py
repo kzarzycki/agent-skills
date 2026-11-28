@@ -125,6 +125,9 @@ def gate(
     came from `family`."""
     monkeypatch.setattr(approvals, "writer", lambda _login: False)
     judged = add(loop_md("spec:\n  auto: true\n"), "risk", "verifier: true\n")
+    judged = add(
+        judged, "verifier", "same_family: high\n"
+    )  # these verdicts are about the tag's tier rule
     heading = f"Verifier ({family}), pass 1"
     review: dict[str, Any] = verdict_on(HEAD, "0 blocker, 0 major, 0 minor", heading=heading) | {
         "body": f"{heading} on {HEAD[:7]}.\n\nVERDICT: 0 blocker, 0 major, 0 minor\nSATISFIED: yes\nRisk: high — the pin\n"
