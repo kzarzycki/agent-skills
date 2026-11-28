@@ -18,7 +18,7 @@ Run `uv run scripts/gatekeeper.py <verb> --help` for one verb; the verbs, in one
     affected-tests       the tests a head affects; queue-select, rerun-tests, shards, gate-record, durations
     queue-config, timeouts, prune-records, heavy: the merge queue's config, derived limits, gate records, heavy runs
 
-Exit codes: 0 holds, 1 refused (a line per missing proof), 3 waiting. `approvals.py` is this script's name before #614.
+Exit codes: 0 holds, 1 refused (a line per missing proof), 3 waiting (`check rerun` exits 0 whatever it prints). `approvals.py` is this script's name before #614.
 
 Where the rules live:
     policy.md          every key of the policy block (docs/agents/gatekeeper.md) and what it decides
@@ -14318,8 +14318,8 @@ def main(argv: list[str]) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser(
         "check",
-        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3).",
-        description="Check the proofs a point needs. Points: build (the issue's spec approval, labels and claim; --issue <n> before the PR exists), merge (the PR's verdict, evidence, keyword and landing rules), ready (the PR body's evidence only), session (the Impl: line's session link), rerun (whether the rating asks an independent rerun), setup (a pack upgrade's gate) and stalled (open PRs the queue does not hold). Prints one line per missing proof; exit 0 when none, 1 when a proof is missing, 3 when it only waits.",
+        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun` always exits 0).",
+        description="Check the proofs a point needs. Points: build (the issue's spec approval, labels and claim; --issue <n> before the PR exists), merge (the PR's verdict, evidence, keyword and landing rules), ready (the PR body's evidence only), session (the Impl: line's session link), setup (a pack upgrade's gate), stalled (open PRs land would take that its queue does not hold and that are eligible to land, or verified and idle past loop.stalled_after_hours with no go or gate record) and rerun (prints `rerun: needed|done|no` and exits 0 whichever it is). For the other points it prints one line per missing proof: exit 0 when none, 1 when a proof is missing, 3 when it only waits.",
     )
     checking.add_argument(
         "point", choices=("build", "merge", "ready", "session", "rerun", "setup", "stalled")

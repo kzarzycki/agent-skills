@@ -5,7 +5,7 @@ docstring until #2834, which moved it here unchanged so `--help` stays short; th
 short form. Its rules also appear, in other words, in [policy.md](policy.md) and [SKILL.md](SKILL.md). Where they differ,
 the code and its tests decide, and the difference is a bug to fix in the text.
 
-`approvals.py` in the usage lines is the script's name before #614; it runs the same verbs.
+`approvals.py` in the usage lines is the script's name before #614; it runs the same verbs. Stale in the text below, kept as it was: the `approvals.py` prefix; `approvals.py release <issue>` is gone from this script (its usage line is dropped; the loop's `loop.py release <issue>` does it); and "reads docs/agents/ at the checkout's root" was replaced by the base-ref rule in the Ports section.
 
 ## Usage
 
@@ -40,7 +40,6 @@ uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing pro
     uv run scripts/approvals.py prune-records [--head <sha>...]  # delete origin's gate records (`refs/loop/gate/` refs and `loop-gate/` branches) no open PR head needs, then run the one upgrade sweep (old `loop-gate/` and `loop-event/` branches moved to `refs/loop/`; `claude/*` branches whose PR is merged or closed deleted, #2821): the trees of the given (closed or merged) heads at once, any other tree over a day old with no open PR; every `land` ends with it, so a merge by Mergify or a queue, or a closed PR, leaves none (#1869); needs a token that can delete refs
     uv run scripts/approvals.py shards --suite <file> [--selection <file>] [--whole] [--durations <file>] [--passed <head> | --record <head> --shard <i>] [--command <cmd>]  # a whole-suite selection split into `select.shards` disjoint shards; --passed: whether each shard has a pass on <head>'s tree; --record: run shard <i> and record its pass
     uv run scripts/approvals.py claim <issue> [--takeover|--release]  # an early claim as an `Assigned: @` record on the issue; --takeover writes `Handover:`; --release `Released:`
-    uv run scripts/approvals.py release <issue>            # parked or dropped: remove the assignee the loop added
     uv run scripts/approvals.py graduate <epic> --pr <n>   # graduate an incubating epic: label off, then close
     uv run scripts/approvals.py heavy <command> [args...]  # one heavy command under the host's heavy wrapper; its exit code passes through
     uv run scripts/approvals.py heavy --plan               # the host's gate slot count and the limit that set it
@@ -70,7 +69,7 @@ At start every verb warns on stderr, once, when this script's checkout is behind
 fetch) and the script differs there: the count and `git pull`. loop.md's `pack_staleness: refuse` under `loop` makes
 it a refusal (exit 1).
 
-Run anywhere in the checkout: it reads docs/agents/ at the checkout's root. The policy is gatekeeper.md's block under
+Run anywhere in the checkout: it reads docs/agents/ from `origin/<base>` (the ref `land` builds its merge on), so a PR can't loosen its own gate; a differing copy in the working tree gets a stderr line, and the base's is used (`project()`). The policy is gatekeeper.md's block under
 `## Policy`; without that file, loop.md's block under `## Settings`, with a deprecation line on stderr, and with both a
 policy in each is refused, naming both, since two sources of the bar would drift. "gatekeeper.md's" setting below means the
 policy's, in whichever file holds it. The project's `mise run loop:approvals
