@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """One-shot verifier support (#2996): the deterministic steps around one Codex review of one bundle.
 
-    one_shot.py tier --paths FILE --policy gatekeeper.md --low-risk GLOB...   # gates only, or a review, and why
+    one_shot.py tier --head SHA [--against REF] --policy gatekeeper.md --low-risk GLOB...   # gates only, or a review, and why
     one_shot.py plan --head SHA --verdicts FILE           # first pass, a delta pass (its base), or refused
-    one_shot.py bundle --head SHA --spec FILE --diff FILE --gate-record FILE --gate-log FILE --policy gatekeeper.md
+    one_shot.py bundle --head SHA --spec FILE --diff FILE --policy gatekeeper.md [--against REF]
                        [--rules FILE] [--nearby-from-git] [--base SHA] [--max-diff-bytes N]
     one_shot.py verdict --json FILE --head SHA --family F --pass N [--calls N --credits X]   # a report `approvals.py report` reads
 
-The model only judges. Gates come from the gate script: the bundle takes the record `approvals.py local-ci --record`
-wrote, and accepts it only for this head's tree and the gate command the policy configures; the raw log goes in
-beside it. A cut, or an input not given, is named in the bundle. Standard library only.
+The model only judges. The gate result is the gatekeeper's own `gate-record` lookup of the pass record origin holds
+for the head's tree (never a file a caller gives; a record keeps no log, so the lookup's output is the gate's raw
+result). The build inputs come from the gatekeeper's parse of the policy. Changed paths are git's own
+(`diff --name-only -z`). A cut, or an input not given, is named in the bundle. Standard library, and the gatekeeper skill.
 """
 
 from __future__ import annotations
@@ -17,10 +18,17 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _installed import installed
+
+GATEKEEPER = installed("gatekeeper")
+sys.path.insert(0, str(GATEKEEPER))
+import gatekeeper
 
 MAX_CALLS = 30
 MAX_CREDITS = 2.0
@@ -46,14 +54,14 @@ class Refused(Exception):
     pass
 
 
-def policy_gate(policy: str) -> tuple[str, list[str]]:
-    """The policy's configured gate command and its `select.build_inputs`."""
-    m = re.search(r"^\s*gate:\s*(.+?)\s*$", policy, re.MULTILINE)
-    if not m:
-        raise Refused("the policy names no `gate:` command")
-    block = re.search(r"build_inputs:\s*\n((?:\s+-\s+\S+\n?)+)", policy)
-    inputs = re.findall(r"-\s+(\S+)", block.group(1)) if block else []
-    return m.group(1), inputs
+def build_inputs(policy: str) -> list[str]:
+    """The policy's `select.build_inputs`, as the gatekeeper parses them (a quoted glob loses its quotes)."""
+    try:
+        return list(
+            gatekeeper.settings(gatekeeper.Policy(policy)).get("select", {}).get("build_inputs", [])
+        )
+    except gatekeeper.Refused as exc:
+        raise Refused(f"the policy does not parse: {exc}") from None
 
 
 def is_gate_config(path: str, extra: list[str]) -> bool:
@@ -92,26 +100,16 @@ def plan(head: str, verdicts: list[dict]) -> dict:
     }
 
 
-def read_gate(record: str, head: str, tree: str, command: str) -> dict:
-    """The gate record `local-ci --record` wrote, refused unless it is for this head and tree, passed, and ran the
-    configured gate command."""
-    try:
-        rec = json.loads(record)
-    except ValueError:
-        raise Refused(
-            "the gate record is not the JSON `approvals.py local-ci --record` writes: a self-reported result is refused"
-        ) from None
-    if not isinstance(rec, dict) or rec.get("head") != head or rec.get("tree") != tree:
-        raise Refused(f"the gate record is not for head {head} and its tree")
-    if rec.get("command") != command:
-        raise Refused(
-            f"the gate record ran {rec.get('command')!r}, not the configured gate {command!r}"
-        )
-    if rec.get("exit") != 0:
-        raise Refused(
-            f"gates are not green on {head} (exit {rec.get('exit')}): the first pass waits for green"
-        )
-    return rec
+def trusted_gate(head: str) -> tuple[int, str]:
+    """The gatekeeper's `gate-record <head>`: exit 0 and the record it names when origin holds a pass of the gate on the
+    head's tree, else the reason. No caller's file counts."""
+    run = subprocess.run(
+        [sys.executable, str(GATEKEEPER / "gatekeeper.py"), "gate-record", head],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return run.returncode, (run.stdout + run.stderr).strip()
 
 
 def cut(name: str, text: str, limit: int) -> tuple[str, list[str]]:
@@ -126,21 +124,20 @@ def bundle(
     head: str,
     spec: str,
     diff: str,
-    gate_record: str,
-    gate_log: str,
-    tree: str,
-    policy: str,
+    paths: list[str],
+    gate: tuple[int, str],
+    inputs: list[str],
     nearby: dict[str, str] | None = None,
     rules: str | None = None,
     max_diff_bytes: int = 200_000,
     base: str | None = None,
     max_part_bytes: int = 20_000,
 ) -> str:
-    command, inputs = policy_gate(policy)
-    rec = read_gate(gate_record, head, tree, command)
-    paths = re.findall(r"^diff --git a/\S+ b/(\S+)$", diff, re.MULTILINE)
+    """`gate` is trusted_gate's result and `paths` git's list of changed paths."""
+    if gate[0] != 0:
+        raise Refused(f"no gate record on {head} (gate-record exit {gate[0]}): {gate[1]}")
     shown, cuts = cut("diff", diff, max_diff_bytes)
-    log, c = cut("gate log", gate_log, max_part_bytes)
+    log, c = cut("gate record", gate[1], max_part_bytes)
     cuts += c
     near = []
     for path, text in (nearby or {}).items():
@@ -175,7 +172,7 @@ def bundle(
     out += ["", "## Spec and Acceptance", spec.strip()]
     out += [
         "",
-        f"## Gate record (from the gate script): {rec['command']} exit {rec['exit']}",
+        "## Gate record (the gatekeeper's gate-record lookup)",
         log.strip(),
     ]
     out += ["", "## Rules", rules_text.strip() or "none", "", "## Nearby code", *(near or ["none"])]
@@ -229,9 +226,15 @@ def verdict(
         *[f"- {c}" for c in criteria],
         "",
     ]
-    lines += body
+    if body:
+        lines += ["## Findings", "", *body]
     if not_run:
-        lines.append("Not run: " + "; ".join(not_run))
+        # the verifier's outstanding-proof path: a run not made, with who must make it
+        lines.append(
+            "Not run: "
+            + "; ".join(not_run)
+            + ", owner action: run the check each Acceptance line names"
+        )
     lines += [
         f"Head: {head}",
         f"VERDICT: {counts['blocker']} blocker, {counts['major']} major, {counts['minor']} minor",
@@ -249,21 +252,28 @@ def read(path: str) -> str:
     return Path(path).read_text()
 
 
+def changed_paths(head: str, against: str) -> list[str]:
+    """The paths `against...head` changes, as git names them (NUL-separated, so a space or quote is no break)."""
+    return [p for p in _git("diff", "--name-only", "-z", f"{against}...{head}").split("\0") if p]
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     sub = p.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("tier")
-    t.add_argument("--paths", required=True)
+    t.add_argument("--head", required=True)
+    t.add_argument("--against", default="origin/main")
     t.add_argument("--policy", required=True)
     t.add_argument("--low-risk", nargs="*", default=[])
     pl = sub.add_parser("plan")
     pl.add_argument("--head", required=True)
     pl.add_argument("--verdicts", required=True)
     b = sub.add_parser("bundle")
-    for name in ("head", "spec", "diff", "gate-record", "gate-log", "policy"):
+    for name in ("head", "spec", "diff", "policy"):
         b.add_argument(f"--{name}", required=True)
+    b.add_argument("--against", default="origin/main")
     b.add_argument("--rules")
     b.add_argument("--nearby-from-git", action="store_true")
     b.add_argument("--base")
@@ -279,30 +289,31 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if a.cmd == "tier":
             print(
-                json.dumps(tier(read(a.paths).split(), a.low_risk, policy_gate(read(a.policy))[1]))
+                json.dumps(
+                    tier(changed_paths(a.head, a.against), a.low_risk, build_inputs(read(a.policy)))
+                )
             )
         elif a.cmd == "plan":
             print(json.dumps(plan(a.head, json.loads(read(a.verdicts)))))
         elif a.cmd == "bundle":
             diff = read(a.diff)
+            paths = changed_paths(a.head, a.against)
             nearby = None
             if a.nearby_from_git:
                 nearby = {}
-                for path in re.findall(r"^diff --git a/\S+ b/(\S+)$", diff, re.MULTILINE):
+                for path in paths:
                     try:
                         nearby[path] = _git("show", f"{a.head}:{path}")
                     except subprocess.CalledProcessError:
                         continue  # a deleted file has no head copy
-            tree = _git("rev-parse", f"{a.head}^{{tree}}").strip()
             print(
                 bundle(
                     a.head,
                     read(a.spec),
                     diff,
-                    read(a.gate_record),
-                    read(a.gate_log),
-                    tree,
-                    read(a.policy),
+                    paths,
+                    trusted_gate(a.head),
+                    build_inputs(read(a.policy)),
                     nearby,
                     read(a.rules) if a.rules else None,
                     a.max_diff_bytes,

@@ -8,9 +8,10 @@ when a verifier pass is started through `scripts/one_shot.py` (#2996). The check
 - `one_shot.py tier`: a PR whose paths all match the low-risk list in `agents.yml` lands with gates only, and the gate says why.
 - `one_shot.py plan`: the first pass runs once gates are green on the head; a later pass reviews only the delta since the last
   verdict; a head that already has a verdict is refused.
-- `one_shot.py bundle`: spec and Acceptance, the gate's own record (`approvals.py local-ci --record`, checked against the head's tree and
-  the policy's `gate:` command) with its raw log, the rules, nearby code and the diff, inline in the first message. A cut, or an input
-  not given, is named. A change to gate config or to a policy `select.build_inputs` file gets a finding, and `tier` never skips its review.
+- `one_shot.py bundle`: spec and Acceptance, the gatekeeper's own `gate-record` lookup for the head (no gate result a caller supplies is
+  taken), the rules, nearby code and the diff, inline in the first message. Changed paths are git's (`--name-only -z`). A cut, or an
+  input not given, is named. A change to gate config or to a file in the policy's `select.build_inputs` (read as the gatekeeper parses
+  them) gets a finding, and `tier` never skips its review.
 
 ## The brief
 
