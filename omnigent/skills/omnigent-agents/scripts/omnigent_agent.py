@@ -155,7 +155,7 @@ question first, while a branch with no events keeps today's timing; a followed l
 question card open (elicitation id ``question_``) is its own ``unasked`` event, telling its waiter to post a card or act
 under the delegation (a start's lead preamble carries it where the base policy sets ``loop.delegate: all``); and it routes each event instead of posting it: the supervisor settles the routine ones
 itself (no post, a nudge, a revive, telling the leads registered ``after=`` it of a lead's
-``DONE``), asking a small model (``claude -p``, $OMNIGENT_SMALL_MODEL, else claude-haiku-5-5) only
+``DONE``), asking a small model (``claude -p``, agents.yml's ``helper``) only
 what its rules can't settle, and posts what needs the notified session or the owner as
 ``Supervisor [act] b-<id>: …`` or ``Supervisor [owner] b-<id>: …``, at most one post per 5
 minutes (an owner item it already raised for that session, same text, goes as ``[info]``, which wakes no
@@ -318,10 +318,6 @@ COLD_START_SECONDS = 20.0  # how long ``start`` waits for a first turn to time (
 LOOP_FILE = Path("docs") / "agents" / "loop.md"
 COMPACT_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"  # outranks Claude Code's --autocompact flag
 AGENTS = {"claude": "claude-native-ui", "codex": "codex-native-ui"}
-# The model an agent runs on when neither --model nor its OMNIGENT_MODEL_<AGENT> names one. The
-# server refuses an acp session with no model, since it can't tell whether the default is blocked
-# (#896); any other agent sends none and runs on its harness default.
-DEFAULT_MODELS = {"claude-cloud": "sonnet"}
 # an agent record and config field that names or dates one agent, not what it does
 IDENTITY = ("id", "version", "created_at", "updated_at", "object")
 CONFIG = Path.home() / ".omnigent" / "config.yaml"
@@ -883,8 +879,7 @@ SUPERVISOR_WAIT = re.compile(
 COS_LINE = re.compile(r"^[\s*_>-]*CoS:", re.MULTILINE | re.IGNORECASE)
 REPORT_PATH = re.compile(r"\s*\S+\.md\s*")  # a last message that is only a report's path
 STATE_SCHEMA = "cos-state/1"
-# The small model that routes what the rules can't settle, with its limits; any failure routes act.
-SMALL_MODEL = "claude-haiku-5-5"  # $OMNIGENT_SMALL_MODEL overrides it
+# The small model (agents.yml's `helper`) that routes what the rules can't settle, with its limits; any failure routes act.
 MODEL_HOURLY = 30  # small-model calls in a rolling hour; past it, events route act with no model
 POST_SECONDS = 300.0  # at most one post to the notified session this often; the rest are combined
 REPORT_HEAD = 5  # a post carries this many first lines of each lead's report
@@ -1785,8 +1780,8 @@ class Omnigent:
         self.base, self.host_id = base.rstrip("/"), host.group(1).removeprefix("host_")
         self._token = ""
         self.loops: dict[
-            tuple[str, str], str
-        ] = {}  # loop.md read on another host, by host, workspace
+            tuple[str, str, str], str
+        ] = {}  # loop.md and agents.yml read on another host, by host, workspace, file
 
     def token(self) -> str:
         code = f"from omnigent.cli_auth import refresh_stored_token as r, load_token as l; print(r({self.base!r}) or l({self.base!r}) or '')"
@@ -1878,7 +1873,7 @@ class Omnigent:
 
     def models(self, name: str, host_id: str | None = None) -> list[str]:
         """The model ids agent ``name``'s harness lists on the host it would run on: each picker
-        row's ``id`` and the ``model`` it names (Claude's ``sonnet`` is ``claude-sonnet-5-5``), and
+        row's ``id`` and the ``model`` it names (a short alias and the full id both pass), and
         every id the harness's endpoint routes. A launch with any other id runs on the harness
         default with no error, so ``start`` refuses one."""
         found = self.model_options(name, host_id)
@@ -2040,7 +2035,7 @@ class Omnigent:
                 " set OMNIGENT_PROJECT to file it",
                 file=sys.stderr,
             )
-        if model := model_for(agent, model)[0]:
+        if model:
             body["model_override"] = model
         # Omnigent turns it into each harness's own setting (``--effort`` for Claude Code, the pinned
         # config for Codex), so nothing goes into the launch args. The create refuses a word outside
@@ -2229,8 +2224,8 @@ class Omnigent:
             raise
         return out
 
-    def loop_text(self, workspace: str, host_id: str | None) -> str:
-        """The project's ``docs/agents/loop.md`` on host ``host_id``, which a session started for
+    def loop_text(self, workspace: str, host_id: str | None, rel: Path = LOOP_FILE) -> str:
+        """The project's ``docs/agents/loop.md`` (or another file, ``rel``) on host ``host_id``, which a session started for
         ``workspace`` there will run on; empty when the checkout there has none, or when ``workspace``
         sits outside a checkout. Read once per host and workspace, through the host's file API.
         The host's folder listing works before any session exists, so the checkout and the file are
@@ -2238,22 +2233,22 @@ class Omnigent:
         a live session on the host.
         A host or workspace that can't be read is a ``Fail`` naming the host and the path: a silent
         empty value is how a missing ``Lead autocompact:`` went unnoticed."""
-        key = (host_id or "", workspace)
+        key = (host_id or "", workspace, str(rel))
         if key not in self.loops:
-            self.loops[key] = self.read_loop(workspace, host_id or "")
+            self.loops[key] = self.read_loop(workspace, host_id or "", rel)
         return self.loops[key]
 
-    def read_loop(self, workspace: str, host_id: str) -> str:
+    def read_loop(self, workspace: str, host_id: str, rel: Path = LOOP_FILE) -> str:
         host = self.hosts().get(host_id, host_id)
 
         def listed(folder: str) -> list[str]:
-            return host_listing(self, host_id, folder, str(LOOP_FILE))
+            return host_listing(self, host_id, folder, str(rel))
 
-        if (root := far_checkout_root(self, host_id, workspace, str(LOOP_FILE))) is None:
+        if (root := far_checkout_root(self, host_id, workspace, str(rel))) is None:
             return ""  # outside a checkout, as locally
-        target = str(root / LOOP_FILE)
+        target = str(root / rel)
         try:
-            if LOOP_FILE.name not in listed(str(root / LOOP_FILE.parent)):
+            if rel.name not in listed(str(root / rel.parent)):
                 return ""
         except Gone:
             return ""
@@ -2263,7 +2258,7 @@ class Omnigent:
             why = f"read answered 404 for a file the listing shows ({e})"
         except Fail as e:
             why = str(e)
-        raise Fail(f"{LOOP_FILE}: host {host} can't read {target}: {why}")
+        raise Fail(f"{rel}: host {host} can't read {target}: {why}")
 
     def interrupt(self, sid: str) -> None:
         """Stop ``sid``'s running turn, as the owner's stop does. A session whose runner has gone
@@ -2524,49 +2519,189 @@ def autocompact_args(
     return ["--autocompact", size]
 
 
-LEAD_TIERS = {"frontier": "fable", "top": "opus", "mid": "sonnet", "small": "haiku"}  # Claude's
 SIZES = ("XS", "S", "M", "L", "XL")
 
 
-def lead_model(
-    brief: str,
-    workspace: str,
-    og: Omnigent | None = None,
-    host_id: str | None = None,
-    local: bool = True,
-) -> str | None:
-    """The model alias for a top-level Claude lead when the project's ``Lead model: <tier> for
-    <condition>`` line matches the labels of the issues ``brief`` names (``#N`` or an issue URL);
-    else None. The condition is ``size:<S> or smaller`` (size order XS < S < M < L < XL) or a bare
-    label. It matches when some named issue meets it and none fails it: an issue with no size label
-    says nothing about a size condition. A tier or condition that doesn't parse fails the start."""
-    line = project_line(workspace, "Lead model", og, host_id)
-    if not line:
-        return None
-    tier, _, cond = (w.strip() for w in line.partition(" for "))
-    bad = f"{LOOP_FILE}: Lead model: {line} is not `<tier> for <condition>`"
-    if tier not in LEAD_TIERS:
-        raise Fail(f"{bad}: the tier is one of {', '.join(LEAD_TIERS)}")
-    sized = re.fullmatch(r"size:(\w+) or smaller", cond)
-    if sized and sized[1] not in SIZES:
-        raise Fail(f"{bad}: the size is one of {', '.join(SIZES)}")
-    if not sized and not re.fullmatch(r"[^\s,]+", cond):
-        raise Fail(f"{bad}: the condition is `size:<S> or smaller` or a label")
+AGENTS_FILE = Path(".agents") / "agents.yml"  # the project's; the setup's is ~/.agents/agents.yml
+ROLES = ("lead", "worker", "verifier", "helper")
+RISKS = ("low", "medium", "high", "critical")
+
+
+def parse_yaml(text: str, where: str) -> dict[str, Any]:
+    """The YAML agents.yml uses, read with the standard library (this script runs without PyYAML): nested block maps,
+    flow maps and lists (`{XS: {model: m}}`, `[a, b]`), plain or quoted scalars, `#` comments."""
+
+    def flow(value: str) -> Any:
+        value = value.strip()
+        if value[:1] not in ("{", "["):
+            return value.strip("'\"") or None
+        items, depth, part = [], 0, ""
+        for ch in value[1:-1]:
+            depth += (ch in "{[") - (ch in "}]")
+            if ch == "," and not depth:
+                items, part = [*items, part], ""
+            else:
+                part += ch
+        items = [i for i in [*items, part] if i.strip()]
+        if value[0] == "[":
+            return [flow(i) for i in items]
+        return {k.strip().strip("'\""): flow(v) for k, _, v in (i.partition(":") for i in items)}
+
+    rows = [
+        (len(r) - len(r.lstrip()), r.strip())
+        for r in (re.sub(r"(^|\s)#.*", "", line).rstrip() for line in text.splitlines())
+        if r.strip()
+    ]
+
+    def nest(at: int) -> tuple[dict[str, Any], int]:
+        out: dict[str, Any] = {}
+        indent = rows[at][0]
+        while at < len(rows) and rows[at][0] == indent:
+            key, colon, rest = rows[at][1].partition(":")
+            if not colon:
+                raise Fail(f"{where}: '{rows[at][1]}' is not `key: value`")
+            at += 1
+            if rest.strip():
+                out[key.strip()] = flow(rest)
+            elif at < len(rows) and rows[at][0] > indent:
+                out[key.strip()], at = nest(at)
+        return out, at
+
+    found, at = nest(0) if rows else ({}, 0)
+    if at < len(rows):
+        raise Fail(f"{where}: '{rows[at][1]}' is indented off its block")
+    return found
+
+
+def tagged(node: Any, source: str) -> Any:
+    """`node` with each value a (value, source) pair, for a start to print where it came from."""
+    if isinstance(node, dict):
+        return {k: tagged(v, source) for k, v in node.items()}
+    return (node, source)
+
+
+def merged(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    """`over` laid on `base` key by key, a block merged into the block under it."""
+    return base | {
+        k: merged(base[k], v) if isinstance(v, dict) and isinstance(base.get(k), dict) else v
+        for k, v in over.items()
+    }
+
+
+def agent_config(
+    workspace: str, og: Omnigent | None = None, host_id: str | None = None
+) -> dict[str, Any]:
+    """The setup's ~/.agents/agents.yml with the project's .agents/agents.yml (read on the host a session will run
+    on, as loop.md is) merged over it; neither file is no setting, and each value carries its source."""
+    if og and host_id and host_id != og.host_id:
+        project = og.loop_text(workspace, host_id, AGENTS_FILE)
+    else:
+        root = checkout_root(workspace)
+        project = (
+            (Path(root) / AGENTS_FILE).read_text()
+            if root and (Path(root) / AGENTS_FILE).is_file()
+            else ""
+        )
+    setup = Path.home() / ".agents" / AGENTS_FILE.name
+    return merged(
+        tagged(parse_yaml(setup.read_text() if setup.is_file() else "", str(setup)), "setup"),
+        tagged(parse_yaml(project, str(AGENTS_FILE)), "project"),
+    )
+
+
+def resolve(
+    config: dict[str, Any],
+    role: str,
+    job: Callable[[], dict[str, str | None]],
+    flags: dict[str, str | None] | None = None,
+) -> dict[str, tuple[Any, str]]:
+    """What `config` sets for `role`'s `model`, `effort`, `route` and `fallback` as (value, source), source `flag`,
+    `project`, `setup` or `harness` (nothing set: the harness's own config decides). The deepest level that sets a
+    key wins: the top level, the role's block, then its `by_<key>` entry for each attribute `job()` reads off the job
+    (`size`, `risk`), asked only where the block has one."""
+    block = config.get(role) if isinstance(config.get(role), dict) else {}
+    levels = [config, block]
+    if any(key.startswith("by_") for key in block):
+        for key, value in job().items():
+            if isinstance(sub := (block.get(f"by_{key}") or {}).get(value), dict):
+                levels.append(sub)
+    out: dict[str, tuple[Any, str]] = {}
+    for key in ("model", "effort", "route", "fallback"):
+        found = [lvl[key] for lvl in levels if isinstance(lvl.get(key), tuple) and lvl[key][0]]
+        out[key] = (
+            (flags or {}).get(key)
+            and (flags[key], "flag")
+            or (found[-1] if found else (None, "harness"))
+        )
+    return out
+
+
+def helper_flags(helper: dict[str, tuple[Any, str]]) -> list[str]:
+    """`--model` and `--effort` for the keys the helper entry sets, none for a key it leaves to the harness."""
+    return [
+        x for key in ("model", "effort") if helper[key][0] for x in (f"--{key}", helper[key][0])
+    ]
+
+
+def issue_labels(brief: str, workspace: str, local: bool) -> list[str]:
+    """The label names of the issues `brief` names (`#N` or an issue URL); one that can't be read says nothing."""
+    names: list[str] = []
     refs = re.findall(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)|(?<![\w/])#(\d+)", brief)
-    verdicts: list[bool | None] = []
     for repo, number, bare in dict.fromkeys(refs):
-        n = number or bare
         try:
             slug = repo or repo_slug(Path(workspace) if local and workspace else None)
-            names = gh("api", f"repos/{slug}/issues/{n}", "--jq", ".labels[].name").splitlines()
+            names += gh(
+                "api", f"repos/{slug}/issues/{number or bare}", "--jq", ".labels[].name"
+            ).splitlines()
         except Fail as e:
-            print(f"Lead model: issue {n} unread, so it says nothing: {e}", file=sys.stderr)
-            continue
-        if not sized:
-            verdicts.append(True if cond in names else None)
-        elif have := [x[5:] for x in names if x.startswith("size:") and x[5:] in SIZES]:
-            verdicts.append(SIZES.index(have[0]) <= SIZES.index(sized[1]))
-    return LEAD_TIERS[tier] if True in verdicts and False not in verdicts else None
+            print(
+                f"issue {number or bare} unread, so it says nothing of the job: {e}",
+                file=sys.stderr,
+            )
+    return names
+
+
+def job_attributes(
+    role: str, brief: str, workspace: str, local: bool, pr: int | None
+) -> dict[str, str | None]:
+    """What a `by_<key>` entry matches on: a lead's `size` (the largest size label on the issues its brief names), a
+    worker's `risk` (the highest risk label on them) and a verifier's `risk` (`check merge`'s rating of its PR, so a
+    PR the gate rates high never gets the low entry). None where nothing says, which matches no entry."""
+    if role == "verifier":
+        folder = installed("gatekeeper")
+        if folder is None or not pr:
+            return {"risk": None}
+        try:
+            done = subprocess.run(
+                [
+                    "uv",
+                    "run",
+                    "-q",
+                    "--script",
+                    str(folder / "gatekeeper.py"),
+                    "check",
+                    "merge",
+                    str(pr),
+                ],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=120,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return {"risk": None}
+        rating = rf"^PR #{pr}: risk: ({'|'.join(RISKS)})\b"
+        found = re.search(rating, done.stdout + done.stderr, re.MULTILINE)
+        return {"risk": found[1] if found else None}
+    if role not in ("lead", "worker"):
+        return {}
+    names = issue_labels(brief, workspace, local)
+    if role == "lead":
+        sizes = [n[5:] for n in names if n[5:] in SIZES and n.startswith("size:")]
+        return {"size": max(sizes, key=SIZES.index) if sizes else None}
+    risks = [n[5:] for n in names if n[5:] in RISKS and n.startswith("risk:")]
+    return {"risk": max(risks, key=RISKS.index) if risks else None}
 
 
 def project_name() -> str:
@@ -3924,35 +4059,6 @@ EFFORTS = {
 AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 # the verifier's routes (`--verifier-route`): with no setting the default stays Codex, the other two are its fallback when it refuses
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
-# a Codex verifier start with no model or effort named runs on these (cloud_verifier.py's CODEX_MODEL and CODEX_EFFORT)
-# (the model is a tier, never an id: a generation drops tiers, and `start` refuses an older generation's)
-CODEX_VERIFIER_TIER, CODEX_VERIFIER_EFFORT = "terra", "medium"
-CODEX_TIERS = (
-    "luna",
-    "terra",
-    "sol",
-    "astra",
-)  # smallest to largest, as engineering-loop SKILL.md, Models, names them
-
-
-def tier_model(listed: list[str], tier: str) -> str | None:
-    """The model of `tier` among Codex ids `listed` (`gpt-<generation>-<tier>`): the newest generation's, else that
-    generation's closest higher tier, else its highest, never an older generation's; None when none is listed."""
-    found: dict[tuple[int, ...], dict[str, str]] = {}
-    for i in listed:
-        if m := re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-([a-z]+)", i):
-            found.setdefault(tuple(map(int, m[1].split("."))), {})[m[2]] = i
-    if not found:
-        return None
-    tiers = found[max(found)]
-    above = [t for t in CODEX_TIERS[CODEX_TIERS.index(tier) :] if t in tiers]
-    return (
-        tiers[above[0]]
-        if above
-        else tiers[max(tiers, key=lambda t: CODEX_TIERS.index(t) if t in CODEX_TIERS else -1)]
-    )
-
-
 CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
 
 
@@ -4023,7 +4129,6 @@ def codex_pass_on_head(pr: int | None) -> str | None:
     )
 
 
-VALUES_FILE, VALUES_ENV = "cos-values.yml", "COS_VALUES"
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
 # codex's own flag for approval_policy "never" with the danger-full-access sandbox; CODEX_DEFAULT is the
@@ -4738,7 +4843,6 @@ def pr_branch(pr: int, workspace: Path, repo: str = "") -> str:
 # claude-cloud-run's own exit when the cloud route fails or refuses (as ``docker run``'s 125 is its own),
 # so a caller tells it from the command's code, which claude-cloud-run otherwise exits with
 CLOUD_RUN_FAILED = 125
-CLOUD_RUN_MODEL = "haiku"  # the cheap tier: the session only runs a command and copies its result
 CLOUD_RUN_EXIT = re.compile(r"^[\s*_`>#-]*EXIT:[\s*_`]*(\d+)\b", re.MULTILINE)
 CLOUD_RUN_BRIEF = """\
 Run one command on commit {head} of branch `{branch}` and report its result. Change, commit and push nothing: the run is the whole task.
@@ -5226,7 +5330,7 @@ def cloud_run_route(
     brief = report.with_suffix(".brief.md")
     brief.parent.mkdir(parents=True, exist_ok=True)
     brief.write_text(cloud_run_brief(command, merge, head))
-    model = os.environ.get("OMNIGENT_MODEL_CLAUDE_CLOUD_RUN") or CLOUD_RUN_MODEL
+    helper = resolve(agent_config(str(root)), "helper", dict)
     argv = [
         *(["--server", server] if server else []),
         "run",
@@ -5240,8 +5344,7 @@ def cloud_run_route(
             else ["--workspace", str(place)]
         ),
         "--no-keep",
-        "--model",
-        model,
+        *helper_flags(helper),
         "--permission-mode",
         BYPASS,
         "--timeout",
@@ -5340,7 +5443,7 @@ def signature(
     config: tuple[dict[str, str], Path] | None = None,
 ) -> str:
     """``<harness>/<model>/<effort>``: ``cc``, ``codex``, ``agy`` or ``omp`` by harness, the model id without its vendor
-    prefix and dotted (``claude-sonnet-5-5`` is ``sonnet-5.5``, ``gpt-6.1-terra`` is ``terra-6.1``), the effort
+    prefix and dotted (``<vendor>-<name>-5-5`` is ``<name>-5.5``, ``<vendor>-6.1-<name>`` is ``<name>-6.1``), the effort
     (``medium`` is ``med``), and ``?`` for anything unknown. A session about to start knows only what it is
     started with, as the server recorded it (``model_override``, ``reasoning_effort``); the effort it was not given
     comes from the model's name, then from the harness's own config (``config``: see ``resolve_effort``).
@@ -5359,9 +5462,9 @@ def signature(
         "?",
     )
     short = re.sub(r"^(claude|gpt)-", "", model or "")
-    if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", short):  # gpt-6.1-terra
+    if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", short):  # <vendor>-6.1-<name>
         short = f"{found[3]}-{found[1]}.{found[2]}"
-    elif found := re.fullmatch(r"([a-z]+)-(\d+)-(\d+)", short):  # claude-sonnet-5-5
+    elif found := re.fullmatch(r"([a-z]+)-(\d+)-(\d+)", short):  # <vendor>-<name>-5-5
         short = f"{found[1]}-{found[2]}.{found[3]}"
     effort = resolve_effort(harness, model, effort, config)[0]
     return f"{name}/{short or '?'}/{ ({'medium': 'med'}.get(effort or '', effort) or '?') }"
@@ -5465,21 +5568,6 @@ def flag_value(args: list[str], flag: str) -> str:
     """The value after ``flag`` in launch ``args``, else empty."""
     at = args.index(flag) + 1 if flag in args else len(args)
     return str(args[at]) if at < len(args) else ""
-
-
-def model_for(agent: str, model: str | None = None) -> tuple[str | None, str]:
-    """The model ``agent`` runs on and where it came from: ``model`` (``--model``), else
-    ``$OMNIGENT_MODEL_<AGENT>`` (``-`` as ``_``), else ``DEFAULT_MODELS``; None for an agent with
-    no default, which runs on its harness's. Only the two aliases and an agent with a default
-    read the variable, so another agent's model is always one ``--model`` named."""
-    variable = f"OMNIGENT_MODEL_{agent.upper().replace('-', '_')}"
-    if model:
-        return model, f"--model {model}"
-    if (agent in AGENTS or agent in DEFAULT_MODELS) and (named := os.environ.get(variable)):
-        return named, f"{variable}={named}"
-    if default := DEFAULT_MODELS.get(agent):
-        return default, f"default {default}"
-    return None, ""
 
 
 def start(
@@ -5586,13 +5674,24 @@ def start(
         # the project's loop.md, once, on the host the session runs on: a host that can't be read
         # stops the start here, before a session exists
         og.loop_text(workspace or os.getcwd(), host_id)
-    if top_level and agent == "claude" and not model_for(agent, model)[0]:
-        # the one read of loop.md's Lead model line, on the lead's host, before any session exists;
-        # --model and OMNIGENT_MODEL_CLAUDE outrank it
-        model = lead_model(
-            brief, workspace or os.getcwd(), og, host_id, not host_id or host_id == og.host_id
-        )
-    chosen, source = model_for(agent, model)
+    # the one read of agents.yml, on the host the session runs on, before any session exists
+    role_name = Path(role).stem if role else "lead" if top_level else ""
+    local = not host_id or host_id == og.host_id
+    config = agent_config(workspace or os.getcwd(), og, host_id)
+    got = resolve(
+        config,
+        role_name,
+        lambda: job_attributes(role_name, brief, workspace or os.getcwd(), local, about),
+        {"model": model, "effort": effort},
+    )
+    (chosen, source), (picked, effort_source) = got["model"], got["effort"]
+    print(
+        f"model: {chosen or 'the harness default'} (from {source}), effort:"
+        f" {picked or 'the harness default'} (from {effort_source})",
+        file=sys.stderr,
+    )
+    model = chosen
+    source = f"{source} model"
     if chosen:
         try:
             listed = og.models(agent, host_id)
@@ -5618,10 +5717,8 @@ def start(
                 " (engineering-loop SKILL.md, Models), or pass --allow-older-model for a"
                 " deliberate pin"
             )
-    # The variable names only exist for the two aliases, like OMNIGENT_MODEL_<AGENT>.
-    variable = f"OMNIGENT_EFFORT_{agent.upper()}"
-    if picked := effort or (agent in AGENTS and os.environ.get(variable)) or None:
-        source = f"--effort {picked}" if effort else f"{variable}={picked}"
+    if picked:
+        source = f"{effort_source} effort"
         if harness not in EFFORTS:
             raise Fail(
                 f"{source}: {agent} runs {harness}, which applies no effort,"
@@ -8951,69 +9048,6 @@ def record_collected(og: Omnigent, sid: str, report: Path, pr: int, far: bool) -
     record_verdict(pr, bring_home(og, sid, report, keep=True) if far else report)
 
 
-def verifier_setting() -> dict[str, Any]:
-    """The setup's default verifier, the `verifier:` block (`route`, `model`, `fallback`) of its values file (the
-    setup's own checker, `cos_values.py`, owns the schema): `$COS_VALUES`, else `cos-values.yml` in the current
-    folder. Empty where the folder has no file or the file no block, so the pack's own order holds (#2840). A
-    `$COS_VALUES` that names a file that can't be read is refused, as the checker does, since a broken variable is
-    no "no setting". Read with the standard library only, since this script runs without PyYAML: the block in its
-    block or flow form, `fallback` as a `[a, b]` list or a `- a` list."""
-    named = os.environ.get(VALUES_ENV)
-    path = Path(named).expanduser() if named else Path(VALUES_FILE)
-    try:
-        lines = path.read_text().splitlines()
-    except OSError as e:
-        if named:
-            raise Fail(f"${VALUES_ENV} names {path}, which can't be read: {e.strerror or e}") from e
-        return {}
-
-    def scalar(text: str) -> str:
-        return text.strip().strip("'\"")
-
-    def put(setting: dict[str, Any], key: str, value: str) -> None:
-        if key == "fallback":
-            setting[key] = [scalar(x) for x in value.strip().strip("[]").split(",") if x.strip()]
-        elif key in ("route", "model") and scalar(value):
-            setting[key] = scalar(value)
-
-    setting: dict[str, Any] = {}
-    inside = False
-    for raw in lines:
-        if not raw.strip() or raw.lstrip().startswith("#"):
-            continue
-        text = raw.split(" #")[0].strip()
-        if not raw.startswith((" ", "\t")):
-            inside = False
-            key, _, rest = text.partition(":")
-            if key != "verifier":
-                continue
-            rest = rest.strip()
-            if rest.startswith("{"):  # {route: gemini, model: m, fallback: [codex, claude]}
-                depth, part, parts = 0, "", []
-                for ch in rest.strip("{}"):
-                    depth += ch == "["
-                    depth -= ch == "]"
-                    if ch == "," and depth == 0:
-                        parts.append(part)
-                        part = ""
-                    else:
-                        part += ch
-                for item in [*parts, part]:
-                    k, _, v = item.strip().partition(":")
-                    put(setting, k.strip(), v)
-            else:
-                inside = not rest
-            continue
-        if not inside:
-            continue
-        if text.startswith("-") and "fallback" in setting:
-            setting["fallback"].append(scalar(text[1:]))
-        elif ":" in text:
-            key, _, value = text.partition(":")
-            put(setting, key.strip(), value)
-    return setting
-
-
 def apply_route(args: argparse.Namespace) -> None:
     """Point a verifier start at its fallback route, the one switch: `gemini` runs agy's Gemini (bypass mode, which
     agy needs to run unattended) and `claude` a fresh Claude session of any model, the author's own included, marked
@@ -10390,7 +10424,8 @@ def triage(event: str, decisions: str, prompt: str = ROUTING_PROMPT) -> tuple[st
     standing ``decisions``; ``prompt`` is its system prompt, with a ``{decisions}`` slot. One headless call with no tools, settings or MCP servers, the event
     on stdin; an answer other than one JSON line naming a route, a missing ``claude``, a non-zero
     exit or ``MODEL_SECONDS`` passing is ``unsure``, which ``route`` acts on."""
-    cmd = ["claude", "-p", "--model", os.environ.get("OMNIGENT_SMALL_MODEL") or SMALL_MODEL]
+    helper = resolve(agent_config(os.getcwd()), "helper", dict)
+    cmd = ["claude", "-p", *helper_flags(helper)]
     cmd += [
         "--tools",
         "",
@@ -12964,7 +12999,6 @@ SERVICE_VARIABLES = (
     "OMNIGENT_USER_ID",
     "OMNIGENT_PROJECT",
     "OMNIGENT_PERMISSION_MODE",
-    "OMNIGENT_SMALL_MODEL",
     "OMNIGENT_STUCK_SECONDS",
     "OMNIGENT_VERIFIER_ROUTE",
     "OMNIGENT_CAPACITY_WAIT_SECONDS",
@@ -12979,8 +13013,6 @@ SERVICE_VARIABLES = (
 )
 SERVICE_PREFIXES = (
     "OMNIGENT_SUPERVISE_",
-    "OMNIGENT_MODEL_",
-    "OMNIGENT_EFFORT_",
     "OMNIGENT_MIN_AVAILABLE_MB_",
     "OMNIGENT_MAX_LOAD_",
 )
@@ -13319,8 +13351,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument("--confirm-seconds", type=float, default=START_CONFIRM_SECONDS)
         p.add_argument(
             "--model",
-            help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CLAUDE_CLOUD, else"
-            " sonnet for claude-cloud and the harness default for any other agent)",
+            help="model id (default: agents.yml's, else the harness default)",
         )
         p.add_argument(
             "--allow-older-model",
@@ -13330,7 +13361,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         p.add_argument(
             "--effort",
             help="reasoning effort, as the harness names its levels (claude: low, medium, high, xhigh, max)"
-            " (default: $OMNIGENT_EFFORT_<AGENT>, e.g. OMNIGENT_EFFORT_CODEX, else the harness default)",
+            " (default: agents.yml's, else the harness default)",
         )
         p.add_argument(
             "--permission-mode",
@@ -13348,8 +13379,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             "--verifier-route",
             choices=VERIFIER_ROUTES,
             default=None,
-            help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else the setup's `verifier.route`"
-            " in its values file, else codex): codex is the"
+            help="which verifier a verifier start runs (default: $OMNIGENT_VERIFIER_ROUTE, else agents.yml's `verifier.route`,"
+            " else codex): codex is the"
             " agent as named; gemini replaces it with agy's Gemini (experimental, needs --host on a host with agy"
             " logged in); claude with a fresh Claude session of any --model (same-family)."
             " The two fallbacks are for a Codex refusal",
@@ -14273,63 +14304,37 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     f"--verifier-route {args.verifier_route} applies to a verifier start only:"
                     " pass --role <skills>/engineering-loop/verifier.md"
                 )
-            setting = verifier_setting() if verifier else {}
-            # the flag, then $OMNIGENT_VERIFIER_ROUTE, then the setup's setting, then Codex
-            source = (
-                "flag"
-                if args.verifier_route
-                else "$OMNIGENT_VERIFIER_ROUTE"
-                if os.environ.get("OMNIGENT_VERIFIER_ROUTE")
-                else "setup values file"
-                if setting.get("route")
-                else "default"
+            config = (
+                agent_config(
+                    str(args.workspace or os.getcwd()),
+                    og,
+                    og.host(args.host) if args.host else None,
+                )
+                if verifier
+                else {}
             )
-            args.verifier_route = (
-                args.verifier_route
-                or os.environ.get("OMNIGENT_VERIFIER_ROUTE")
-                or setting.get("route")
-                or "codex"
-            )
+            # the flag, then $OMNIGENT_VERIFIER_ROUTE, then agents.yml's route, then Codex
+            named = args.verifier_route or os.environ.get("OMNIGENT_VERIFIER_ROUTE")
+            route, source = resolve(config, "verifier", dict, {"route": named})["route"]
+            fallback = resolve(config, "verifier", dict)["fallback"][0]
+            if source == "flag" and not args.verifier_route:
+                source = "$OMNIGENT_VERIFIER_ROUTE"
+            args.verifier_route = route or "codex"
             if verifier and args.verifier_route not in VERIFIER_ROUTES:
                 raise Fail(
                     f"verifier route {args.verifier_route!r} is none of {', '.join(VERIFIER_ROUTES)}"
                 )
-            # the setting's model belongs to the setting's route: another route (a flag or the variable) is not
-            # the model's
-            if verifier and not args.model and args.verifier_route == setting.get("route"):
-                args.model = setting.get("model")
             if (
                 verifier
                 and args.verifier_route == "codex"
                 and (args.agent == "codex" or "codex" in og.harness(args.agent))
+                and (again := codex_pass_on_head(args.pr))
             ):
-                # never Codex's own defaults: a Sol model and an unset effort resend ~100k tokens of context per
-                # tool call at the larger model's rate (#2870); a start asks for Sol or another effort itself
-                if not model_for(args.agent, args.model)[
-                    0
-                ]:  # no flag, no $OMNIGENT_MODEL_CODEX, no setting
-                    with contextlib.suppress(
-                        Fail
-                    ):  # a host that lists none leaves the agent's own model
-                        args.model = tier_model(
-                            og.models(args.agent, og.host(args.host) if args.host else None),
-                            CODEX_VERIFIER_TIER,
-                        )
-                # `$OMNIGENT_EFFORT_CODEX` (read by `start` for the two aliases) outranks the default effort
-                if not (
-                    args.agent in AGENTS and os.environ.get(f"OMNIGENT_EFFORT_{args.agent.upper()}")
-                ):
-                    args.effort = args.effort or CODEX_VERIFIER_EFFORT
-                if again := codex_pass_on_head(args.pr):
-                    raise Fail(again)
+                raise Fail(again)
             if verifier:
                 print(
-                    f"verifier route: {args.verifier_route} (from {source}), model: {args.model or 'the agent default'}"
-                    + (
-                        f" (setup fallback: {', '.join(setting['fallback'])})"
-                        if setting.get("fallback")
-                        else ""
-                    ),
+                    f"verifier route: {args.verifier_route} (from {source})"
+                    + (f" (fallback: {', '.join(fallback)})" if fallback else ""),
                     file=sys.stderr,
                 )
         if verifier and args.verifier_route != "codex":

@@ -46,8 +46,10 @@ def checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         omnigent_agent, "resolve_environment", lambda env, repo: ("env_1", "the-env")
     )
-    for name in ("CLAUDE_CODE_REMOTE", "LOOP_DENY_LIST", "OMNIGENT_MODEL_CLAUDE_CLOUD_RUN"):
+    for name in ("CLAUDE_CODE_REMOTE", "LOOP_DENY_LIST"):
         monkeypatch.delenv(name, raising=False)
+    (Path.home() / ".agents").mkdir(exist_ok=True)  # the setup's helper: a cheap model
+    (Path.home() / ".agents" / "agents.yml").write_text("helper:\n  model: haiku\n  effort: low\n")
     return work
 
 
@@ -148,7 +150,7 @@ def test_it_refuses_tracked_changes_and_an_unpushed_head_before_any_session_exis
     assert not (checkout.parent / "claude-cloud-run-main").exists()
 
 
-def test_it_runs_the_command_with_the_cheap_model_auto_and_no_keep_and_exits_with_its_code(
+def test_it_runs_the_command_with_the_helper_model_auto_and_no_keep_and_exits_with_its_code(
     checkout: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = cloud(monkeypatch, "REPORT\nEXIT: 3\n5 passed, 3 failed\nFAILED tests/test_a.py::test_x")
@@ -164,7 +166,7 @@ def test_it_runs_the_command_with_the_cheap_model_auto_and_no_keep_and_exits_wit
     place = checkout.parent / "claude-cloud-run-main"
     assert run[run.index("--workspace") + 1] == str(place)
     assert "--no-keep" in run
-    assert run[run.index("--model") + 1] == "haiku"
+    assert run[run.index("--model") + 1] == "haiku" and run[run.index("--effort") + 1] == "low"
     assert run[run.index("--permission-mode") + 1] == "bypassPermissions"
     brief = omnigent_agent.text_of(og.sessions["s0"][1])
     assert f"git checkout --detach {head}" in brief and "```sh\nuv run pytest -q\n```" in brief
@@ -210,11 +212,12 @@ def test_a_failed_launch_exits_with_its_own_code_and_prints_the_host_fallback(
     assert "LOOP_HOST_RUN=<reason> mise run check" in err
 
 
-def test_the_model_variable_names_another_model(
+def test_the_projects_agents_yml_names_another_helper_model(
     checkout: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     og = cloud(monkeypatch, "REPORT\nEXIT: 0")
-    monkeypatch.setenv("OMNIGENT_MODEL_CLAUDE_CLOUD_RUN", "sonnet")
+    (checkout / ".agents").mkdir()
+    (checkout / ".agents" / "agents.yml").write_text("helper:\n  model: sonnet\n")
     assert cloud_run(checkout, "pytest") == 0
     assert og.overrides["s0"] == "sonnet"
 

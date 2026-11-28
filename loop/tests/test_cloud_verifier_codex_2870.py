@@ -1,4 +1,4 @@
-"""scripts/cloud_verifier.py: a Codex pass with no model or effort named runs Terra at medium effort, and a second Codex
+"""scripts/cloud_verifier.py: a Codex pass with no model or effort named passes none, and a second Codex
 pass on a head that already has one is refused, naming it (#2870). `gh` and `codex` are the checkout fixture's stand-ins."""
 
 from __future__ import annotations
@@ -11,12 +11,12 @@ from test_cloud_verifier import checkout, cv  # noqa: F401 - `checkout` is a fix
 REPORT = "# Report\n\nHead: x\nVERDICT: 0 blocker\nSATISFIED: yes\nRisk: low\n"
 
 
-def test_a_codex_pass_with_no_model_or_effort_runs_terra_at_medium(checkout) -> None:  # noqa: F811
+def test_a_codex_pass_with_no_model_or_effort_passes_none(checkout) -> None:  # noqa: F811
     _, _, brief, _, seen = checkout
     seen["report"] = REPORT
     assert cv.verify(7, brief, None, None) == 0
-    assert seen["cmd"][-5:] == ["-m", "gpt-6.1-terra", "-c", "model_reasoning_effort=medium", "-"]
-    assert seen["brief"].startswith("AGENT_SIGNATURE=codex/terra-6.1/med\n")
+    assert "-m" not in seen["cmd"] and not any("model_reasoning_effort" in a for a in seen["cmd"])
+    assert seen["brief"].startswith("AGENT_SIGNATURE=codex/?/?\n")
 
 
 def test_a_start_that_names_sol_and_an_effort_keeps_them(checkout) -> None:  # noqa: F811

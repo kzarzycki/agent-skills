@@ -160,8 +160,13 @@ class FakeOmnigent:
             raise omnigent_agent.Gone(f"{path}: not found")
         return proc[path]
 
-    def loop_text(self, workspace: str, host_id: str | None) -> str:  # no loop.md on another host
+    def loop_text(
+        self, workspace: str, host_id: str | None, rel=None
+    ) -> str:  # no file on another host
         return ""
+
+    def host(self, name: str) -> str:
+        return name
 
     def host_of(self, sid: str) -> str:
         return next((str(o.get("host_id")) for o in self.others if o.get("id") == sid), "")
@@ -198,7 +203,7 @@ class FakeOmnigent:
             error = HTTPError("http://x/v1/sessions", 409, "Conflict", Message(), None)
             raise omnigent_agent.Fail("POST /v1/sessions: HTTP 409 Conflict") from error
         sid = f"s{len(self.sessions)}"
-        self.overrides[sid] = omnigent_agent.model_for(agent, model)[0]  # as the real body
+        self.overrides[sid] = model
         self.top_level.append(top_level)
         self.roles.append(role)
         self.prs.append(pr)
@@ -337,6 +342,13 @@ REAL_TRIAGE = omnigent_agent.triage
 REAL_TRUSTED = omnigent_agent.folder_trusted
 
 
+def agents_yml(text: str) -> None:
+    """The setup's `~/.agents/agents.yml` (HOME is a temp folder, see harness_config_home)."""
+    path = Path.home() / ".agents" / "agents.yml"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(text)
+
+
 @pytest.fixture(autouse=True)
 def trusted_folders(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every folder trusted, so a cloud start never reads the host's Claude config (#980)."""
@@ -405,9 +417,8 @@ def test_start_gives_the_child_its_signature_from_what_it_passes(
     env: str | None,
     expected: str,
 ) -> None:
-    monkeypatch.delenv(f"OMNIGENT_MODEL_{agent.upper()}", raising=False)
     if env:
-        monkeypatch.setenv(f"OMNIGENT_MODEL_{agent.upper()}", env)
+        agents_yml(f"model: {env}\n")
     og = FakeOmnigent()
     omnigent_agent.start(og, agent, "t", "do X", tmp_path / "r.md", None, 0, model=model)
     assert f"AGENT_SIGNATURE={expected}\n" in (tmp_path / "r.md.brief").read_text()
@@ -416,17 +427,16 @@ def test_start_gives_the_child_its_signature_from_what_it_passes(
 @pytest.mark.parametrize(
     ("model", "env", "named"),
     [
-        ("gpt-5.5-terra", None, "--model gpt-5.5-terra"),
-        (None, "gpt-5.5-terra", "OMNIGENT_MODEL_CODEX"),
+        ("gpt-5.5-terra", None, "flag model"),
+        (None, "gpt-5.5-terra", "setup model"),
     ],
 )
 def test_start_refuses_a_model_the_harness_does_not_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model: str | None, env: str | None, named: str
 ) -> None:
     """The server launches an unlisted id on the harness default with no error (#621)."""
-    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
     if env:
-        monkeypatch.setenv("OMNIGENT_MODEL_CODEX", env)
+        agents_yml(f"model: {env}\n")
     og = FakeOmnigent()
     with pytest.raises(omnigent_agent.Fail, match=f"{named}.*lists no such model.*gpt-6.1-terra"):
         omnigent_agent.start(og, "codex", "t", "do X", tmp_path / "r.md", None, 0, model=model)
@@ -2333,15 +2343,12 @@ def test_create_asks_for_the_effort_given_and_the_brief_signs_with_the_one_taken
     assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=cc/?/max\n")
 
 
-def test_start_takes_the_effort_from_omnigent_effort_agent_unless_one_is_given(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
-    monkeypatch.setenv("OMNIGENT_EFFORT_CODEX", "high")
+def test_start_takes_the_effort_from_agents_yml_unless_one_is_given(tmp_path: Path) -> None:
+    agents_yml("effort: high\n")
     fake = FakeOmnigent()
     omnigent_agent.start(fake, "codex", "a", "do X", tmp_path / "a.md", None, 0)
     omnigent_agent.start(fake, "codex", "b", "do X", tmp_path / "b.md", None, 0, effort="low")
-    monkeypatch.delenv("OMNIGENT_EFFORT_CODEX")
+    (Path.home() / ".agents" / "agents.yml").unlink()
     omnigent_agent.start(fake, "codex", "c", "do X", tmp_path / "c.md", None, 0)
     assert list(fake.efforts.values()) == ["high", "low", None]
     assert [(tmp_path / f"{n}.md.brief").read_text().split("\n")[0] for n in "abc"] == [
@@ -2351,10 +2358,7 @@ def test_start_takes_the_effort_from_omnigent_effort_agent_unless_one_is_given(
     ]
 
 
-def test_start_refuses_an_effort_for_antigravity_and_ignores_the_variables(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("OMNIGENT_EFFORT_AGY", "max")  # no alias, so not a variable start reads
+def test_start_refuses_an_effort_for_antigravity(tmp_path: Path) -> None:
     og = FakeOmnigent()
     og.harnesses["agy"] = "antigravity-native"
     with pytest.raises(omnigent_agent.Fail, match="applies no effort"):
@@ -2447,14 +2451,10 @@ def test_effort_levels_reads_the_named_models_row_or_the_default_one() -> None:
     assert og.models("codex") == ["sol", "gpt-6.1-sol", "terra", "gpt-6.1-terra", "luna", "routed"]
 
 
-def test_start_names_the_variable_whose_effort_it_refuses(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("OMNIGENT_EFFORT_CLAUDE", "ultra")  # a Codex level copied over
+def test_start_names_the_file_whose_effort_it_refuses(tmp_path: Path) -> None:
+    agents_yml("effort: ultra\n")  # a Codex level copied over
     og = FakeOmnigent()
-    with pytest.raises(
-        omnigent_agent.Fail, match="^OMNIGENT_EFFORT_CLAUDE=ultra: claude runs only"
-    ):
+    with pytest.raises(omnigent_agent.Fail, match="^setup effort: claude runs only"):
         omnigent_agent.start(og, "claude", "t", "x", tmp_path / "r.md", None, 0)
     assert og.efforts == {}
 
@@ -2471,7 +2471,7 @@ def test_the_brief_signs_with_the_effort_the_session_took_not_the_one_asked(tmp_
     assert (tmp_path / "r.md.brief").read_text().startswith("AGENT_SIGNATURE=cc/?/high\n")
 
 
-def test_the_cli_passes_effort_over_the_variable_and_refuses_one_with_no_session(
+def test_the_cli_passes_effort_over_the_file_and_refuses_one_with_no_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     og = FakeOmnigent(reply="done")
@@ -2486,7 +2486,7 @@ def test_the_cli_passes_effort_over_the_variable_and_refuses_one_with_no_session
         )
 
     assert start("claude", "a.md", "--effort", "max") == 0
-    monkeypatch.setenv("OMNIGENT_EFFORT_CLAUDE", "low")
+    agents_yml("effort: low\n")
     assert start("claude", "b.md", "--effort", "xhigh") == 0
     assert list(og.efforts.values()) == ["max", "xhigh"]
     assert (tmp_path / "a.md.brief").read_text().startswith("AGENT_SIGNATURE=cc/?/max\n")
@@ -2671,85 +2671,15 @@ def test_two_loose_project_matches_fail_rather_than_pick_by_order(
         object.__new__(omnigent_agent.Omnigent).project("voice_note")
 
 
-def test_the_model_is_the_flag_else_the_agents_environment_variable_else_the_harness_default(
-    monkeypatch: pytest.MonkeyPatch,
+def test_start_passes_a_claude_cloud_model_unchecked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    bodies: list[dict] = []
-
-    def call(self, method: str, path: str, body: dict | None = None) -> object:
-        if body is not None:
-            bodies.append(body)
-        return {
-            "/v1/agents": [{"name": "codex-native-ui", "id": "a1"}],
-            "/v1/agents?scope=user": [],
-            "/v1/projects": [],
-        }.get(path, {"id": "s1"})
-
-    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
-    monkeypatch.setattr(
-        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
-    )
-    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
-    omnigent_agent.Omnigent().create("codex", "t")
-    monkeypatch.setenv("OMNIGENT_MODEL_CODEX", "from-env")
-    monkeypatch.setenv("OMNIGENT_MODEL_CLAUDE", "not-codex")
-    omnigent_agent.Omnigent().create("codex", "t")
-    omnigent_agent.Omnigent().create("codex", "t", "from-flag")
-    assert [body.get("model_override") for body in bodies] == [None, "from-env", "from-flag"]
-
-
-@pytest.mark.parametrize(
-    ("agent", "flag", "env", "expected"),
-    [
-        ("claude-cloud", None, None, "sonnet"),  # the server refuses acp without a model (#896)
-        ("claude-cloud", None, "from-env", "from-env"),
-        ("claude-cloud", "from-flag", "from-env", "from-flag"),
-        ("claude", None, None, None),
-        ("codex", None, None, None),
-        ("antigravity", None, "from-env", None),  # only the aliases and claude-cloud read one
-    ],
-)
-def test_a_cloud_session_always_names_a_model_and_the_others_only_when_given_one(
-    monkeypatch: pytest.MonkeyPatch,
-    agent: str,
-    flag: str | None,
-    env: str | None,
-    expected: str | None,
-) -> None:
-    bodies: list[dict] = []
-
-    def call(self, method: str, path: str, body: dict | None = None) -> object:
-        if body is not None:
-            bodies.append(body)
-        return {
-            "/v1/agents": [{"name": n, "id": n} for n in ("claude-native-ui", "codex-native-ui")],
-            "/v1/agents?scope=user": [
-                {"name": n, "id": n} for n in ("claude-cloud", "antigravity")
-            ],
-            "/v1/projects": [],
-        }.get(path, {"id": "s1"})
-
-    monkeypatch.setattr(omnigent_agent.Omnigent, "call", call)
-    monkeypatch.setattr(
-        omnigent_agent.Omnigent, "__init__", lambda self: setattr(self, "host_id", "h")
-    )
-    for name in ("CLAUDE", "CODEX", "CLAUDE_CLOUD"):
-        monkeypatch.delenv(f"OMNIGENT_MODEL_{name}", raising=False)
-    if env:
-        monkeypatch.setenv(f"OMNIGENT_MODEL_{agent.upper().replace('-', '_')}", env)
-    omnigent_agent.Omnigent().create(agent, "t", flag)
-    assert bodies[-1].get("model_override") == expected
-
-
-def test_start_claude_cloud_checks_its_default_model_and_passes_it_unchecked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """An acp harness has no host model list, so the default goes on as the env one would."""
-    monkeypatch.delenv("OMNIGENT_MODEL_CLAUDE_CLOUD", raising=False)
+    """An acp harness has no host model list, so the configured model goes on unchecked."""
+    agents_yml("model: sonnet\n")
     og = FakeOmnigent()
     og.harnesses = {"claude-cloud": "acp:claude-cloud"}
     omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0, pr=7)
-    assert "default sonnet: the host has no model list for claude-cloud" in capsys.readouterr().err
+    assert "setup model: the host has no model list for claude-cloud" in capsys.readouterr().err
     assert list(og.overrides.values()) == ["sonnet"]
 
 
@@ -5194,7 +5124,7 @@ def test_wait_neither_retries_nor_continues_a_failure_after_the_first_turn_or_an
     assert relaunched == []
 
 
-def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
+def test_a_codex_verifier_takes_the_models_agents_yml_names_unless_one_is_flagged(
     tmp_path: Path, role_file: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     models = []
@@ -5206,20 +5136,17 @@ def test_a_codex_verifier_defaults_to_its_model_unless_one_is_named(
         create(a, t, m),
     )[1]  # type: ignore[method-assign]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
-    monkeypatch.delenv("OMNIGENT_MODEL_CODEX", raising=False)
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.md").write_text("verify")
     base = ["start", "codex", "t", "b.md", "r.md", "--confirm-seconds", "0"]
     omnigent_agent.main([*base, "--role", role_file("verifier.md")])
     omnigent_agent.main([*base[:2], "t2", *base[3:]])
-    monkeypatch.setenv("OMNIGENT_MODEL_CODEX", "named")
+    agents_yml("model: named\n")
     omnigent_agent.main([*base[:2], "t3", *base[3:], "--role", role_file("verifier.md")])
     omnigent_agent.main(
         [*base[:2], "t4", *base[3:], "--role", role_file("verifier.md"), "--model", "flag"]
     )
-    # no Terra tier listed here, so the first verifier keeps the agent's own model (#2870: tests/test_omnigent_codex_verifier_2870.py)
-    assert models == [None, None, None, "flag"]  # Omnigent.create reads OMNIGENT_MODEL_CODEX
-    assert not hasattr(omnigent_agent, "CODEX_VERIFIER_MODEL")
+    assert models == [None, None, "named", "flag"]
 
 
 def test_start_refuses_a_report_already_there(
@@ -8191,7 +8118,7 @@ def test_a_lead_on_another_host_gets_its_host_and_the_brief_inline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bodies = create_bodies(monkeypatch)
-    monkeypatch.setattr(omnigent_agent.Omnigent, "loop_text", lambda self, ws, host: "")
+    monkeypatch.setattr(omnigent_agent.Omnigent, "loop_text", lambda self, ws, host, rel=None: "")
     omnigent_agent.Omnigent().create("claude", "t", top_level=True, host_id="m1")
     assert bodies[-1]["host_id"] == "m1"
     og = FakeOmnigent()
@@ -8596,7 +8523,11 @@ def model_answers(monkeypatch: pytest.MonkeyPatch, answer: object) -> list[dict]
     exception to raise."""
     calls: list[dict] = []
 
+    real = subprocess.run
+
     def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+        if cmd[0] != "claude":  # the checkout lookup agents.yml's read makes
+            return real(cmd, **kw)
         calls.append({"cmd": cmd, **kw})
         if isinstance(answer, BaseException):
             raise answer
@@ -8611,18 +8542,20 @@ def test_the_small_model_is_one_headless_call_with_the_event_cut_on_stdin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = model_answers(monkeypatch, 'thinking\n{"route": "none", "why": "mid-work"}\n')
+    monkeypatch.setattr(omnigent_agent, "agent_config", lambda *_: {})
     assert REAL_TRIAGE("x" * 5000, "- merge on green") == ("none", "mid-work")
     cmd, kw = calls[0]["cmd"], calls[0]
-    assert cmd[:4] == ["claude", "-p", "--model", "claude-haiku-5-5"]
+    assert cmd[:3] == ["claude", "-p", "--tools"]  # agents.yml names no helper: the harness's own
     for flag, value in (("--tools", ""), ("--setting-sources", "")):
         assert cmd[cmd.index(flag) + 1] == value
     assert "--strict-mcp-config" in cmd
     assert "- merge on green" in cmd[cmd.index("--system-prompt") + 1]
     assert kw["input"] == "x" * 4000 and kw["timeout"] == 20
     assert kw["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "1000"
-    monkeypatch.setenv("OMNIGENT_SMALL_MODEL", "claude-other")
+    helper = {"helper": {"model": ("m-helper", "setup"), "effort": ("low", "setup")}}
+    monkeypatch.setattr(omnigent_agent, "agent_config", lambda *_: helper)
     REAL_TRIAGE("e", "")
-    assert calls[1]["cmd"][3] == "claude-other"
+    assert calls[1]["cmd"][2:6] == ["--model", "m-helper", "--effort", "low"]
     assert "(none)" in calls[1]["cmd"][calls[1]["cmd"].index("--system-prompt") + 1]
 
 
@@ -10360,8 +10293,7 @@ def test_antigravity_runs_a_role_only_with_its_approvals_bypassed(
     )
     omnigent_agent.Omnigent().create("agy", "t", permission_mode="bypassPermissions")
     assert calls[-1][2]["terminal_launch_args"] == ["--dangerously-skip-permissions"]
-    # Effort is the user's agy settings; the launcher passes none, whatever the environment says.
-    monkeypatch.setenv("OMNIGENT_EFFORT_ANTIGRAVITY", "high")
+    # Effort is the user's agy settings; the launcher passes none.
     omnigent_agent.Omnigent().create("agy", "t")
     assert "terminal_launch_args" not in calls[-1][2]
 
@@ -13043,7 +12975,6 @@ def test_supervise_install_writes_a_restarting_service_per_registry(
         "RUNNER_SERVER_URL": "http://server",
         "OMNIGENT_USER_ID": "u1",
         "OMNIGENT_SUPERVISE_REGISTRY": str(one),
-        "OMNIGENT_MODEL_CLAUDE": "m",
         "OMNIGENT_STUCK_SECONDS": "900",
         "OMNIGENT_RUNNER_ID": "runner-token",
         "OMNIGENT_RUNNER_PARENT_PID": "41",
@@ -13058,7 +12989,6 @@ def test_supervise_install_writes_a_restarting_service_per_registry(
     env = omnigent_agent.service_env(session_env)
     assert env == {
         "PATH": "/home/u/.local/bin:/usr/bin",
-        "OMNIGENT_MODEL_CLAUDE": "m",
         "OMNIGENT_STUCK_SECONDS": "900",
         "OMNIGENT_SUPERVISE_REGISTRY": str(one),
         "OMNIGENT_USER_ID": "u1",
@@ -13857,7 +13787,7 @@ def test_a_claude_child_inherits_its_claude_starter_s_permission_mode(
         Starter.launch = starter
         omnigent_agent.start(og, agent, f"t{n}", "do X", tmp_path / "r.md", None, 0, **kw)
         err = capsys.readouterr().err  # less the mode read back, which every start prints
-        return modes[-1], re.sub(r"session \S+: permission mode .*\n", "", err)
+        return modes[-1], re.sub(r"(session \S+: permission mode |model: ).*\n", "", err)
 
     mode, err = child("claude", bypass)
     assert mode == "bypassPermissions" and "bypassPermissions inherited" in err

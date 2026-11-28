@@ -211,9 +211,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
    appended; it refuses a proof log whose first line isn't the head. It first checks that the head merges cleanly into the PR's own base (`git merge-tree --write-tree origin/<base> <head>`, after fetching both): a head that conflicts exits 1 naming the conflicted files and writes no brief, since CI doesn't run and `land` skips it, so merge the base in first, and one pass covers the fix and the merge; `--allow-conflict` writes the brief anyway, for a pass meant to review the conflicting head. The report path matters:
    outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
-   prompted for a read (denied in auto mode), which nobody answers. Its model: SKILL.md, Models, in the verifier's family, and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
-   verdict that says `Risk: high`, even a satisfied one, calls for a default-tier pass on the head before landing,
-   and `check merge` refuses the change until one is posted. Name the family that wrote the diff when the backend takes it
+   prompted for a read (denied in auto mode), which nobody answers. Its model: SKILL.md, Models. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
    brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
    bring your instance up on that head from the verifier's worktree (loop.md § Proof on a branch),
@@ -238,13 +236,12 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    worktree; the proof logs and the previous report go there with `start --file`, you make no
    worktree for it, `wait --verdict` copies its report to your `tmp/loop/`, and a check that
    host can't run comes back as a proof-run question as above.
-   **Verifier route.** The setup's default verifier is its values file's `verifier:` block (`route`, `model`,
-   `fallback`: the setup's `cos_values.py` checks it), which a verifier start with no `--verifier-route` or
-   `--model` reads and prints; `$COS_VALUES` names the file, and the flags and `$OMNIGENT_VERIFIER_ROUTE`
-   override it. With no block, Codex is the default whenever it has quota. When the default refuses (the quota error
+   **Verifier route.** The default route is agents.yml's `verifier.route` (and `verifier.fallback`; omnigent-agents' SKILL.md,
+   Model and effort), which a verifier start with no `--verifier-route` reads and prints; the flag and
+   `$OMNIGENT_VERIFIER_ROUTE` override it. With no setting, Codex is the default whenever it has quota. When the default refuses (the quota error
    text goes to the owner at once), `--verifier-route <route>` on the same verifier start, or
-   `$OMNIGENT_VERIFIER_ROUTE`, picks the next route in the block's `fallback` order (else `gemini`, then `claude`), with the same brief, report format and `verdict` post:
-   `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode (a lead in a cloud VM can't start it, since the VM has no Omnigent server route: it asks its coordinator to start the Gemini verifier, and `start` refuses at once from the cloud), with the setting's model, else one
+   `$OMNIGENT_VERIFIER_ROUTE`, picks the next route in `verifier.fallback` order (else `gemini`, then `claude`), with the same brief, report format and `verdict` post:
+   `gemini` runs agy's Gemini (experimental) on a `--host` that has agy logged in, in bypass mode (a lead in a cloud VM can't start it, since the VM has no Omnigent server route: it asks its coordinator to start the Gemini verifier, and `start` refuses at once from the cloud), with agents.yml's verifier model, else one
    from that host's `agy models` (verifier.md's `Verifier:` line names it as
    `agy/<model>/<effort>`), and the PR body's review line says "verifier ran on Gemini (experimental
    fallback)"; where the worker is a claude-cloud VM, try `cloud_verifier.py verify --harness gemini` in it first
@@ -252,8 +249,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    the host route above; the VM runs the same `agy`, so use an id the host's `agy models` lists; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
    author context, the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
-   of quota)". A satisfied Gemini fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
-   its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. A same-family verdict lands only up to the risk level loop.md's `verifier.same_family` names (default `never`, or `low` or `high`), or through the date of its `verifier.same_family_until`, and `check merge` names the setting when it refuses. agy on another host takes the brief
+   of quota)". A satisfied Gemini fallback verdict lands a change of any risk the way a Codex one does: A same-family verdict lands only up to the risk level loop.md's `verifier.same_family` names (default `never`, or `low` or `high`), or through the date of its `verifier.same_family_until`, and `check merge` names the setting when it refuses. agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), and
    the fix round runs the PR's affected tests only (worker.md, Gates and push). A correctness finding's fix
@@ -595,7 +591,7 @@ on (SKILL.md, The cap).
    doesn't show it under `builtins`. Set `placement: same_host`, which makes a sibling in your
    family. Set `permission_mode: auto`: the server refuses an approval-skipping mode for a
    session another session creates, and `auto` runs edits and Bash with no prompt. Set
-   `model` to the worker tier (the call fails without one). The child gets the agent's default
+   `model` to the worker's from agents.yml (the call fails without one). The child gets the agent's default
    cloud environment, since no MCP call pins one. Give each child a title unique to its PR and
    role, and record it in `## Lead state` (5). Finish a child with
    `sys_session_update(archived: true)`, since `sys_session_close` refuses a sibling. The worker

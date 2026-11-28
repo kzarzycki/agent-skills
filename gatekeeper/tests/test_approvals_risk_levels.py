@@ -94,22 +94,17 @@ def test_high_risk_lands_on_the_gates_where_its_level_says_so_and_the_rating_sti
     assert "PR #7: risk: high (`risk:high` is on PR #7); merge: go" in err
 
 
-def test_a_high_level_on_the_gates_still_flags_a_rule_match_and_asks_a_default_tier_verdict(
+def test_a_high_level_on_the_gates_still_flags_a_rule_match(
     gating: Gate, capsys: pytest.CaptureFixture[str], added: list[tuple[int, str, bool]]
 ) -> None:
-    """The rating stays tied to the review tier and the label, whatever the merge action says."""
+    """The rating stays tied to the label, whatever the merge action says."""
     state, _ = gating
     policy("risk:\n  paths:\n    - app.py\nlevels:\n  high:\n    merge: gates\n")
     state["pull"] = judged_pr(judging("low — fine"))
-    code, out, err = check_merge(capsys)
+    code, _, err = check_merge(capsys)
     assert code == 0
     assert (7, "risk:high", True) in added
     assert "PR #7: risk: high (it matches a risk rule (path `app.py`)); merge: gates" in err
-    lower = judging("low — fine", heading="Verifier (codex/terra-6.1/med mid), pass 1")
-    state["pull"] = judged_pr(lower)
-    code, out, _ = check_merge(capsys)
-    assert code == 1
-    assert any("its newest verdict came from a lower tier (mid)" in line for line in out)
 
 
 def test_a_low_change_waits_for_a_go_where_the_low_level_asks_one(

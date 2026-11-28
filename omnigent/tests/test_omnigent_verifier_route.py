@@ -493,7 +493,7 @@ def test_worker_start_with_a_pr_is_not_taken_for_a_verifier(
     assert not omnigent_agent.verifier_without_role(args)
 
 
-# --- the setup's default verifier: the values file's `verifier:` block (#2840) ---
+# --- the setup's default verifier: agents.yml's `verifier:` block ---
 
 
 def verifier_start(
@@ -525,10 +525,9 @@ def verifier_start(
     )[1]
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     monkeypatch.delenv("OMNIGENT_VERIFIER_ROUTE", raising=False)
-    monkeypatch.delenv("COS_VALUES", raising=False)
     monkeypatch.chdir(tmp_path)
-    if values is not None:
-        (tmp_path / "cos-values.yml").write_text(values)
+    (Path.home() / ".agents").mkdir(exist_ok=True)
+    (Path.home() / ".agents" / "agents.yml").write_text(values or "")
     (tmp_path / "b.md").write_text("review")
     report = "/w/r.md" if host else str(tmp_path / "r.md")
     argv = ["start", "codex", "t", "b.md", report, "--role", role_file("x/verifier.md")]
@@ -554,8 +553,7 @@ def test_setting_route_and_model_start_agy_on_that_model_without_flags(
     created = verifier_start(tmp_path, monkeypatch, role_file, SETTING)
     assert created == [("antigravity-native-ui", "setup-model-medium")]
     assert (
-        "verifier route: gemini (from setup values file), model: setup-model-medium"
-        in capsys.readouterr().err
+        "verifier route: gemini (from setup) (fallback: codex, claude)" in capsys.readouterr().err
     )
 
 
@@ -564,31 +562,30 @@ def test_no_setting_keeps_the_codex_default(
 ) -> None:
     for values in (None, "hygiene:\n  repos: [a/b]\n"):
         created = verifier_start(tmp_path, monkeypatch, role_file, values)
-        assert created == [
-            ("codex", "gpt-6.1-terra")
-        ]  # no setting: the Terra tier, not Codex's own default (#2870)
+        assert created == [("codex", None)]  # no setting: Codex's own config decides
 
 
 def test_flags_and_the_variable_override_the_setting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role_file: Callable[[str], str]
 ) -> None:
-    # a flag route: the setting's model belongs to the setting's route, so it is not carried over
+    # a flag route outranks the setting's
     created = verifier_start(
-        tmp_path, monkeypatch, role_file, SETTING, ["--verifier-route", "claude"], host=False
+        tmp_path,
+        monkeypatch,
+        role_file,
+        "verifier:\n  route: gemini\n",
+        ["--verifier-route", "claude"],
+        host=False,
     )
-    assert [a for a, _ in created] == ["claude"] and created[0][1] != "setup-model-medium"
-    # a flag model on the setting's route
+    assert [a for a, _ in created] == ["claude"]
+    # a flag model outranks the setting's
     created = verifier_start(
         tmp_path, monkeypatch, role_file, SETTING, ["--model", "flag-model-high"]
     )
     assert created == [("antigravity-native-ui", "flag-model-high")]
-    # the variable outranks the setting's route, and the setting's model goes with the setting's route
+    # the variable outranks the setting's route
     monkeypatch.setenv("OMNIGENT_VERIFIER_ROUTE", "codex")
-    monkeypatch.setattr(
-        omnigent_agent,
-        "verifier_setting",
-        lambda: {"route": "gemini", "model": "setup-model-medium"},
-    )
+    (Path.home() / ".agents" / "agents.yml").write_text("verifier:\n  route: gemini\n")
     og = FakeOmnigent()
     monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
     (tmp_path / "b.md").write_text("review")
@@ -605,48 +602,8 @@ def test_flags_and_the_variable_override_the_setting(
     assert og.overrides["s0"] != "setup-model-medium"
 
 
-def test_verifier_setting_reads_the_block_named_by_cos_values(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    f = tmp_path / "elsewhere.yml"
-    f.write_text(
-        "hygiene:\n  repos: [a/b]\nverifier:\n  route: gemini  # first\n  fallback: [codex, claude]\nother: 1\n"
-    )
-    monkeypatch.setenv("COS_VALUES", str(f))
-    assert omnigent_agent.verifier_setting() == {"route": "gemini", "fallback": ["codex", "claude"]}
-
-
-def test_lead_md_names_no_verifier_model_and_points_to_the_setting() -> None:
+def test_lead_md_names_no_verifier_model_and_points_to_agents_yml() -> None:
     text = (Path(__file__).parents[2] / "loop/skills/engineering-loop/lead.md").read_text()
     para = text[text.index("**Verifier route.**") :].split("Triage every finding")[0]
     assert "gemini-" not in para and "agy models" in para
-    assert "`verifier:` block" in para and "values file" in para
-
-
-@pytest.mark.parametrize(
-    "block",
-    [
-        "verifier:\n  route: gemini\n  model: m\n  fallback:\n    - codex\n    - claude\n",
-        "verifier:\n  route: gemini\n# a comment at column 0\n  model: m\n  fallback: [codex, claude]\n",
-        "verifier: {route: gemini, model: m, fallback: [codex, claude]}\n",
-    ],
-)
-def test_verifier_setting_reads_every_form_the_values_checker_accepts(
-    block: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    f = tmp_path / "v.yml"
-    f.write_text(block)
-    monkeypatch.setenv("COS_VALUES", str(f))
-    assert omnigent_agent.verifier_setting() == {
-        "route": "gemini",
-        "model": "m",
-        "fallback": ["codex", "claude"],
-    }
-
-
-def test_a_cos_values_that_names_a_missing_file_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("COS_VALUES", str(tmp_path / "missing.yml"))
-    with pytest.raises(omnigent_agent.Fail, match="COS_VALUES names"):
-        omnigent_agent.verifier_setting()
+    assert "agents.yml's `verifier.route`" in para and "values file" not in para
