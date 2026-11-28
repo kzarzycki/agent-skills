@@ -541,3 +541,43 @@ def test_unasked_end_through_recorded_uncarded_as_supervise_calls_it() -> None:
     assert omnigent_agent.unasked_end(rec, "c", rec.info("c"), named, carded, "m") is False
     tree["m"] = {}
     assert omnigent_agent.unasked_end(rec, "c", rec.info("c"), named, carded, "m") is True
+
+
+def test_unasked_end_counts_a_card_naming_the_pr_the_lead_names() -> None:
+    """#2954: a lead ending USER NEEDED on a PR its manager's open card names raises no unasked event."""
+    card = {
+        "elicitation_id": "question_land1",
+        "params": {"policy_name": "sys_ask_user_question", "message": "Land #2954?"},
+    }
+    tree = {"m": {"pending_elicitations": [card]}, "c": {}}
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return tree.get(sid, {})
+
+    rec = wrapped(Og())
+    named = [ending("USER NEEDED: PR #2954 waits on the owner's go", 1)]
+    elsewhere = [ending("USER NEEDED: PR #77 waits on the owner's go", 1)]
+    assert omnigent_agent.unasked_end(rec, "c", rec.info("c"), named, False, "m") is False
+    assert omnigent_agent.unasked_end(rec, "c", rec.info("c"), elsewhere, False, "m") is True
+    tree["m"] = {}  # closed
+    assert omnigent_agent.unasked_end(rec, "c", rec.info("c"), named, False, "m") is True
+
+
+def test_unasked_end_keeps_the_repository_of_a_qualified_pr() -> None:
+    """#2954 F2: a card on other/r#12 or its URL does not satisfy a wait on o/r#12."""
+    card = {
+        "elicitation_id": "question_x1",
+        "params": {"policy_name": "sys_ask_user_question", "message": "Land other/r#12?"},
+    }
+    tree = {"m": {"pending_elicitations": [card]}, "c": {}}
+
+    class Og:
+        def info(self, sid: str) -> dict:
+            return tree.get(sid, {})
+
+    rec = wrapped(Og())
+    for said in ("USER NEEDED: Land o/r#12", "USER NEEDED: https://github.com/o/r/pull/12"):
+        assert omnigent_agent.unasked_end(rec, "c", {}, [ending(said, 1)], False, "m") is True
+    same = [ending("USER NEEDED: Land other/r#12", 1)]
+    assert omnigent_agent.unasked_end(rec, "c", {}, same, False, "m") is False
