@@ -2018,6 +2018,7 @@ class Omnigent:
         role: str | None = None,
         effort: str | None = None,
         pr: str = "",
+        needs: list[str] | None = None,
     ) -> str:
         body: dict[str, object] = {
             "agent_id": self.agent_id(agent),
@@ -2040,6 +2041,9 @@ class Omnigent:
                 " set OMNIGENT_PROJECT to file it",
                 file=sys.stderr,
             )
+        if needs:
+            # the role's needs: the server refuses a start on a host missing one, the backstop to ``start``'s own match (#2831)
+            body["needs"] = needs
         if model := model_for(agent, model)[0]:
             body["model_override"] = model
         # Omnigent turns it into each harness's own setting (``--effort`` for Claude Code, the pinned
@@ -2450,6 +2454,103 @@ def placement_hosts(workspace: str) -> list[str]:
     else:
         value = project_line(workspace, "Verifier hosts")
     return [h for h in (x.strip() for x in value.split(",")) if h]
+
+
+NEED_TAG = re.compile(r"^[a-z][a-z0-9-]*:[A-Za-z0-9._-]+$")
+# what a cloud sandbox kind is taken to have when `GET /v1/info` gives no `cloud_kind_capabilities` for it
+CLOUD_CAPABILITIES = frozenset({"os:linux"})
+
+
+def need_tags(text: str) -> list[str]:
+    """The tags of a comma-separated list, each ``<namespace>:<name>``; a word without a namespace is refused."""
+    tags = [t for t in (x.strip() for x in text.strip().strip("[]").split(",")) if t]
+    for tag in tags:
+        if not NEED_TAG.match(tag):
+            raise Fail(
+                f"need {tag!r}: a capability tag is <namespace>:<name>, e.g. os:macos, tool:xcode"
+            )
+    return tags
+
+
+def placement_entry(workspace: str, role: str) -> tuple[list[str], list[str]]:
+    """The needs and hosts loop.md's ``placement:`` block gives ``role`` (#2831):
+    ``  worker: {needs: [os:macos, tool:xcode], hosts: [mac-1]}`` under a line ``placement:``. A role
+    with no entry, or no block, has none, and keeps today's rule. It reads the caller's checkout, as
+    ``placement_hosts`` does: the entry picks the host, so no target host exists yet to read it from."""
+    root = checkout_root(workspace)
+    try:
+        text = (Path(root) / LOOP_FILE).read_text() if root else ""
+    except FileNotFoundError:
+        return [], []
+    block = re.search(r"^placement:[ \t]*\n((?:[ \t]+\S.*\n?)+)", text, re.MULTILINE)
+    found = (
+        re.search(rf"^[ \t]+{re.escape(role)}:[ \t]*\{{(.*)\}}", block.group(1), re.MULTILINE)
+        if block
+        else None
+    )
+    if not found:
+        return [], []
+
+    def listed(key: str) -> list[str]:
+        value = re.search(rf"\b{key}:[ \t]*\[([^\]]*)\]", found.group(1))
+        return [x.strip() for x in value.group(1).split(",") if x.strip()] if value else []
+
+    return need_tags(",".join(listed("needs"))), listed("hosts")
+
+
+def check_placement(og: Omnigent, args: argparse.Namespace) -> list[str]:
+    """The needs this start carries, refused when the machine it will run on lacks one (#2831): the role's
+    from loop.md's placement block plus each ``--needs``. A host qualifies when its ``capabilities`` hold every
+    need; one that states none qualifies when the role's ``hosts:`` list names it (the interim, until the
+    host record carries them); a cloud sandbox has ``CLOUD_CAPABILITIES``. With none left, it names the needs."""
+    if args.cmd not in ("run", "start"):
+        return []
+    role = Path(args.role).stem if args.role else ""
+    entry_needs, entry_hosts = placement_entry(os.getcwd(), role) if role in ROLES else ([], [])
+    needs = list(
+        dict.fromkeys([*entry_needs, *(t for text in args.needs for t in need_tags(text))])
+    )
+    if not needs:
+        return []
+    cloud = (
+        not args.top_level and args.agent not in AGENTS and og.harness(args.agent) == CLOUD_HARNESS
+    )
+    if cloud and not args.host:
+        try:
+            kinds = og.call("GET", "/v1/info").get("cloud_kind_capabilities")
+        except Fail:  # a server without the field: every kind is taken to have CLOUD_CAPABILITIES
+            kinds = None
+        stated = kinds.get(args.agent) if isinstance(kinds, dict) else None
+        have = set(stated) if isinstance(stated, list) else CLOUD_CAPABILITIES
+        if missing := [n for n in needs if n not in have]:
+            raise Fail(
+                f"{role or args.agent} needs {', '.join(needs)}, which a cloud sandbox lacks ({', '.join(missing)}):"
+                " start it on a host that has them (--top-level --host <name>)"
+            )
+        return needs
+    records = og.call("GET", "/v1/hosts")["hosts"]
+    want = args.host or og.host_id
+    mine = [h for h in records if want in (h["host_id"], h["name"])]
+    if not mine:
+        raise Fail(f"--host {want} names no host; hosts: {', '.join(h['name'] for h in records)}")
+
+    def has(h: dict) -> list[str]:
+        stated = h.get("capabilities")
+        if isinstance(stated, list):
+            return [n for n in needs if n not in stated]
+        # null: the server has no report for this host (it may be offline), which is unknown, not empty. The
+        # role's hosts: list decides when it has one; with none the server's own check on the create is the backstop
+        if not entry_hosts:
+            return []
+        return [] if {h["host_id"], h["name"]} & set(entry_hosts) else list(needs)
+
+    if missing := has(mine[0]):
+        fits = [h["name"] for h in records if not has(h)]
+        raise Fail(
+            f"{role or args.agent} needs {', '.join(needs)}: host {mine[0]['name']} lacks {', '.join(missing)}"
+            + (f"; hosts that have them: {', '.join(fits)}" if fits else "; no host has them")
+        )
+    return needs
 
 
 def cloud_default_host(og: Omnigent, named: list[str]) -> str:
@@ -5505,6 +5606,7 @@ def start(
     about: int | None = None,
     keep: bool = False,
     registered: Callable[[str, bool], None] | None = None,
+    needs: list[str] | None = None,
 ) -> tuple[str, list[str]]:
     """Return the confirmed session id and any abandoned sessions whose finish failed. A top-level
     lead subscribes its starter's root session (``subscriber`` when given) unless ``subscribe`` is false: a
@@ -5778,6 +5880,7 @@ def start(
                         role,
                         effort,
                         label,
+                        **({"needs": needs} if needs else {}),
                     ),
                     None,
                 )
@@ -13319,6 +13422,14 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         )
         p.add_argument("--confirm-seconds", type=float, default=START_CONFIRM_SECONDS)
         p.add_argument(
+            "--needs",
+            action="append",
+            default=[],
+            metavar="TAG[,TAG]",
+            help="capability tags (os:macos, tool:xcode, login:browser) this start needs besides the"
+            " ones loop.md's placement block gives its role; a host or cloud kind without one is refused (#2831)",
+        )
+        p.add_argument(
             "--model",
             help="model (default: $OMNIGENT_MODEL_<AGENT>, e.g. OMNIGENT_MODEL_CLAUDE_CLOUD, else"
             " sonnet for claude-cloud and the harness default for any other agent)",
@@ -14362,6 +14473,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             )
         if args.cmd == "start" and args.top_level and not args.host and cloud:
             args.host = cloud_default_host(og, placement_hosts(os.getcwd()))
+        role_needs = check_placement(og, args)
         if verifier and args.host:
             allowed = placement_hosts(os.getcwd())
             if allowed and not {args.host, og.hosts().get(og.host(args.host), "")} & set(allowed):
@@ -14675,6 +14787,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 about=verifies,
                 keep=bool(args.keep),
                 registered=line_for,
+                needs=role_needs or None,
             )
             survivors.extend(abandoned)
             arm_launched(sid)  # again: a held session attached to (no create) was never armed above

@@ -520,7 +520,7 @@ that host's absolute path, never made here, and `wait --pr <n>` writes the PR co
 the same way, `start --top-level --host <name> --pr <n> --role <verifier.md> --workspace <clone>
 <report>`, where `<clone>` is an absolute path there holding a clone of the repo and the report
 is under its `tmp/loop/`. Its `--pr` names the PR it reviews, not a report channel: it writes its
-report file as any child does. With a `Placement: hosts: <name>, <name>` line (or the old `Verifier hosts:`) in the project's
+report file as any child does. A role's needs come from `placement:` in loop.md (`worker: {needs: [os:macos, tool:xcode], hosts: [mac-1]}`; engineering-loop, Where work runs) plus each `--needs <tag>`: `start` refuses a host whose `capabilities` (`GET /v1/hosts`) lack one of those capability tags (a `null` report is unknown, not a refusal: the role's `hosts:` list decides when it has one, else the server's check does), refuses a cloud sandbox kind lacking one (its `cloud_kind_capabilities` in `GET /v1/info`, else `os:linux`), names the missing needs and the hosts that have them, and passes the needs with the session create for the server to check too. With a `Placement: hosts: <name>, <name>` line (or the old `Verifier hosts:`) in the project's
 `docs/agents/loop.md` (engineering-loop, Where work runs), `start` refuses a host the line does not list, naming the list; without
 it any host goes. Other sessions holding that clone don't stop it, since it works in a detached
 worktree of its own under the clone's `tmp/loop/` and never switches the clone's branch; every
