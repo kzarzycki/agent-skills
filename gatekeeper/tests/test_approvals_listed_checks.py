@@ -14,7 +14,7 @@ from approvals_harness import (
     lands,  # noqa: F401  (fixture)
     required,  # noqa: F401  (fixture)
 )
-from test_approvals import BARE, VERDICT, approved, in_project, loop_md, pull
+from test_approvals import VERDICT, approved, in_project, loop_md, pull
 
 LISTED = loop_md("loop:\n  required_checks:\n    - ci-tests\n    - lint\n")
 
@@ -157,33 +157,70 @@ def test_the_key_is_a_list_of_names_and_a_string_is_refused() -> None:
         approvals.settings(loop_md("loop:\n  required_checks: lint\n"))
 
 
-@pytest.mark.parametrize("listed_under_lock", [True, False])
-def test_land_judges_by_the_listed_checks_of_the_policy_fetched_under_the_lock(
-    lands: dict[str, Any],
-    required: list[str],
-    no_clock_wait: None,
-    monkeypatch: pytest.MonkeyPatch,
-    listed_under_lock: bool,
+@pytest.fixture
+def at_the_lock(monkeypatch: pytest.MonkeyPatch, lands: dict[str, Any]) -> Any:
+    """Publish a base policy (listed_policy, a commit pushed to origin's main) as land takes its landing lock: after the
+    policy land read before the lock, before the one it reads again under it."""
+    real = approvals.locked
+
+    def publish(names: str) -> None:
+        def locked(*args: Any, **kwargs: Any) -> bool:
+            listed_policy(lands, names)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(approvals, "locked", locked)
+
+    return publish
+
+
+def test_a_listed_check_added_to_the_base_as_the_lock_is_taken_holds_a_red_pr(
+    lands: dict[str, Any], required: list[str], no_clock_wait: None, at_the_lock: Any
 ) -> None:
-    """A base policy that adds (or drops) a listed check as the lock is taken decides the batch, not the pre-lock read."""
-    listed_policy(lands, "" if listed_under_lock else "    - ci-tests")
+    listed_policy(lands, "")
     lands["open"](7, {"7.txt": "7\n"})
     only_check(lands, 7, "ci-tests", "FAILURE")
-    real, calls = approvals.project, []
-
-    def project(**kwargs: Any) -> tuple[str | None, str | None]:
-        tracker, loop = real(**kwargs)
-        calls.append(1)
-        if len(calls) == 1:
-            return tracker, loop
-        return tracker, loop_md(
-            "loop:\n  required_checks:\n    - ci-tests\n"
-        ) if listed_under_lock else BARE
-
-    monkeypatch.setattr(approvals, "project", project)
+    at_the_lock("    - ci-tests")
     code, lines = lands["land"]()
-    assert len(calls) > 1
-    assert lands["merged"]() == ([] if listed_under_lock else ["7"]), (code, lines)
+    assert lands["merged"]() == [], (code, lines)
+    assert any("`ci-tests` is FAILURE" in line for line in lines), lines
+
+
+def test_a_listed_check_dropped_from_the_base_as_the_lock_is_taken_no_longer_holds_a_red_pr(
+    lands: dict[str, Any], required: list[str], no_clock_wait: None, at_the_lock: Any
+) -> None:
+    listed_policy(lands, "    - ci-tests")
+    lands["open"](7, {"7.txt": "7\n"})
+    only_check(lands, 7, "ci-tests", "FAILURE")
+    at_the_lock("")
+    code, lines = lands["land"]()
+    assert (code, lands["merged"]()) == (0, ["7"]), lines
+
+
+def test_a_draft_land_readied_is_not_made_to_wait_for_a_check_the_base_dropped_at_the_lock(
+    lands: dict[str, Any], required: list[str], no_clock_wait: None, at_the_lock: Any
+) -> None:
+    """readied() saw the listed check and marked the draft ready to wait for it; the policy under the lock lists none."""
+    listed_policy(lands, "    - ci-tests")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["isDraft"] = True
+    only_check(lands, 7, "ci-tests", "FAILURE")
+    at_the_lock("")
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"]()) == (0, ["7"]), lines
+
+
+def test_a_conflicting_draft_land_readied_goes_back_to_draft_when_the_lock_adds_a_listed_check(
+    lands: dict[str, Any], required: list[str], no_clock_wait: None, at_the_lock: Any
+) -> None:
+    listed_policy(lands, "")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["isDraft"] = True
+    lands["pulls"][7]["mergeable"] = "CONFLICTING"
+    only_check(lands, 7, "lint", "SUCCESS")
+    at_the_lock("    - ci-tests")
+    code, lines = lands["land"]("7")
+    assert lands["merged"]() == [] and lands["pulls"][7]["isDraft"], (code, lines)
+    assert any("is a draft again" in line for line in lines), lines
 
 
 @pytest.mark.parametrize("name", ["''", "'  '"])
