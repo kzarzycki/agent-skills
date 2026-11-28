@@ -45,9 +45,9 @@ yourself, keeping standards and spec as separate axes.
   say how that input arises in use (`docs/agents/loop.md` § In use). Also report a spec or design
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
-- **Siblings.** Under a correctness finding, list the other cases the same code handles the same way (states,
-  callers, boundary values), each marked failing with its evidence, fine, or not run. They belong to that
-  finding, not to the counts, so the fix covers the class in one round.
+- **Siblings.** Under a correctness finding list the other cases the same code handles the same way (states, callers,
+  boundary values), each a line `Sibling: <case>: failing (evidence)|fine|not run`. They belong to that finding, not to
+  the counts. A `not run` one on a major is run before the verdict, or the `Budget:` line says why (`verdict` refuses it otherwise).
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
 - **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
   has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
@@ -139,7 +139,8 @@ yourself, keeping standards and spec as separate axes.
   name or record you saw on the instance goes in a local file next to the report (under
   `tmp/loop/`), and the report cites that file by path and says what it shows, without the
   values. When the sandbox can't reach the instance or its log, say so.
-- **Run loop.md § Verifier checklist**, when it has one.
+- **Run loop.md § Verifier checklist**, when it has one, and try the edge inputs (empty, missing, malformed, duplicate,
+  oversized) of any parser or settings loader the change touches: earlier passes' misses cluster there.
 - **Mutation-check the new tests.** Undo each production change the spec adds on its own
   (one condition, branch or value), never the whole diff at once, since a whole-patch revert
   fails the tests for the wrong reason (a flag gone) and hides a change no test covers. Edit

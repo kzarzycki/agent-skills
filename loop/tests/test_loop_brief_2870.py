@@ -58,6 +58,7 @@ def stand_in(monkeypatch: pytest.MonkeyPatch, base: str, head: str, body: str) -
         toplevel=Path.cwd,
         conflicted=lambda number, ref, sha: [],
         passes=lambda found: [],
+        over_cap=lambda pull, number, policy: None,
         merge_base=lambda ref, sha: base,
         named=lambda text: [],
         section=lambda text, name: "",

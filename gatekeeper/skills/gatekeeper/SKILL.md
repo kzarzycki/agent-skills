@@ -155,5 +155,5 @@ reason links no issue. A skip for the environment (a missing tool) needs no issu
 
 The cap is 3 passes, unless the project's gatekeeper.md sets its own with `cap` under `loop`
 in its policy. It is the last verifier pass that runs on its own: a head at it with a blocker
-or major open lands only under the lead's recorded `Cap:` decision, which `check merge` reads.
-`gatekeeper.py` reads the default from this line, so this is the one place to change it.
+or major open lands only under the lead's recorded `Cap:` decision, which `check merge` reads, and `loop.py brief`
+starts no pass past the cap's one scoped pass without it. `gatekeeper.py` reads the default from this line, the one place to change it.
