@@ -77,6 +77,11 @@ def test_a_cut_or_a_missing_input_is_named_and_nearby_code_and_rules_are_include
     assert "nearby code: not supplied" in bare and "rules: not supplied" in bare
 
 
+def test_the_brief_checklist_has_the_edge_input_line() -> None:
+    brief = (ROOT / "loop/skills/engineering-loop/one-shot-verifier.md").read_text()
+    assert "edge inputs" in brief and "parser or settings loader" in brief
+
+
 REVIEW = {
     "criteria": ["Same head refused: ran the planner"],
     "findings": [

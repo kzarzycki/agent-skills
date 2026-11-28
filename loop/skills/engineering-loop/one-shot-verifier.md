@@ -18,6 +18,9 @@ You judge; you may read the whole checkout and run the acceptance tests. Do not 
 are cited in the bundle. Cap shell output (`| head -200`). Mutation checks stay yours: choose the production changes to undo,
 one at a time, and `mutate.py` runs them.
 
+Checklist: try the edge inputs (empty, missing, malformed, duplicate, oversized) of any parser or settings loader the change
+touches; that is where earlier passes' misses cluster.
+
 Report only what the change introduced, with provable impact, citing the AGENTS.md rule each finding breaks. Priority: P0 (blocks
 release), P1 (urgent), P2 (normal), P3 (low). Answer with one JSON block:
 
