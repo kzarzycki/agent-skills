@@ -41,12 +41,42 @@ NO_CLOUD = re.compile(r"^Cloud worker:[ \t]*none\b", re.MULTILINE | re.IGNORECAS
 LOOP_BLOCK = re.compile(r"^## Loop settings[ \t]*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 FENCE = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
 LEGACY_CLOUD = re.compile(r"^[^\w\n]*Cloud worker:", re.MULTILINE)
-NONE = r"(?:none|\"none\"|'none')"
-KEY = r"(?:cloud_worker|\"cloud_worker\"|'cloud_worker')"
-NONE_BLOCK = re.compile(
-    rf"^{KEY}[ \t]*:(?:[ \t]+{NONE}|[ \t]*\n[ \t]+{NONE})[ \t]*(?:#.*)?$", re.MULTILINE
+# every heading that could be read as `## Loop settings`: a file holding it twice is the loader's to refuse
+ANY_LOOP_HEADING = re.compile(r"^#{1,6}[ \t]*Loop settings\b", re.MULTILINE | re.IGNORECASE)
+FENCE_LINE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})", re.MULTILINE)
+# the schema's top-level keys (gatekeeper.py's LOOP_KEYS; a test fails when the two drift apart): a block naming any
+# other key is one the loader refuses, so the hook does not read it
+SCHEMA_KEYS = frozenset(
+    {
+        "affected_tests",
+        "test_report",
+        "gate",
+        "gate_base",
+        "gate_cost",
+        "wall_clock_variable",
+        "acceptance",
+        "cloud_worker",
+        "placement",
+        "models",
+        "lead_autocompact",
+        "tools",
+        "verifier_session",
+        "orchestration_backend",
+    }
 )
-NONE_FLOW = re.compile(rf"^[ \t]*\{{[^{{}}\[\]]*?(?<![\w\"'])({KEY})[ \t]*:[ \t]*{NONE}[ \t]*[,}}]")
+# one value as a block line carries it: a closed quoted string, a one-line flow collection without quotes, anchors or
+# comments, or a plain scalar (no `: ` or ` #` inside, no indicator first). Anything else is not read.
+VALUE = (
+    r"(?:\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\n]|'')*'|\{[^{}\"'#&*!\n]*\}|\[[^\[\]\"'#&*!\n]*\]"
+    r"|[A-Za-z0-9_./~$(+=](?:[^\n#:]|:(?=\S)|(?<=\S)#)*)"
+)
+COMMENT = r"(?:[ \t]+#.*)?[ \t]*$"
+KEY_NAME = r"(?:[A-Za-z_]\w*|\"[A-Za-z_]\w*\"|'[A-Za-z_]\w*')"
+TOP_LINE = re.compile(rf"^(?P<key>{KEY_NAME})[ \t]*:(?:[ \t]+(?P<value>{VALUE}))?{COMMENT}")
+NESTED_LINE = re.compile(
+    rf"^(?P<indent> +)(?:-[ \t]+)?(?:[\w./-]+[ \t]*:(?:[ \t]+{VALUE})?|{VALUE}){COMMENT}"
+)
+NONE_VALUE = re.compile(r"^(?:none|\"none\"|'none')$")
 HOST_RUN = "LOOP_HOST_RUN"
 # the Omnigent server claude-cloud-run launches through; unset, the cloud route can't run here
 RUNNER = "RUNNER_SERVER_URL"
@@ -147,29 +177,65 @@ def loop_repo(cwd: Path) -> Path | None:
     return None if on_hosts(text) else root
 
 
+def block_keys(body: str) -> dict[str, str | None] | None:
+    """The top-level keys of a `## Loop settings` yaml block, each with its same-line value (None where the key has
+    none), when the block is made only of what this hook can read for certain: simple `key: value` lines, comments,
+    blank lines, and the indented lines of a key that has no value of its own, one indent deep; every top-level key in
+    the schema's set, none twice. None for anything else (flow at the top level, a block scalar, an anchor, a tag,
+    an unknown or repeated key, a quoted string it can't see the end of ...)."""
+    keys: dict[str, str | None] = {}
+    nested_at: int | None = None  # the indent of the lines under the last key, once it has some
+    open_key = False  # the last top-level key has no value: indented lines may follow
+    for line in body.split("\n"):
+        if not line.strip(" ") or line.lstrip(" ").startswith("#"):
+            continue
+        if line[0] != " ":
+            found = TOP_LINE.match(line)
+            if found is None:
+                return None
+            key = found["key"].strip("\"'")
+            if key not in SCHEMA_KEYS or key in keys:
+                return None
+            value = found["value"]
+            keys[key] = None if value is None else value.strip()
+            open_key, nested_at = value is None, None
+            continue
+        found = NESTED_LINE.match(line)
+        if found is None or not open_key:
+            return None
+        width = len(found["indent"])
+        if nested_at not in (None, width):
+            return None
+        nested_at = width
+    return keys
+
+
 def on_hosts(text: str) -> bool:
     """Whether loop.md keeps its workers on hosts, as gatekeeper.py's loop_setting reads `cloud_worker`: from the
     first `yaml` fence under `## Loop settings` (never the prose around it), else from the `Cloud worker:` line.
-    This hook has no YAML parser, so it answers True only where it is certain the loader reads `none`: the key once,
-    as a block line or a one-line flow mapping, spelt `none`. Any other shape of the block (a second fence, the
-    key beside its legacy line, flow or anchors it can't read) fails closed: the run is cloud-routed, so a heavy run
-    off the host is refused, never allowed on a guess."""
+    This hook has no YAML parser, so it answers True only where it is certain the loader reads `none`: the heading
+    once in the file, one fence in its section, a block of simple lines whose keys are all the schema's
+    (block_keys), `cloud_worker` once with the value `none` on its own line, no legacy `Cloud worker:` line beside
+    it. Anything else (a flow mapping, an unknown key, a second heading or fence, an anchor ...) fails closed: the
+    run is cloud-routed, so a heavy run off the host is refused, never allowed on a guess."""
+    if len(ANY_LOOP_HEADING.findall(text)) > 1:
+        return False  # a second block the loader refuses, or one this hook would not read
     section = LOOP_BLOCK.search(text)
     if section is None:
         return bool(NO_CLOUD.search(text))
     fences = FENCE.findall(section[1])
-    if len(fences) != 1:
-        return False  # no block, or more than one: the loader refuses it
-    body = "\n".join(
-        line
-        for line in fences[0].splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    )
-    if "cloud_worker" not in body:  # the block leaves the key to its legacy line
+    if len(fences) != 1 or len(FENCE_LINE.findall(section[1])) != 2:
+        # no block, or more than one fence: the loader refuses it or the hook can't tell
+        return False
+    keys = block_keys(fences[0])
+    if keys is None:
+        return False
+    if "cloud_worker" not in keys:  # the block leaves the key to its legacy line
         return bool(NO_CLOUD.search(text))
-    if LEGACY_CLOUD.search(text) or body.count("cloud_worker") != 1:
+    if LEGACY_CLOUD.search(text):
         return False  # set twice: the loader refuses
-    return bool(NONE_BLOCK.search(body) or NONE_FLOW.match(body))
+    value = keys["cloud_worker"]
+    return value is not None and bool(NONE_VALUE.match(value))
 
 
 def drop_heredocs(command: str) -> str:
