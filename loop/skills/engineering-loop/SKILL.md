@@ -895,6 +895,7 @@ or the owner's private network.
 
 ## Rules for every role
 
+- **Choices that change often (models, effort, routes, hosts, budgets) live in YAML config, never in skill code, `.md` prose or environment variables;** AGENTS.md's design rules have the rest.
 - **The owner is on the loop, not in it.** They read specs, never code: gates, tests and
   the verifier are the review. Ask them only at a fork that changes what gets built,
   before something hard to undo (deploy, publish, send, spend), for a credential only
