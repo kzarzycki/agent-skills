@@ -1920,7 +1920,8 @@ class Omnigent:
         its name, and an agent record has no host, so copies whose record and config
         (``GET /v1/agents/{id}/config``) match apart from identity and bookkeeping (``IDENTITY``)
         can't be told
-        apart: the name resolves to the newest by ``created_at``. The record carries policies,
+        apart: the name resolves to the highest ``version``, then the newest by ``created_at``
+        (a re-registered older definition has the later ``created_at`` but not the higher version). The record carries policies,
         skills and terminals, the config instructions and model, so both are compared. Agents
         that differ are refused, listing their ids, rather than picked by order, and so is a
         server agent sharing its name with a user agent, since only a user agent has a config
@@ -1962,7 +1963,10 @@ class Omnigent:
             ]
             if any(spec != specs[0] for spec in specs):
                 raise Fail(f"agents {', '.join(named)} are all called {name}: give the agent's id")
-        return max(named.values(), key=lambda a: (a.get("created_at") or 0, str(a.get("id"))))
+        return max(
+            named.values(),
+            key=lambda a: (a.get("version") or 0, a.get("created_at") or 0, str(a.get("id"))),
+        )
 
     def project(self, name: str) -> dict | None:
         """The project (a sidebar group) called ``name``, or None when there is none. Case, spaces
