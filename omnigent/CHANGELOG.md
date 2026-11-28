@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.40 - 2026-11-28
+
+- A `run`, `send` or `wait` with `--notify` on a child Omnigent already wakes the lead for no longer sends its own line when the child asks a question (exit 3), so the lead wakes once for that turn end, not twice (#1150).
+
 ## 0.1.39 - 2026-11-28
 
 - `omnigent_agent.py`: an open question card that names a PR (`#<n>`, `<owner>/<repo>#<n>` or its URL), held by a followed session or the notify manager, counts as that PR's stall blocker, so `pr-stall` raises no event until the card closes; the `unasked` check reuses the same lookup, repository-qualified. Cards are found through the session listing's `pending_elicitations_count`, with no timed reads (#2954, #2970).
