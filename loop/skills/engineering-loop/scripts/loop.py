@@ -100,24 +100,33 @@ def diff_summary(base: str, head: str) -> list[str]:
     ]
 
 
-def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
-    """The findings pass `number` posted on the PR, each as its comment's text (`verdict` heads it `**Verifier (<family>),
-    pass <n> · <id>** (<severity>): <title>`), the ones on a file outside the diff from the review's body, as their
-    first line. Read from GitHub, so a verifier on any host gets them the way a host one does."""
-    mine = re.compile(rf"\**Verifier \([^)]*\), pass {number} · ")
-    found = [
-        note["body"].strip()
-        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
-        for note in (thread.get("comments") or {}).get("nodes") or []
-        if mine.match(note.get("body") or "")
-    ]
-    for review in (pull.get("reviews") or {}).get("nodes") or []:
-        found += [
-            line.strip()[2:]
-            for line in (review.get("body") or "").splitlines()
-            if line.startswith("- ") and mine.match(line[2:].strip())
+def repeat_counts(pull: dict[str, Any], last: int) -> dict[str, int]:
+    """How many passes have reported each finding of pass `last` (R4): a finding repeats one of the pass before it when
+    it says `Origin: prior <id> not fixed` for it or carries its title. Keyed by the finding's id in pass `last`."""
+    head = re.compile(r"\**Verifier \([^)]*\), pass \d+ · (\S+?)\*\*\s*\(\w+\):\s*(.+)")
+    found = {
+        n: [
+            (m[1], m[2].strip().lower(), t)
+            for t in gatekeeper.previous_findings(pull, n)
+            if (m := head.match(t))
         ]
-    return found
+        for n in range(1, last + 1)
+    }
+
+    def count(n: int, title: str, text: str) -> int:
+        for other, earlier, before in found.get(n - 1, []):
+            if earlier == title or re.search(
+                rf"^Origin:[ \t]*prior {re.escape(other)} not fixed", text, re.MULTILINE
+            ):
+                return 1 + count(n - 1, earlier, before)
+        return 1
+
+    return {name: count(last, title, text) for name, title, text in found.get(last, [])}
+
+
+def fid(text: str) -> str:
+    """The id (`F1`) a posted finding's comment heads itself with."""
+    return (re.match(r"\**Verifier \([^)]*\), pass \d+ · (\S+?)\*\*", text) or [None, ""])[1]
 
 
 def brief(
@@ -211,11 +220,28 @@ def brief(
             " and rerun its repros"
         )
         # the findings themselves, since the previous report stays on the lead's host and a cloud verifier can't read it
-        if prior := previous_findings(pull, number - 1):
+        if prior := gatekeeper.previous_findings(pull, number - 1):
+            repeats = repeat_counts(pull, number - 1)
             lines += [
                 f"- Previous findings, pass {number - 1}:",
-                *(f"  {n}. " + f.replace("\n", "\n     ") for n, f in enumerate(prior, 1)),
+                *(
+                    f"  {n}. "
+                    + f.replace("\n", "\n     ")
+                    + f"\n     Repeat count: {repeats.get(fid(f), 1)}"
+                    for n, f in enumerate(prior, 1)
+                ),
             ]
+            # R4: the same finding twice means the patches are not closing the class
+            if again := {name: n for name, n in repeats.items() if n >= 2}:
+                lines.append(
+                    "- Repeated findings: "
+                    + ", ".join(f"{name} (reported {n} times)" for name, n in again.items())
+                    + ". The fix needs one design note naming the class and the single mechanism that replaces the"
+                    " patches, or the lead's `Cap:` exit: review that note, not another patch"
+                )
+            # R2: a delta pass mutates the production change for each prior finding being closed, and these mutants
+            if mutants := gatekeeper.mutants_listed(prior):
+                lines.append(f"- Mutants to kill, pass {number - 1}: " + "; ".join(mutants))
         # a far verifier works in its worktree, but the last one saved its repros beside its report, in the clone's
         # tmp/loop/: each by its path there, from the copy wait brought home
         if far and (home := Path("tmp/loop") / f"pr{pr}-v{number - 1}.md").is_file():

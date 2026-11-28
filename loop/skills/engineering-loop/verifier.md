@@ -58,20 +58,20 @@ yourself, keeping standards and spec as separate axes.
   main, and the verdict stands on the rest; never write the verdict as satisfied "apart from"
   a red test, and never accept an expected-failures list in its place. An unconditional skip in the diff
   without an issue link is a major.
-- **Out of scope:** an input the system never produces, an interleaving nobody can
-  trigger, a value orders of magnitude outside what the data source emits. Style, naming,
-  formatting and code-review's smell baseline are notes, not findings.
+- **Out of scope:** an input the system never produces, an interleaving nobody can trigger, a value orders of
+  magnitude outside the data source. Style, naming, formatting and code-review's smell baseline are notes.
 - **Work the given priorities first.**
 - **Every pass after the first:** the lead gives you the previous report. Review
   the diff since its head and the files it touches yourself, both axes in your own session
   with no axis subagents (code-review, step 4), not the whole change again. Rerun the acceptance checks and repros the round's diff reaches, plus every repro still
   `NOT FIXED` (SKILL.md, A check runs only if it can fail because of the change, R4); your own new repros
-  and mutation runs are never skipped. Run them from one script that prints each one's command, result and exit code, rather than
+  are never skipped. A delta pass mutates the production change for each prior finding it closes (the brief's `Mutants to kill:`
+  list, the `Mutants:` line of each finding) and the lines the round changed, never the tests it added; a survivor of
+  another mutant is a minor, and a finding names its mutant on a `Mutant:` line. Run them from one script that prints each one's command, result and exit code, rather than
   one call per repro, and mark each FIXED, NOT FIXED or ACCEPTED, with the evidence line. A pass past the cap that the lead runs after a
   core finding stayed open reviews only the fix of those items; a pass on a merge of main
   reviews the merge, whatever its number. Judge an ACCEPTED item by whether its recorded reasoning holds. A pass
-  after a fix for a CI check red on a ready PR is the same: only the change since that
-  report's head.
+  after a fix for a CI check red on a ready PR is the same: only the change since that report's head.
 - **Emit the `verifier` event** on the branch you review, so the lead waits on you as on `land` (the `gatekeeper` skill's events.md). A pass
   that `cloud_verifier.py` runs (`verify` or `thread`) is emitted by the script: a child it starts emits nothing by
   hand, since an `ok` written before the script posts the review would wake the lead on a review that is not there yet.

@@ -3063,6 +3063,57 @@ def proofs(
     return found
 
 
+def previous_findings(pull: dict[str, Any], number: int) -> list[str]:
+    """The findings pass `number` posted on the PR, each as its comment's text (`verdict` heads it `**Verifier (<family>),
+    pass <n> · <id>** (<severity>): <title>`), the ones on a file outside the diff from the review's body, as their
+    first line. Read from GitHub, so a verifier on any host gets them the way a host one does."""
+    mine = re.compile(rf"\**Verifier \([^)]*\), pass {number} · ")
+    found = [
+        note["body"].strip()
+        for thread in (pull.get("reviewThreads") or {}).get("nodes") or []
+        for note in (thread.get("comments") or {}).get("nodes") or []
+        if mine.match(note.get("body") or "")
+    ]
+    for review in (pull.get("reviews") or {}).get("nodes") or []:
+        found += [
+            line.strip()[2:]
+            for line in (review.get("body") or "").splitlines()
+            if line.startswith("- ") and mine.match(line[2:].strip())
+        ]
+    return found
+
+
+# a finding's `Mutants:` line, the mutants a fix must kill, which the next delta pass mutates and no others (R2)
+MUTANTS = re.compile(r"^Mutants:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE)
+
+
+def mutants_listed(texts: list[str]) -> list[str]:
+    """The mutants a pass's findings name on `Mutants: <a>; <b>` lines, each as written, backticks stripped."""
+    return [
+        mutant.strip().strip("`").strip()
+        for text in texts
+        for line in MUTANTS.findall(text)
+        for mutant in line.split(";")
+        if mutant.strip().strip("`").strip()
+    ]
+
+
+def check_mutants(report: Path, found: list[tuple[str, ...]], prior: list[str]) -> None:
+    """On a delta pass a blocker or major's `Mutant: <name>` must be one the previous pass's findings listed for killing:
+    a survivor of a mutant it never named, one the fix round's own tests invited, is a minor. Refused, naming the fix."""
+    for name, severity, _path, _at, _title, body in found:
+        if severity == "minor":
+            continue
+        for line in body.splitlines():
+            if (said := re.fullmatch(r"Mutant:[ \t]*(\S.*?)[ \t]*", line.strip())) and (
+                said[1].strip("`") not in prior
+            ):
+                raise Refused(
+                    f"{report}: {name} names the mutant `{said[1]}`, which the previous pass's `Mutants:` lines don't "
+                    f"list ({'; '.join(prior) or 'none'}): a new survivor is a minor"
+                )
+
+
 def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     """The verifier's PR reviews in order, each as its commit, pass number and `VERDICT:`/`SATISFIED:`/`Risk:`/`Scope:`/`Logic change:` lines (`Scope:` read from the closing block only,
     since a criteria line may say anything): a body
@@ -10528,6 +10579,7 @@ def accepted(lines: list[str], report: Path) -> list[tuple[str, str]]:
 
 def parse_report(
     report: Path,
+    prior_mutants: list[str] | None = None,
 ) -> tuple[str, str, list[tuple[str, str, str, str, str, str]], list[str], str]:
     """A verifier report as `verdict` posts it: its review heading, the head it reviewed, its findings, its closing
     `VERDICT:`, `SATISFIED:`, `Risk:` and any `Logic change:`, `Scope:` and `Rerun:` lines (the last two read after
@@ -10572,6 +10624,8 @@ def parse_report(
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
+    if prior_mutants is not None:
+        check_mutants(report, found, prior_mutants)
     # the criteria come from the spec before the worker's evidence, so its framing can't narrow the review
     if not criteria(text):
         raise Refused(
@@ -10642,9 +10696,10 @@ def parse_report(
     return heading, heads[-1].lower(), found, closing, qualifier
 
 
-def report_check(report: Path) -> int:
-    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying."""
-    parse_report(report)
+def report_check(report: Path, prior: Path | None = None) -> int:
+    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying.
+    With `prior`, the previous pass's report, a delta pass's mutants are checked against its `Mutants:` lines."""
+    parse_report(report, mutants_listed([read(prior)]) if prior else None)
     print(f"{report} reads as a verdict")
     return 0
 
@@ -10703,7 +10758,10 @@ def verdict(pr: int, report: Path) -> int:
     line of the diff when its line is outside it, in the review's body when its file is."""
     heading, head, found, closing, qualifier = parse_report(report)
     denied(report.read_text())  # before any read of GitHub, not only at the post
-    diff = diff_lines(pull_request(pr)["baseRefOid"], head)
+    pull = pull_request(pr)
+    if (number := int(PASS.fullmatch(heading)[2])) > 1:  # type: ignore[index]
+        check_mutants(report, found, mutants_listed(previous_findings(pull, number - 1)))
+    diff = diff_lines(pull["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:
         said = f"**{heading} · {name}** ({severity}): {title}"
@@ -14512,6 +14570,11 @@ def main(argv: list[str]) -> int:
     )
     reading.add_argument("report", type=Path)
     reading.add_argument("--json", action="store_true")
+    reading.add_argument(
+        "--prior",
+        type=Path,
+        help="the previous pass's report, whose `Mutants:` lines a delta pass may name",
+    )
     recording = records.add_parser(
         "checks",
         help="Record or read the gate's pass on a head (`local-ci`).",
@@ -14670,7 +14733,7 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         if refuses_stale():
             return 1
     if args.command == "report":  # reads a local file only, so no remote needs choosing
-        return report_json(args.report) if args.json else report_check(args.report)
+        return report_json(args.report) if args.json else report_check(args.report, args.prior)
     if args.command == "affected-tests":
         if args.local:
             os.environ[LOCAL_VAR] = "1"

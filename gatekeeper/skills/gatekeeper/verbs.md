@@ -23,7 +23,7 @@ uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing pro
     uv run scripts/approvals.py approve breakglass <pr> --by owner --head <sha> (--reason <why> [--expires <iso>] | --withdraw)  # the owner's alone: --head applies to a withdrawal too (breakglass.md)
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
     uv run scripts/approvals.py verdict <pr> <report>      # post a verifier report as a PR review
-    uv run scripts/approvals.py report <report>            # check a verifier report as verdict reads it; posts nothing
+    uv run scripts/approvals.py report <report> [--prior <report>]  # check a verifier report as verdict reads it; posts nothing
     uv run scripts/approvals.py overlap <pr>|--files <path>... [--base <b>]  # other open PRs changing the same files: hunks, and whether the heads merge
     uv run scripts/approvals.py local-ci <pr> [--head <sha>] [--run]  # --head: the commit just pushed, refused if GitHub's head stays another; --run runs `mise run check:all` here then
     uv run scripts/approvals.py local-ci --record [--base <rev>]  # the same on HEAD, the gate before each push; reused by tree; narrowed with --base (Narrowed mode)
