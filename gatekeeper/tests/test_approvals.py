@@ -3408,7 +3408,7 @@ def test_a_free_plan_private_repo_requires_no_checks_and_says_github_enforces_no
     landing["rulesets"] = rules_error(403, FREE_PLAN)
     assert approvals.required_checks("main") == set()
     assert capsys.readouterr().out.splitlines() == [
-        "GitHub enforces no rules on main here (its plan has none): land's proofs are the only gate"
+        "GitHub enforces no rules on main here (its plan has none)"
     ]
 
 

@@ -67,7 +67,7 @@ loop:
   delegate: all   # the delegated approver's go on a head covers a PR into the default branch too, and their spec or plan approval counts, but on risk.critical_paths; default feature
   delegate_spec: true   # false keeps spec and plan approvals the owner's under delegate: all, whose merge go still counts; default true
   pack_staleness: refuse   # approvals.py exits 1 at start when its checkout is behind its upstream and the script changed there (default warn; omnigent_agent.py only warns)
-  required_checks:   # checks that must be green on the head though the forge requires none (a base with no rules or protection, or a plan with no rules API); check merge and land hold the merge on one missing or not green, naming it
+  required_checks:   # checks that must be green on the head though the forge requires none (a base with no rules or protection, or a plan with no rules API); check merge and land hold the merge on one missing or not green, naming it. The list adds to the checks the forge requires (a name both give is one check) and never holds on the loop's own statuses (`loop:approvals`, `gatekeeper`, `land`); land reads it from the policy fetched under its lock; a blank name is refused
     - ci-tests
   stalled_after_hours: 12   # check stalled lists a verified PR still missing its go or record this long after its head's push (default 4)
   head_proof:      # the status land requires on each head, and the names its recording takes from the caller

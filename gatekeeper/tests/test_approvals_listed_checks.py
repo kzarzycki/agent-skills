@@ -14,7 +14,7 @@ from approvals_harness import (
     lands,  # noqa: F401  (fixture)
     required,  # noqa: F401  (fixture)
 )
-from test_approvals import VERDICT, approved, in_project, loop_md, pull
+from test_approvals import BARE, VERDICT, approved, in_project, loop_md, pull
 
 LISTED = loop_md("loop:\n  required_checks:\n    - ci-tests\n    - lint\n")
 
@@ -155,3 +155,38 @@ def test_the_key_is_a_list_of_names_and_a_string_is_refused() -> None:
     assert approvals.settings(LISTED)["required_checks"] == ["ci-tests", "lint"]
     with pytest.raises(approvals.Refused, match="required_checks"):
         approvals.settings(loop_md("loop:\n  required_checks: lint\n"))
+
+
+@pytest.mark.parametrize("listed_under_lock", [True, False])
+def test_land_judges_by_the_listed_checks_of_the_policy_fetched_under_the_lock(
+    lands: dict[str, Any],
+    required: list[str],
+    no_clock_wait: None,
+    monkeypatch: pytest.MonkeyPatch,
+    listed_under_lock: bool,
+) -> None:
+    """A base policy that adds (or drops) a listed check as the lock is taken decides the batch, not the pre-lock read."""
+    listed_policy(lands, "" if listed_under_lock else "    - ci-tests")
+    lands["open"](7, {"7.txt": "7\n"})
+    only_check(lands, 7, "ci-tests", "FAILURE")
+    real, calls = approvals.project, []
+
+    def project(**kwargs: Any) -> tuple[str | None, str | None]:
+        tracker, loop = real(**kwargs)
+        calls.append(1)
+        if len(calls) == 1:
+            return tracker, loop
+        return tracker, loop_md(
+            "loop:\n  required_checks:\n    - ci-tests\n"
+        ) if listed_under_lock else BARE
+
+    monkeypatch.setattr(approvals, "project", project)
+    code, lines = lands["land"]()
+    assert len(calls) > 1
+    assert lands["merged"]() == ([] if listed_under_lock else ["7"]), (code, lines)
+
+
+@pytest.mark.parametrize("name", ["''", "'  '"])
+def test_a_blank_check_name_in_the_list_is_refused_naming_the_key(name: str) -> None:
+    with pytest.raises(approvals.Refused, match="required_checks.*blank"):
+        approvals.settings(loop_md(f"loop:\n  required_checks:\n    - {name}\n"))

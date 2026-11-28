@@ -680,6 +680,12 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             kind is list and not all(isinstance(item, str) for item in value)
         ):
             raise Refused(f"{file}'s {where} must be {KINDS[kind]}, not {value!r}")
+        elif (
+            key == "required_checks" and name == "loop" and not all(item.strip() for item in value)
+        ):
+            raise Refused(
+                f"{file}'s {where} names a blank check: list check names, or drop the entry"
+            )
         elif kind is str and isinstance(schema, dict) and not value:
             raise Refused(
                 f"{file}'s {where} is empty"
@@ -7397,8 +7403,10 @@ def landing_here(
             named = unreadied(
                 [{k: v for k, v in pull.items() if k != "verdict"} for pull in named], base, *fresh
             )
+        # the fetched policy's listed checks decide the batch, not the ones read before the lock (#3023)
+        under_lock = (rules - OWN) | listed_checks(fresh[1])
         with placed(fresh[1]):
-            return local_queue(named, base, *fresh, required, only, held, worst)
+            return local_queue(named, base, *fresh, under_lock, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
@@ -8008,7 +8016,7 @@ def unreadied(
     """The named PRs once the policy changed while the land waited for the lock: each draft readied() marked ready that
     `landable` under the new policy would not ready goes back to draft, with a line
     saying why, and is returned as a draft with that verdict, so the batch leaves it out; the rest as they were."""
-    required = required_checks(base) - OWN
+    required = (required_checks(base) - OWN) | listed_checks(loop)
     found = []
     for pull in named:
         if not pull.get("readied"):
