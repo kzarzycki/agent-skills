@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.26 - 2026-11-28
+
+- A generated bump of any pack of this repository counts as a mechanical pack bump: its `apm.yml` may change the `ref:` lines of several `kzarzycki/agent-skills/<pack>` dependencies at once, each to a stable or `-next` tag of its own pack (`omnigent-v0.1.34-next`), and its spec needs no approval (#2926).
+
 ## 0.1.25 - 2026-11-28
 
 - `check merge` accepts a pass at the cap or later with only minors open once the PR body carries the lead's `Cap: #<follow-up>` line, as it does for majors; a blocker, a pass below the cap, a verdict with nothing open, or a verdict whose posted summary carries a `Not run:` line (a run never made) still refuses. `verdict` now keeps that `Not run:` line in the posted summary (#2925).
