@@ -55,7 +55,7 @@ CRITERIA = "- A retry never double-charges: Before merge line 1, its check."
 def report(sibling: str, extra: str = "") -> str:
     return (
         "Verifier: claude, pass 1\n\n## Criteria\n\n"
-        f"{CRITERIA}\n\n## Correctness\n\n### F1 (major) app.py:3: a gap\n\nIt fails.\n{sibling}\n\n"
+        f"{CRITERIA}\n\n## Correctness\n\n### F1 (major) app.py:3: a gap\n\nIt fails.\nBreaks: Acceptance line 1\n{sibling}\n\n"
         f"{extra}Head: {HEAD}\nVERDICT: 0 blocker, 1 major, 0 minor\nSATISFIED: no\nRisk: low — a fixture\n"
     )
 
