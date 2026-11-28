@@ -2477,7 +2477,16 @@ def loop_value(text: str, label: str) -> str:
         value = loop_setting(text, LOOP_KEYS[label])
         if isinstance(value, dict):
             return "hosts: " + ", ".join(value["hosts"])
-        return ", ".join(value) if isinstance(value, list) else value or ""
+        if isinstance(value, list):
+            # only the scalar `full` means every tool: a list names additions to the lean set, so one holding `full`
+            # would be joined back to that scalar and drop the restriction
+            if "full" in value:
+                raise Fail(
+                    f"{LOOP_FILE}: `{LOOP_KEYS[label]}` is a list, which adds tools to the lean set: write the "
+                    "scalar `full` for every tool, not a list holding it"
+                )
+            return ", ".join(value)
+        return value or ""
     if label == "Verifier hosts" and LOOP_BLOCK.search(text):
         return ""  # placement's, read as `Placement`
     found = re.search(rf"^{re.escape(label)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)

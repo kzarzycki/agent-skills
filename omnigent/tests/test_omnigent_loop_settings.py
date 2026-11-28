@@ -97,6 +97,20 @@ def test_tools_in_the_block_are_the_roles_beyond_the_lean_set(repo: Path) -> Non
     assert omnigent_agent.lean_args(workspace, "verifier") == []  # `full`: every configured tool
 
 
+def test_a_list_holding_full_never_widens_a_lean_role_to_every_tool(repo: Path) -> None:
+    for role in ("worker", "verifier"):
+        text = f"# Loop\n\n## Loop settings\n\n```yaml\ntools:\n  {role}: [full]\n```\n"
+        with pytest.raises(omnigent_agent.Fail, match=f"tools.{role}"):
+            omnigent_agent.lean_args(write(repo, text), role)
+        for named in ("[NotebookEdit]", "[]"):
+            text = f"# Loop\n\n## Loop settings\n\n```yaml\ntools:\n  {role}: {named}\n```\n"
+            args = omnigent_agent.lean_args(write(repo, text), role)
+            assert args[:2] == ["--strict-mcp-config", "--tools"]
+            assert ("NotebookEdit" in args[2].split(",")) == (named == "[NotebookEdit]")
+        scalar = f"# Loop\n\n## Loop settings\n\n```yaml\ntools:\n  {role}: full\n```\n"
+        assert omnigent_agent.lean_args(write(repo, scalar), role) == []
+
+
 def test_a_misspelt_key_in_the_block_fails_naming_it(repo: Path) -> None:
     with pytest.raises(omnigent_agent.Fail, match="lead_autocompct"):
         omnigent_agent.autocompact_args(
