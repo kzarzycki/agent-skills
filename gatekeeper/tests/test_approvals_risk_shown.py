@@ -154,5 +154,5 @@ def test_land_wait_reads_a_pr_that_merged_after_the_listing(
         return found
 
     monkeypatch.setattr(approvals, "open_pulls", listed)
-    code, lines = lands["land"]("--wait")
+    _, lines = lands["land"]("--wait")
     assert not [line for line in lines if "closes no open issue" in line], lines
