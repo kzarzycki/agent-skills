@@ -44,6 +44,7 @@ import importlib.util
 import io
 import itertools
 import json
+import math
 import os
 import re
 import shlex
@@ -700,7 +701,7 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                     f"{file}'s {where} must be true, false or a list of {', '.join(kind)}, not {value!r}"
                 )
         elif kind is Number:  # a whole or a decimal number, never a bool (an int to Python)
-            if type(value) not in (int, float):
+            if type(value) not in (int, float) or not math.isfinite(value):  # .inf and .nan are YAML floats
                 raise Refused(f"{file}'s {where} must be a number, not {value!r}")
         # bool is an int to Python, so a type is matched exactly
         elif type(value) is not kind or (

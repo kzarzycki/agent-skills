@@ -459,3 +459,17 @@ def test_a_second_yaml_block_under_loop_settings_is_refused_naming_it() -> None:
     approvals.loop_block.cache_clear()
     with pytest.raises(approvals.Refused, match="second.*afected_tests"):
         approvals.loop_setting(text, "gate")
+
+
+@pytest.mark.parametrize(
+    ("body", "named"),
+    [
+        ("gate_cost: {cores: .inf, gb: 8}\n", "gate_cost.cores"),
+        ("gate_cost: {cores: 4, gb: .nan}\n", "gate_cost.gb"),
+        ("acceptance: {budget: {spec: .nan, nightly: 90}}\n", "acceptance.budget.spec"),
+        ("acceptance: {budget: {spec: 10, nightly: -.inf}}\n", "acceptance.budget.nightly"),
+    ],
+)
+def test_a_non_finite_number_is_refused_naming_the_key(body: str, named: str) -> None:
+    approvals.loop_block.cache_clear()
+    assert named in refused(loop(body), named.split(".")[0])
