@@ -40,7 +40,8 @@ as ends and leaves a ref it cannot read or parse as `unknown`, never as ended; t
 `land` writes its event for each PR it names: `waiting` only under `--wait`, once per round (about every 2 to 6 minutes)
 and from the lock's heartbeat while a round gates, never over an end of the same round; `ok` once a PR merges (by `land`,
 the merge queue or by hand); `failed` when it is evicted, or when `--wait` exits non-zero with the PR neither merged nor ended (main is red, say); `needs-owner` when the PR waits for the owner's go (a draft
-too) and when `--wait` reaches its 2-hour ceiling.
+too) and when `--wait` reaches its ceiling (`gatekeeper.py timeouts` prints it) with nothing moving the PR; one a queue
+or its running checks still move stays `waiting` there.
 
 `verifier` is on the branch the PR is from (`cloud_verifier.py`'s `verify` and `thread` routes both write it): `waiting` from the pass's start, beating while it reviews, then `ok` when
 the report's `SATISFIED:` line is `yes`, `failed` when it is `no` or the pass wrote no verdict, `needs-owner` when it
@@ -79,5 +80,13 @@ exits 0, so an event reports a step and is never part of it. A native lead in th
 - **A push of `refs/loop/probe/<branch>`:** accepted by GitHub with a plain token from a host. One `events.py emit` took
   2.3 s end to end (process start, commit, push); `git ls-remote origin 'refs/loop/*'` with one such ref took 0.46 s;
   `events.py clear` removed it from `origin`. A cloud session's proxy refuses refs outside `refs/heads/` (`RPC failed;
-  HTTP 403`), so **a cloud session's events stay local and warn once** (Degraded); only a host with push access
-  writes events another host reads.
+  HTTP 403`), so a cloud session's `refs/loop/` push fails and warns once (Degraded).
+
+## Cloud sessions: the branch form
+
+Where `CLAUDE_CODE_REMOTE=true` (the gatekeeper's cloud test), `emit` also pushes the same commit as the branch
+`loop-event/<kind>/<branch>`, which the proxy accepts where it refuses `refs/loop/` (a probe from a cloud VM found the
+bare prefix pushes, as `claude/loop-event/` does); a host's `emit` stays the one `refs/loop/` push. `read`, `wait` and
+`clear` take both prefixes, and `read` lists them in its one `ls-remote`: each maps to the same
+`refs/loop-remote/<kind>/<branch>` mirror, one event per kind and branch, the later `at` winning where both forms
+exist. The proxy refuses a branch delete too, so only a host's `clear` (run by `land` and `reap`) removes them.

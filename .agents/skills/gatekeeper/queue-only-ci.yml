@@ -1,0 +1,33 @@
+# The CI of the queue-only variant (mergify.yml, "Gate in the queue only"): the gate runs only on Mergify's draft PRs, and
+# every PR push still lints its changed files in the `lint` job, which has no job-level `if` and is a required check of
+# the base. Without it no check runs before the queue, and a lint failure there evicts the PR and costs a batch run (#2687).
+# About 1 minute (0.5 to 2) of Actions time per push: on 30 pushes a day, about 30 minutes a day on a private repo.
+# The repo puts its own lint command in `lint` (a lint-only task over the changed files, no tests, no build) and its
+# own gate in `gate`; a repo's ruleset requires `lint` and drops `gate`.
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: mise run lint-changed
+        env:
+          GATE_BASE: ${{ github.event.pull_request.base.sha }}
+
+  gate:
+    if: startsWith(github.head_ref, 'mergify/merge-queue/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: mise run check

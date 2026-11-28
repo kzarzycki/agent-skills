@@ -1,5 +1,5 @@
 lockfile_version: '2'
-generated_at: '2026-11-27T20:51:58.151683+00:00'
+generated_at: '2026-11-28T05:55:53.199689+00:00'
 apm_version: 0.33.0
 dependencies:
 - repo_url: kzarzycki/agent-skills
@@ -431,6 +431,76 @@ dependencies:
     .claude/skills/wizard/template.sh: sha256:2b9bceab14f71bf05d54847155b37c466065f2e86d83b348a70dacc0bff0a01f
   content_hash: sha256:c23d8aa1c2b593a760f13ddb8c1876398d7c78cf7cc48a9de382850c6ca9c3eb
 - repo_url: kzarzycki/agent-skills
+  name: gatekeeper
+  host: github.com
+  resolved_commit: aa60b3bc3671939e2fe7df8757396c438d724c82
+  resolved_ref: gatekeeper-v0.1.17-next
+  version: 0.1.17
+  virtual_path: gatekeeper
+  is_virtual: true
+  package_type: marketplace_plugin
+  deployed_files:
+  - .agents/skills/gatekeeper
+  - .agents/skills/gatekeeper/SKILL.md
+  - .agents/skills/gatekeeper/breakglass.md
+  - .agents/skills/gatekeeper/events.md
+  - .agents/skills/gatekeeper/mergify.yml
+  - .agents/skills/gatekeeper/policy.md
+  - .agents/skills/gatekeeper/queue-only-ci.yml
+  - .agents/skills/gatekeeper/scripts/acceptance.py
+  - .agents/skills/gatekeeper/scripts/approvals.py
+  - .agents/skills/gatekeeper/scripts/denylist.py
+  - .agents/skills/gatekeeper/scripts/events.py
+  - .agents/skills/gatekeeper/scripts/folding.py
+  - .agents/skills/gatekeeper/scripts/gatekeeper.py
+  - .agents/skills/gatekeeper/scripts/github_adapter.py
+  - .agents/skills/gatekeeper/scripts/loop_metrics.py
+  - .claude/skills/gatekeeper
+  - .claude/skills/gatekeeper/SKILL.md
+  - .claude/skills/gatekeeper/breakglass.md
+  - .claude/skills/gatekeeper/events.md
+  - .claude/skills/gatekeeper/mergify.yml
+  - .claude/skills/gatekeeper/policy.md
+  - .claude/skills/gatekeeper/queue-only-ci.yml
+  - .claude/skills/gatekeeper/scripts/acceptance.py
+  - .claude/skills/gatekeeper/scripts/approvals.py
+  - .claude/skills/gatekeeper/scripts/denylist.py
+  - .claude/skills/gatekeeper/scripts/events.py
+  - .claude/skills/gatekeeper/scripts/folding.py
+  - .claude/skills/gatekeeper/scripts/gatekeeper.py
+  - .claude/skills/gatekeeper/scripts/github_adapter.py
+  - .claude/skills/gatekeeper/scripts/loop_metrics.py
+  deployed_file_hashes:
+    .agents/skills/gatekeeper/SKILL.md: sha256:c82fd560c53a78d17c54ee8dae539a822d081e2b78511fc81442e4057cfe1162
+    .agents/skills/gatekeeper/breakglass.md: sha256:46c0ba7fc9643698c856fb6c73f3dce1d6a0357557a92b6695eac3c7a7fec4c4
+    .agents/skills/gatekeeper/events.md: sha256:2f24bc7329239fd08c9e2b30b299c10e361377ddc1e57b04f8d697b8021abc74
+    .agents/skills/gatekeeper/mergify.yml: sha256:3e82f8ad601f57d594f61ff26910595c8e0c17f437f11f3f24d496d89dd40462
+    .agents/skills/gatekeeper/policy.md: sha256:3e017cbe2a38444711c6265ca5da5021f2d75fd657c3787d6951db4c3349b66a
+    .agents/skills/gatekeeper/queue-only-ci.yml: sha256:1cb7dd5809f8dadb846c437c847e8d4d2d45df81589ea8c9bec01d2e1c0b7cc7
+    .agents/skills/gatekeeper/scripts/acceptance.py: sha256:0bcbe98cbc2cfb935029c49e45fe33a63de30319258fe12370084f05fdda4793
+    .agents/skills/gatekeeper/scripts/approvals.py: sha256:f8de7317bae70935bf5fa62beb0c1d44b96889dadecc595a58acb4ddca4966c6
+    .agents/skills/gatekeeper/scripts/denylist.py: sha256:dfbac4404e8a3c89fece565c2804dda5666d55de489204f2473ffbd93d3af014
+    .agents/skills/gatekeeper/scripts/events.py: sha256:873351780e9d60d767755fd708fe3bd2f70254759fa6fa15277216cecdf4199c
+    .agents/skills/gatekeeper/scripts/folding.py: sha256:32d04516ae86ffcc641edcdd73cda671f1a85dc28426fa11dc2b67cdcee1f598
+    .agents/skills/gatekeeper/scripts/gatekeeper.py: sha256:975aa8a9c630f38b0472ff5cfa71d8701cbec621ffe17f8f4c4d9a0a17ae3d9c
+    .agents/skills/gatekeeper/scripts/github_adapter.py: sha256:8b8c539d32bbac0664a7e59ef2e4f60dce8567e410232bf757c710e7741c74e4
+    .agents/skills/gatekeeper/scripts/loop_metrics.py: sha256:976403709c674efc82025dc5f88831cba50e6ae8e10bddc436d292bc10911fb1
+    .claude/skills/gatekeeper/SKILL.md: sha256:c82fd560c53a78d17c54ee8dae539a822d081e2b78511fc81442e4057cfe1162
+    .claude/skills/gatekeeper/breakglass.md: sha256:46c0ba7fc9643698c856fb6c73f3dce1d6a0357557a92b6695eac3c7a7fec4c4
+    .claude/skills/gatekeeper/events.md: sha256:2f24bc7329239fd08c9e2b30b299c10e361377ddc1e57b04f8d697b8021abc74
+    .claude/skills/gatekeeper/mergify.yml: sha256:3e82f8ad601f57d594f61ff26910595c8e0c17f437f11f3f24d496d89dd40462
+    .claude/skills/gatekeeper/policy.md: sha256:3e017cbe2a38444711c6265ca5da5021f2d75fd657c3787d6951db4c3349b66a
+    .claude/skills/gatekeeper/queue-only-ci.yml: sha256:1cb7dd5809f8dadb846c437c847e8d4d2d45df81589ea8c9bec01d2e1c0b7cc7
+    .claude/skills/gatekeeper/scripts/acceptance.py: sha256:0bcbe98cbc2cfb935029c49e45fe33a63de30319258fe12370084f05fdda4793
+    .claude/skills/gatekeeper/scripts/approvals.py: sha256:f8de7317bae70935bf5fa62beb0c1d44b96889dadecc595a58acb4ddca4966c6
+    .claude/skills/gatekeeper/scripts/denylist.py: sha256:dfbac4404e8a3c89fece565c2804dda5666d55de489204f2473ffbd93d3af014
+    .claude/skills/gatekeeper/scripts/events.py: sha256:873351780e9d60d767755fd708fe3bd2f70254759fa6fa15277216cecdf4199c
+    .claude/skills/gatekeeper/scripts/folding.py: sha256:32d04516ae86ffcc641edcdd73cda671f1a85dc28426fa11dc2b67cdcee1f598
+    .claude/skills/gatekeeper/scripts/gatekeeper.py: sha256:975aa8a9c630f38b0472ff5cfa71d8701cbec621ffe17f8f4c4d9a0a17ae3d9c
+    .claude/skills/gatekeeper/scripts/github_adapter.py: sha256:8b8c539d32bbac0664a7e59ef2e4f60dce8567e410232bf757c710e7741c74e4
+    .claude/skills/gatekeeper/scripts/loop_metrics.py: sha256:976403709c674efc82025dc5f88831cba50e6ae8e10bddc436d292bc10911fb1
+  content_hash: sha256:21ea9a61977012e025d6c8a2cfaa7a5178eb2b64286469799b2881a60edde4b4
+- repo_url: kzarzycki/agent-skills
   name: omnigent
   host: github.com
   resolved_commit: d7899fcb573df792d7dbd8aa02fc3e1695fe78ab
@@ -514,69 +584,6 @@ dependencies:
   content_hash: sha256:3a34a9283d25bfce6bd20892376ae4d25bd6ae7475d3b31a4cd04fbaa354d725
   constraint: ^0.1.0
   resolved_tag: chief-of-staff-v0.1.2
-  resolved_at: '2026-11-23T05:12:26+00:00'
-- repo_url: kzarzycki/agent-skills
-  name: gatekeeper
-  host: github.com
-  resolved_commit: 612a5be2234979181fb9d263e18efd5ad1094476
-  resolved_ref: gatekeeper-v0.1.5
-  version: 0.1.5
-  virtual_path: gatekeeper
-  is_virtual: true
-  depth: 2
-  resolved_by: kzarzycki/agent-skills
-  package_type: skill_bundle
-  deployed_files:
-  - .agents/skills/gatekeeper
-  - .agents/skills/gatekeeper/SKILL.md
-  - .agents/skills/gatekeeper/breakglass.md
-  - .agents/skills/gatekeeper/events.md
-  - .agents/skills/gatekeeper/mergify.yml
-  - .agents/skills/gatekeeper/policy.md
-  - .agents/skills/gatekeeper/scripts/acceptance.py
-  - .agents/skills/gatekeeper/scripts/approvals.py
-  - .agents/skills/gatekeeper/scripts/events.py
-  - .agents/skills/gatekeeper/scripts/folding.py
-  - .agents/skills/gatekeeper/scripts/gatekeeper.py
-  - .agents/skills/gatekeeper/scripts/github_adapter.py
-  - .claude/skills/gatekeeper
-  - .claude/skills/gatekeeper/SKILL.md
-  - .claude/skills/gatekeeper/breakglass.md
-  - .claude/skills/gatekeeper/events.md
-  - .claude/skills/gatekeeper/mergify.yml
-  - .claude/skills/gatekeeper/policy.md
-  - .claude/skills/gatekeeper/scripts/acceptance.py
-  - .claude/skills/gatekeeper/scripts/approvals.py
-  - .claude/skills/gatekeeper/scripts/events.py
-  - .claude/skills/gatekeeper/scripts/folding.py
-  - .claude/skills/gatekeeper/scripts/gatekeeper.py
-  - .claude/skills/gatekeeper/scripts/github_adapter.py
-  deployed_file_hashes:
-    .agents/skills/gatekeeper/SKILL.md: sha256:f18d28f6f4f665202cc54afaa6146657d163b677abc88f9b0dd2fceaf258dcbc
-    .agents/skills/gatekeeper/breakglass.md: sha256:0fd68fe58941ae901fe9a7b334f7c663649919e69c3cebeedef57f35b21910a6
-    .agents/skills/gatekeeper/events.md: sha256:91df665e1549b3983720188d8932f67ee3f4d9539ca40964c6b757d9e4edc32c
-    .agents/skills/gatekeeper/mergify.yml: sha256:146dd6f7ec1b295c2060a56f74b3d7e15312b0ecaa790efc12bcd5559339ec58
-    .agents/skills/gatekeeper/policy.md: sha256:530ad9e0f54edc2b11210363211a42357898b3e30343e133dcdc3a7414111398
-    .agents/skills/gatekeeper/scripts/acceptance.py: sha256:0bcbe98cbc2cfb935029c49e45fe33a63de30319258fe12370084f05fdda4793
-    .agents/skills/gatekeeper/scripts/approvals.py: sha256:f8de7317bae70935bf5fa62beb0c1d44b96889dadecc595a58acb4ddca4966c6
-    .agents/skills/gatekeeper/scripts/events.py: sha256:c3a30fbba8209cdd2dc01ac27a608e033cb201c7a92d2a57d362382215cdf725
-    .agents/skills/gatekeeper/scripts/folding.py: sha256:32d04516ae86ffcc641edcdd73cda671f1a85dc28426fa11dc2b67cdcee1f598
-    .agents/skills/gatekeeper/scripts/gatekeeper.py: sha256:5f0ea719f8ba45081c3958284c579f149825b7989fa92725a003e1e0cb662476
-    .agents/skills/gatekeeper/scripts/github_adapter.py: sha256:40b314f761f3525651e76c79cee2125fbdfef720ff57ecb73a4e11bd9be89b75
-    .claude/skills/gatekeeper/SKILL.md: sha256:f18d28f6f4f665202cc54afaa6146657d163b677abc88f9b0dd2fceaf258dcbc
-    .claude/skills/gatekeeper/breakglass.md: sha256:0fd68fe58941ae901fe9a7b334f7c663649919e69c3cebeedef57f35b21910a6
-    .claude/skills/gatekeeper/events.md: sha256:91df665e1549b3983720188d8932f67ee3f4d9539ca40964c6b757d9e4edc32c
-    .claude/skills/gatekeeper/mergify.yml: sha256:146dd6f7ec1b295c2060a56f74b3d7e15312b0ecaa790efc12bcd5559339ec58
-    .claude/skills/gatekeeper/policy.md: sha256:530ad9e0f54edc2b11210363211a42357898b3e30343e133dcdc3a7414111398
-    .claude/skills/gatekeeper/scripts/acceptance.py: sha256:0bcbe98cbc2cfb935029c49e45fe33a63de30319258fe12370084f05fdda4793
-    .claude/skills/gatekeeper/scripts/approvals.py: sha256:f8de7317bae70935bf5fa62beb0c1d44b96889dadecc595a58acb4ddca4966c6
-    .claude/skills/gatekeeper/scripts/events.py: sha256:c3a30fbba8209cdd2dc01ac27a608e033cb201c7a92d2a57d362382215cdf725
-    .claude/skills/gatekeeper/scripts/folding.py: sha256:32d04516ae86ffcc641edcdd73cda671f1a85dc28426fa11dc2b67cdcee1f598
-    .claude/skills/gatekeeper/scripts/gatekeeper.py: sha256:5f0ea719f8ba45081c3958284c579f149825b7989fa92725a003e1e0cb662476
-    .claude/skills/gatekeeper/scripts/github_adapter.py: sha256:40b314f761f3525651e76c79cee2125fbdfef720ff57ecb73a4e11bd9be89b75
-  content_hash: sha256:1bff1f12d4df2525cd9638b65657f934febceb527f1937148b70126148643ba0
-  constraint: ^0.1.0
-  resolved_tag: gatekeeper-v0.1.5
   resolved_at: '2026-11-23T05:12:26+00:00'
 - repo_url: kzarzycki/agent-skills
   name: github
@@ -1396,7 +1403,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:f18d28f6f4f665202cc54afaa6146657d163b677abc88f9b0dd2fceaf258dcbc
+  content_hash: sha256:c82fd560c53a78d17c54ee8dae539a822d081e2b78511fc81442e4057cfe1162
 - kind: project-relative
   target: claude
   value: .claude/skills/gatekeeper/breakglass.md
@@ -1405,7 +1412,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:0fd68fe58941ae901fe9a7b334f7c663649919e69c3cebeedef57f35b21910a6
+  content_hash: sha256:46c0ba7fc9643698c856fb6c73f3dce1d6a0357557a92b6695eac3c7a7fec4c4
 - kind: project-relative
   target: claude
   value: .claude/skills/gatekeeper/events.md
@@ -1414,7 +1421,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:91df665e1549b3983720188d8932f67ee3f4d9539ca40964c6b757d9e4edc32c
+  content_hash: sha256:2f24bc7329239fd08c9e2b30b299c10e361377ddc1e57b04f8d697b8021abc74
 - kind: project-relative
   target: claude
   value: .claude/skills/gatekeeper/mergify.yml
@@ -1423,7 +1430,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:146dd6f7ec1b295c2060a56f74b3d7e15312b0ecaa790efc12bcd5559339ec58
+  content_hash: sha256:3e82f8ad601f57d594f61ff26910595c8e0c17f437f11f3f24d496d89dd40462
 - kind: project-relative
   target: claude
   value: .claude/skills/gatekeeper/policy.md
@@ -1432,7 +1439,16 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:530ad9e0f54edc2b11210363211a42357898b3e30343e133dcdc3a7414111398
+  content_hash: sha256:3e017cbe2a38444711c6265ca5da5021f2d75fd657c3787d6951db4c3349b66a
+- kind: project-relative
+  target: claude
+  value: .claude/skills/gatekeeper/queue-only-ci.yml
+  runtime: null
+  scope: project
+  owners:
+  - kzarzycki/agent-skills/gatekeeper
+  active_owner: kzarzycki/agent-skills/gatekeeper
+  content_hash: sha256:1cb7dd5809f8dadb846c437c847e8d4d2d45df81589ea8c9bec01d2e1c0b7cc7
 - kind: project-relative
   target: claude
   value: .claude/skills/gatekeeper/scripts/acceptance.py
@@ -1453,13 +1469,22 @@ deployments:
   content_hash: sha256:f8de7317bae70935bf5fa62beb0c1d44b96889dadecc595a58acb4ddca4966c6
 - kind: project-relative
   target: claude
+  value: .claude/skills/gatekeeper/scripts/denylist.py
+  runtime: null
+  scope: project
+  owners:
+  - kzarzycki/agent-skills/gatekeeper
+  active_owner: kzarzycki/agent-skills/gatekeeper
+  content_hash: sha256:dfbac4404e8a3c89fece565c2804dda5666d55de489204f2473ffbd93d3af014
+- kind: project-relative
+  target: claude
   value: .claude/skills/gatekeeper/scripts/events.py
   runtime: null
   scope: project
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:c3a30fbba8209cdd2dc01ac27a608e033cb201c7a92d2a57d362382215cdf725
+  content_hash: sha256:873351780e9d60d767755fd708fe3bd2f70254759fa6fa15277216cecdf4199c
 - kind: project-relative
   target: claude
   value: .claude/skills/gatekeeper/scripts/folding.py
@@ -1477,7 +1502,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:5f0ea719f8ba45081c3958284c579f149825b7989fa92725a003e1e0cb662476
+  content_hash: sha256:975aa8a9c630f38b0472ff5cfa71d8701cbec621ffe17f8f4c4d9a0a17ae3d9c
 - kind: project-relative
   target: claude
   value: .claude/skills/gatekeeper/scripts/github_adapter.py
@@ -1486,7 +1511,16 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:40b314f761f3525651e76c79cee2125fbdfef720ff57ecb73a4e11bd9be89b75
+  content_hash: sha256:8b8c539d32bbac0664a7e59ef2e4f60dce8567e410232bf757c710e7741c74e4
+- kind: project-relative
+  target: claude
+  value: .claude/skills/gatekeeper/scripts/loop_metrics.py
+  runtime: null
+  scope: project
+  owners:
+  - kzarzycki/agent-skills/gatekeeper
+  active_owner: kzarzycki/agent-skills/gatekeeper
+  content_hash: sha256:976403709c674efc82025dc5f88831cba50e6ae8e10bddc436d292bc10911fb1
 - kind: project-relative
   target: claude
   value: .claude/skills/gh-quota
@@ -2998,7 +3032,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:f18d28f6f4f665202cc54afaa6146657d163b677abc88f9b0dd2fceaf258dcbc
+  content_hash: sha256:c82fd560c53a78d17c54ee8dae539a822d081e2b78511fc81442e4057cfe1162
 - kind: project-relative
   target: codex
   value: .agents/skills/gatekeeper/breakglass.md
@@ -3007,7 +3041,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:0fd68fe58941ae901fe9a7b334f7c663649919e69c3cebeedef57f35b21910a6
+  content_hash: sha256:46c0ba7fc9643698c856fb6c73f3dce1d6a0357557a92b6695eac3c7a7fec4c4
 - kind: project-relative
   target: codex
   value: .agents/skills/gatekeeper/events.md
@@ -3016,7 +3050,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:91df665e1549b3983720188d8932f67ee3f4d9539ca40964c6b757d9e4edc32c
+  content_hash: sha256:2f24bc7329239fd08c9e2b30b299c10e361377ddc1e57b04f8d697b8021abc74
 - kind: project-relative
   target: codex
   value: .agents/skills/gatekeeper/mergify.yml
@@ -3025,7 +3059,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:146dd6f7ec1b295c2060a56f74b3d7e15312b0ecaa790efc12bcd5559339ec58
+  content_hash: sha256:3e82f8ad601f57d594f61ff26910595c8e0c17f437f11f3f24d496d89dd40462
 - kind: project-relative
   target: codex
   value: .agents/skills/gatekeeper/policy.md
@@ -3034,7 +3068,16 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:530ad9e0f54edc2b11210363211a42357898b3e30343e133dcdc3a7414111398
+  content_hash: sha256:3e017cbe2a38444711c6265ca5da5021f2d75fd657c3787d6951db4c3349b66a
+- kind: project-relative
+  target: codex
+  value: .agents/skills/gatekeeper/queue-only-ci.yml
+  runtime: null
+  scope: project
+  owners:
+  - kzarzycki/agent-skills/gatekeeper
+  active_owner: kzarzycki/agent-skills/gatekeeper
+  content_hash: sha256:1cb7dd5809f8dadb846c437c847e8d4d2d45df81589ea8c9bec01d2e1c0b7cc7
 - kind: project-relative
   target: codex
   value: .agents/skills/gatekeeper/scripts/acceptance.py
@@ -3055,13 +3098,22 @@ deployments:
   content_hash: sha256:f8de7317bae70935bf5fa62beb0c1d44b96889dadecc595a58acb4ddca4966c6
 - kind: project-relative
   target: codex
+  value: .agents/skills/gatekeeper/scripts/denylist.py
+  runtime: null
+  scope: project
+  owners:
+  - kzarzycki/agent-skills/gatekeeper
+  active_owner: kzarzycki/agent-skills/gatekeeper
+  content_hash: sha256:dfbac4404e8a3c89fece565c2804dda5666d55de489204f2473ffbd93d3af014
+- kind: project-relative
+  target: codex
   value: .agents/skills/gatekeeper/scripts/events.py
   runtime: null
   scope: project
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:c3a30fbba8209cdd2dc01ac27a608e033cb201c7a92d2a57d362382215cdf725
+  content_hash: sha256:873351780e9d60d767755fd708fe3bd2f70254759fa6fa15277216cecdf4199c
 - kind: project-relative
   target: codex
   value: .agents/skills/gatekeeper/scripts/folding.py
@@ -3079,7 +3131,7 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:5f0ea719f8ba45081c3958284c579f149825b7989fa92725a003e1e0cb662476
+  content_hash: sha256:975aa8a9c630f38b0472ff5cfa71d8701cbec621ffe17f8f4c4d9a0a17ae3d9c
 - kind: project-relative
   target: codex
   value: .agents/skills/gatekeeper/scripts/github_adapter.py
@@ -3088,7 +3140,16 @@ deployments:
   owners:
   - kzarzycki/agent-skills/gatekeeper
   active_owner: kzarzycki/agent-skills/gatekeeper
-  content_hash: sha256:40b314f761f3525651e76c79cee2125fbdfef720ff57ecb73a4e11bd9be89b75
+  content_hash: sha256:8b8c539d32bbac0664a7e59ef2e4f60dce8567e410232bf757c710e7741c74e4
+- kind: project-relative
+  target: codex
+  value: .agents/skills/gatekeeper/scripts/loop_metrics.py
+  runtime: null
+  scope: project
+  owners:
+  - kzarzycki/agent-skills/gatekeeper
+  active_owner: kzarzycki/agent-skills/gatekeeper
+  content_hash: sha256:976403709c674efc82025dc5f88831cba50e6ae8e10bddc436d292bc10911fb1
 - kind: project-relative
   target: codex
   value: .agents/skills/gh-quota

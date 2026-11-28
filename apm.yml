@@ -11,6 +11,11 @@ dependencies:
     ref: engineering-v0.35.5
   # omnigent-v0.1.23-next carries the claude-cloud `start` fix (#2797). Drop this pin once a
   # stable omnigent tag carries it.
+  # The tagged omnigent calls gatekeeper's denylist.py, tree_policy, timeouts, issue_field and
+  # set_issue_field, which gatekeeper 0.1.5 (engineering's) lacks; gatekeeper-v0.1.17-next is the first tag with them.
+  # Drop with the omnigent pin.
+  - git: kzarzycki/agent-skills/gatekeeper
+    ref: gatekeeper-v0.1.17-next
   - git: kzarzycki/agent-skills/omnigent
     ref: omnigent-v0.1.23-next
   mcp: []
