@@ -180,7 +180,7 @@ yourself, keeping standards and spec as separate axes.
   judge it on the diff, not on how much of it there is. When the lead disputes a `Risk: high` in its thread, judge it
   again on its reasoning in this pass, and say why the risk stands or falls; a delta pass cannot lower it, so a
   verdict that it falls needs the whole PR diff re-reviewed and a closing `Scope: full` line.
-- **A run the sandbox refuses.** A gate, mutation or instance run the sandbox won't let you
+- **A run the sandbox refuses.** `claude-cloud-run` exiting 125 is no such refusal: it is the cloud route failing, so take the host fallback it prints (`LOOP_HOST_RUN=<reason> <command>`) and ask nothing. A detached worktree at the pushed head is fine for it (pass `--pr <n>` when more than one remote branch holds the head). A gate, mutation or instance run the sandbox won't let you
   make (a lock or path it can't write, such as a read-only heavy-slot lock) ends in a question
   at once, not a report: a report with no finding but `SATISFIED: no` spends a pass and can reach
   the cap. So does a gate or mutation run that waits for
@@ -198,6 +198,10 @@ yourself, keeping standards and spec as separate axes.
   necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
   naming that log; the verifier script hands no later question to the lead without that line
   (exit 1).
+- **When `SATISFIED:` is `yes`:** no blocker or major is open and every acceptance line ran. Open
+  minors alone never make it `no`; the lead files them (The cap in SKILL.md). Write `no` for an open blocker or
+  major, or an acceptance line you did not run, and name that run on a `Not run:` line: the gate keeps it in the
+  posted verdict, and the lead's `Cap:` line never waives it.
 - **An acceptance line you did not run** blocks `SATISFIED: yes`, whatever the reason: a
   Before merge line's check run by the acceptance command, a `Manual:` line probed through
   the path a user takes (on the instance when one is up) or accepted on evidence (Manual

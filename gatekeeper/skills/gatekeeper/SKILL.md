@@ -12,7 +12,7 @@ proof on the forge (approval records, verifier reviews, check passes) and the te
 and never decides on an agent's word, so its answer on a laptop is CI's answer.
 
 Run `uv run <this skill's folder>/scripts/gatekeeper.py <verb>` anywhere in the checkout: it
-reads `docs/agents/` at the checkout's root. `uv run` installs PyYAML, the one package it
+reads `docs/agents/` from `origin/<base>`, the ref `land` merges on, not the checkout's copy (the copy only with no origin ref or with `GATEKEEPER_POLICY_FROM_WORKING_TREE` set, and for `queue-config`, `timeouts` and `check setup`'s Mergify drift check). `uv run` installs PyYAML, the one package it
 needs beyond the standard library, from the script's inline header; a bare `python3` without
 it exits with one line saying so. It needs Python 3.9 or later and `gh`, logged in, for GitHub.
 
@@ -64,6 +64,8 @@ Planning > Issue fields > New field, name `Session`, type Text), and exits as it
   states, the batching queue, carry-over of a merge of main, the opt-out, and
   issue-tracker.md's settings block. Read it when writing or changing a project's policy, or
   when a refusal names a key.
+- [verbs.md](verbs.md): each verb's full usage line and what it checks, writes and refuses (what `gatekeeper.py`'s module
+  docstring held until #2834). Read it when a verb's `--help` is not enough or a refusal needs its rule.
 - [breakglass.md](breakglass.md): the owner's break-glass land of a head with a red required check, its proof and
   the owner-side bypass setup. Read it when a required check blocks a PR the owner wants landed anyway.
 - [queue-only-ci.yml](queue-only-ci.yml): the CI of mergify.yml's "Gate in the queue only" variant, a gate that runs only on the queue's draft PRs and an always-on `lint` job (changed files, no tests, no build) that stays a required check. Read it when setting up or auditing that variant (#2687).
