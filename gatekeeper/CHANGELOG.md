@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.32 - 2026-11-28
+
+- The `reviewed()`, `carries()` and `rerun_tests()` docstrings and `engineering-loop`'s R5 say what the code does: a clean merge of the base or a clean rebase carries a verdict with no setting, and only a failed test the change did not select again is a flake candidate (#2966).
+
 ## 0.1.31 - 2026-11-28
 
 - `check merge` and `land` read loop.md's new `verifier.same_family` (`never`, the default, `low` or `high`): the highest risk level at which a verdict from the author's own family may land (a heading naming `same-family`, the family of the PR body's `Impl:` signature, or none), refusing above it and naming the setting; `verifier.same_family_until` (a quoted `YYYY-MM-DD`, checked when the policy loads) lifts it to `high` through that day for an outage and falls back after (#609).
