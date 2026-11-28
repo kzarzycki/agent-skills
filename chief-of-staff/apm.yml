@@ -1,5 +1,5 @@
 name: chief-of-staff
-version: 0.1.9
+version: 0.1.10
 description: "A chief of staff over many leads and repos: one person's supervision of the engineering loop, with the optional cos-console mod."
 author: Krzysztof Zarzycki
 targets:
