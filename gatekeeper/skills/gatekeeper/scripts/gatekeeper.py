@@ -14123,8 +14123,9 @@ def local_ci(
 ) -> int:
     """With a PR: post a pass on its head, from a recorded pass on its tree; with `run`, from a run now when there is
     none, and without it refuse then (no_pass). Without a PR: on a
-    clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, run the
-    check and record nothing. Either publishes a pass this clone holds (publish). With `proof`, loop.md's
+    clean checkout, reuse or run and record a pass on HEAD, for `local-ci <pr>` to reuse; on one with changes, refuse
+    at once (Refused, listing the changed files), before the gate plan is read or a host slot taken, since such a run
+    could record nothing (#3006). Either publishes a pass this clone holds (publish). With `proof`, loop.md's
     `head_proof` (`--head-proof`, no PR), the gate takes its `env` names from this process (gate), and the pass is
     published as the head proof instead. With `gate_steps`, a step with a pass on the tree is reused and only the
     others run; in a cloud session a `host` step is left for a host, said, and the steps that passed are published,
@@ -14152,16 +14153,13 @@ def local_ci(
         print("local-ci: no base to narrow against: running the full check", file=sys.stderr)
     if pr is None:
         passed = proof["env"] if proof else (RERUN_VAR,) if rerun else ()
-        # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
-        RAN["command"] = "\n".join(step["command"] for step in gate_plan(passed) if here(step))
+        # a checkout with changes can never give the record asked for, so it is refused before the gate plan is read
+        # or any host slot is taken (#3006)
         head, changes = checkout_state()
         if changes:
-            deepened(None)
-            command, code = gate(passed)[0], ran_gate(passed=passed)
-            print(
-                f"{command} exited {code} on a checkout with changes, so nothing is recorded:\n{changes}"
-            )
-            return code
+            raise Refused(f"the tree has changes, so the check would not run on the head:\n{changes}")
+        # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
+        RAN["command"] = "\n".join(step["command"] for step in gate_plan(passed) if here(step))
         # a run of named steps (`--step`) says which, never that the gate passed
         said = f"Step {', '.join(ASKED.get())} passed" if ASKED.get() else CHECKED
         # a run of named steps goes through run_steps, which says by each step whether it reused a pass and from where

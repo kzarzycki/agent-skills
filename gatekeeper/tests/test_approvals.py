@@ -5910,21 +5910,45 @@ def test_record_writes_only_a_passing_check_on_a_clean_unchanged_tree(
     assert github == []  # no PR yet: nothing is posted
 
 
-@pytest.mark.parametrize("code", [0, 2])
-def test_record_on_a_checkout_with_changes_runs_the_check_and_records_nothing(
+@pytest.mark.parametrize("flags", [[], ["--rerun"]])
+def test_record_on_a_checkout_with_changes_never_takes_the_host_slot(
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+) -> None:
+    """The refusal comes before the heavy slot is taken, so a queued host never makes it wait hours (#3006)."""
+
+    def slot(*_: Any, **__: Any) -> Any:
+        raise AssertionError("a dirty --record took the host gate slot")
+
+    monkeypatch.setattr(approvals, "heavy_slot", slot)
+    monkeypatch.setattr(approvals, "take_slot", slot)
+    checkout.update({"status": "?? gate.log\n?? gate.pid\n", "exit": 0})
+    try:
+        code = approvals.main(["local-ci", "--record", *flags])
+    except SystemExit as exit_:
+        code = exit_.code
+    out = capsys.readouterr()
+    assert code != 0 and checkout["runs"] == 0
+    assert "gate.log" in out.out + out.err and "gate.pid" in out.out + out.err
+
+
+def test_record_on_a_checkout_with_changes_is_refused_before_the_check_runs(
     github: list[tuple[Any, ...]],
     checkout: dict[str, Any],
     hub: dict[str, list[dict[str, Any]]],
     capsys: pytest.CaptureFixture[str],
-    code: int,
 ) -> None:
-    """The recording command is the gate while iterating too: a run on changes is no pass on HEAD, so it records
-    nothing, and the check's exit is the command's. A clean green run, the last one, records itself."""
+    """A run on changes is no pass on HEAD, so it can never give the record asked for: it is refused at once, naming
+    the changed files, and the check never runs (#3006). A clean green run records itself."""
     assert approvals.main(["local-ci", "--record"]) == 0
-    checkout.update({"status": " M app.py\n", "exit": code})
-    assert approvals.main(["local-ci", "--record"]) == code
-    assert checkout["runs"] == 2  # a pass on HEAD's tree says nothing about the changes
-    assert "on a checkout with changes, so nothing is recorded" in capsys.readouterr().out
+    checkout.update({"status": " M app.py\n?? gate.log\n", "exit": 0})
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert checkout["runs"] == 1  # the clean run only: the dirty one never ran the check
+    out = capsys.readouterr()
+    assert "the tree has changes, so the check would not run on the head" in out.out + out.err
+    assert "M app.py" in out.out + out.err and "gate.log" in out.out + out.err
     assert len(hub[HEAD]) == 1 and github == []
 
 
@@ -6124,14 +6148,14 @@ def test_record_head_proof_runs_the_gate_with_the_callers_tier_over_the_gate_lin
     assert github == []
 
 
-def test_record_head_proof_on_a_checkout_with_changes_runs_the_callers_tier_and_publishes_nothing(
+def test_record_head_proof_on_a_checkout_with_changes_is_refused_and_publishes_nothing(
     checkout: dict[str, Any], hub: dict[str, list[dict[str, Any]]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gated = add(ENV_LOOP, "loop", "gate: GATE_UI_TESTS=0 mise run check:all\n")
     checkout.update(loop=add(gated, "loop", HEAD_PROOF), status=" M app.py\n")
     monkeypatch.setenv("GATE_UI_TESTS", "smoke")
-    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 0
-    assert checkout["env"]["GATE_UI_TESTS"] == "smoke"
+    assert approvals.main(["local-ci", "--record", "--head-proof"]) == 1
+    assert checkout["runs"] == 0
     assert hub == {}
 
 
@@ -6570,7 +6594,7 @@ def test_a_shallow_clone_that_already_reaches_the_base_is_not_deepened(
     assert "--deepen" not in err and "--unshallow" not in err
 
 
-def test_local_ci_record_on_a_changed_shallow_checkout_gives_the_gate_a_merge_base_and_records_nothing(
+def test_local_ci_record_on_a_changed_shallow_checkout_is_refused_and_records_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     clone, fork, _ = shallow_clone(tmp_path)
@@ -6582,9 +6606,9 @@ def test_local_ci_record_on_a_changed_shallow_checkout_gives_the_gate_a_merge_ba
     monkeypatch.setattr(approvals, "one_repo", lambda: None)
     monkeypatch.chdir(clone)
     monkeypatch.setattr(approvals, "LOCAL_CI", [str(script)])
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert seen.read_text().strip() == fork
-    assert "nothing is recorded" in capsys.readouterr().out
+    assert approvals.main(["local-ci", "--record"]) == 1
+    assert not seen.exists()  # refused before the gate ran (#3006)
+    assert "the tree has changes" in capsys.readouterr().out
     assert not list((clone / ".git" / "approvals" / "local-ci").glob("*.json"))
 
 
@@ -6834,10 +6858,10 @@ def test_status_of_a_detached_head_proof_run_reads_the_command_it_ran(tmp_path: 
 
 
 def test_status_never_says_passed_for_a_run_that_recorded_nothing(tmp_path: Path) -> None:
-    """A --record on a checkout with changes exits 0 without a pass on HEAD: --status must not call HEAD passed."""
+    """A --record on a checkout with changes is refused with no pass on HEAD: --status must not call HEAD passed."""
     repo, head, env = gate_faked(tmp_path)
     (repo / "app.py").write_text("value = 3\n")
-    assert caller(repo, env, "--record").wait(timeout=60) == 0
+    assert caller(repo, env, "--record").wait(timeout=60) == 1
     status = subprocess.run(
         [sys.executable, str(SCRIPTS / "approvals.py"), "local-ci", "--status", head],
         cwd=repo,
@@ -6848,7 +6872,7 @@ def test_status_never_says_passed_for_a_run_that_recorded_nothing(tmp_path: Path
     )
     assert (status.returncode, status.stdout.split(":")[0]) == (
         1,
-        f"exited 0 without recording a pass on {head} under the gate's command",
+        f"failed (exit 1) on {head}",
     )
 
 
