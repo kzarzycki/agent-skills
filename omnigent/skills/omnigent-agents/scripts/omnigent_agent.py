@@ -328,6 +328,10 @@ CONFIG = Path.home() / ".omnigent" / "config.yaml"
 AUTH_TOKENS = Path.home() / ".omnigent" / "auth_tokens.json"
 # the label start puts on a --pr worker: the PR whose closing or merge ends it
 PR_LABEL = "omni.pr"
+PHASE_LABEL = (
+    "omni.phase"  # the loop phase a session works in, beside `omni.role` and `omni.pr` (#945)
+)
+PHASES = {"lead": "lead", "worker": "build", "verifier": "verify"}  # by role file
 # who started a session: the pack's own label on a top-level one it creates, and Omnigent's on one
 # its session tool creates (read too, as is a top-level field, should the server add one)
 CREATOR_LABEL, OMNIGENT_CREATOR_LABEL = "omni.created_by", "omnigent.created_by_session_id"
@@ -2078,6 +2082,10 @@ class Omnigent:
         # The loop role, which Omnigent's usage metrics split spend by: a role file's name; and the PR a
         # verifier reviews (``owner/repo#N``), so its spend groups by PR as a worker's does (#945).
         labels = {"omni.role": name} if role and (name := Path(role).stem) in ROLES else {}
+        if labels:
+            labels[PHASE_LABEL] = PHASES[
+                labels["omni.role"]
+            ]  # the phase the session works in, so spend groups by PR and phase (#945)
         if pr:
             labels[PR_LABEL] = pr
         if top_level and (me := own_id()):

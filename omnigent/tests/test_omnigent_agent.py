@@ -2254,7 +2254,10 @@ def test_create_labels_the_session_with_its_loop_role_from_the_role_file(
     og = omnigent_agent.Omnigent()
     for role in ("lead", "worker", "verifier"):
         og.create("codex", "t", role=f"/x/engineering-loop/{role}.md")
-        assert bodies[-1]["labels"] == {"omni.role": role}
+        assert bodies[-1]["labels"] == {
+            "omni.role": role,
+            "omni.phase": {"worker": "build", "verifier": "verify"}.get(role, role),
+        }
     for role in (None, "/x/reviewer.md"):
         og.create("codex", "t", role=role)
         assert "labels" not in bodies[-1]
