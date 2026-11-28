@@ -92,3 +92,7 @@ risk:
     - docs/agents/loop.md
     - docs/agents/gatekeeper.md
 ```
+
+## A spec-only finding
+
+A verdict that is not satisfied on spec-only findings lands on the same head, with no new verifier pass, once a newer spec approval names each finding (`approve spec <n> --by owner --closes "F1 of the pass-<n> verdict on <sha>"`): the rule is in the gatekeeper skill's [A spec-only finding](../../gatekeeper/skills/gatekeeper/SKILL.md#a-spec-only-finding).
