@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.28 - 2026-11-28
+
+- `cloud_verifier.py verify --harness gemini` passes the brief to `agy -p` as its prompt argument, since `agy` ignores stdin and answered that no brief was included (#3052).
+
 ## 0.1.27 - 2026-11-28
 
 - A verifier report's major now states what it breaks (an Acceptance line, a repro in documented use, or a standing bar with a concrete path) and, from pass 2, where it came from; `SATISFIED:` follows the counts, and the one-shot verifier's P1 uses the same definition (#3031).
