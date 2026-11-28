@@ -3589,6 +3589,33 @@ def broadcast(
     return failed
 
 
+def hold_prs(og: Omnigent, targets: list[tuple[str, str]]) -> list[str]:
+    """Put ``HOLD_LABEL`` on every PR the stopped sessions in ``targets`` own (their ``PR_LABEL``), one line each, before
+    the stop message goes out (#2998): a message sent mid-turn is read only after the turn in flight ends, so the label,
+    which the push and PR-create checks of engineering-hooks refuse on, is what stops a lead that has not read it yet.
+    A PR that can't be labelled is a line saying so, never a failure of the stop. Lift it with ``gatekeeper.py hold <n> --release``."""
+    lines = []
+    for sid, _label in targets:
+        try:
+            refs = pr_labels((og.info(sid).get("labels") or {}).get(PR_LABEL, ""))
+        except Exception as e:  # noqa: BLE001 - one session's unreadable record is its line, never the stop's failure
+            lines.append(f"session {sid}: no PR held ({reason(e)})")
+            continue
+        for repo, number in refs:
+            try:
+                gh(
+                    "api",
+                    f"repos/{repo}/issues/{number}/labels",
+                    "-f",
+                    f"labels[]={HOLD_LABEL}",
+                    "--silent",
+                )
+                lines.append(f"{repo}#{number}: held ({HOLD_LABEL}) for session {sid}")
+            except Fail as e:
+                lines.append(f"{repo}#{number}: not held ({e})")
+    return lines
+
+
 def approve(og: Omnigent, sid: str, decline: bool = False) -> tuple[list[str], bool]:
     """Resolve each pending approval prompt of ``sid``, never a question (``relay --answer`` answers those):
     a line per prompt, and whether a resolve failed. Fail when none is pending."""
@@ -14159,6 +14186,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 print("no session to send to", file=sys.stderr)
             failed = any(": failed: " in line for line in unsent)
             if not args.dry_run:
+                for line in hold_prs(og, targets):
+                    print(line, flush=True)
                 failed |= broadcast(og, targets, text, args.confirm_seconds, own_id() or "an agent")
             return 1 if failed else 0
         if args.cmd == "owner-said":

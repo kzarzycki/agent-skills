@@ -18,6 +18,11 @@
             "type": "command",
             "command": "f=\"${CLAUDE_PLUGIN_ROOT}/hooks/push_merge_guard.py\"; [ -f \"$f\" ] || { echo \"engineering-hooks: $f is missing, hook skipped\" >&2; exit 0; }; exec python3 \"$f\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "f=\"${CLAUDE_PLUGIN_ROOT}/hooks/hold_guard.py\"; [ -f \"$f\" ] || { echo \"engineering-hooks: $f is missing, hook skipped\" >&2; exit 0; }; exec python3 \"$f\"",
+            "timeout": 15
           }
         ]
       }

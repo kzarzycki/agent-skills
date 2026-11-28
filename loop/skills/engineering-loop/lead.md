@@ -385,6 +385,10 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    - A PR held for the owner carries `needs-owner` (or `risk:high` when it waits for a merge
      go on a head), which the owner's `approve merge --by owner` removes: a question card
      alone holds nothing, since `land` batches every PR that is ready.
+   - A hold is the `loop:hold` label, never a message: a hold or stop sent mid-turn is read only after the turn in
+     flight ends, so the manager sets it with `gatekeeper.py hold <n> --why <reason>` (`--release` lifts it) on the PR
+     or issue, and engineering-hooks' `hold_guard` refuses a `git push` to a held PR's branch and a PR created for
+     a held issue, naming who set it. A lead that meets that refusal stops and reports; it never removes the label.
    - A lead holds a PR it must not land (its own pause, or another coordinator's claim) with `loop:hold` and a PR
      comment naming who holds it and why, never only in its report, and removes the label before landing: `land` and
      `check merge` refuse a held PR and Mergify takes none. `loop:dequeued` is no hold.

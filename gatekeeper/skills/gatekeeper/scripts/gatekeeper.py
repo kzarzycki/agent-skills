@@ -2382,6 +2382,46 @@ def claim_verb(number: int, takeover: bool = False, release: bool = False) -> in
     return 0
 
 
+def hold_verb(number: int, release: bool = False, why: str = "") -> int:
+    """`hold <n>`: put the `loop:hold` label on issue or PR `n` with a comment saying who and why, or take it off
+    with `--release` (#2998). The label is the hold: the pre-push hook and the PR-create check of engineering-hooks'
+    hold_guard refuse a push or a PR for a held number, so a lead told to stop mid-turn is stopped by code, whether or
+    not it has read the message yet. The manager's stop or hold command is this verb, so no separate step sets it."""
+    try:
+        node = issue_node(number)
+    except (
+        Refused,
+        subprocess.CalledProcessError,
+        KeyError,
+        TypeError,
+    ):  # a PR number: GraphQL's issue lookup has none, the PR lookup does (#2998)
+        node = pull_request(number)
+    held = HOLD in names(node)
+    login = viewer() or "unknown"
+    if release:
+        if not held:
+            print(f"#{number}: not held")
+            return 0
+        label(number, HOLD, add=False)
+        comment(
+            number,
+            f"Hold lifted by @{login}: the `{HOLD}` label is off, so a push or a PR is allowed again.",
+        )
+        print(f"#{number}: hold lifted")
+        return 0
+    if held:
+        print(f"#{number}: already held")
+        return 0
+    label(number, HOLD, add=True)
+    reason = f": {why}" if why else ""
+    comment(
+        number,
+        f"Held by @{login}{reason}. The `{HOLD}` label refuses a push to this branch and a PR for this issue until it is removed.",
+    )
+    print(f"#{number}: held")
+    return 0
+
+
 def graduate(epic: int, pr: int) -> int:
     """Graduate an `incubating` epic: PR #pr is merged and says `Graduates #epic` (graduation() keeps such a PR to the
     full loop). A comment names the PR first, which the epic workflow reads as leave the label alone, then the label
@@ -14446,6 +14486,14 @@ def main(argv: list[str]) -> int:
     claiming.add_argument("issue", type=int)
     claiming.add_argument("--takeover", action="store_true")
     claiming.add_argument("--release", action="store_true")
+    holding = commands.add_parser(
+        "hold",
+        help="Hold an issue or PR with the `loop:hold` label, which refuses a lead's push and PR; --release lifts it.",
+        description="Set the `loop:hold` label on an issue or PR with a comment naming who and why. The pre-push hook and the PR-create check refuse a held number's push or PR. --release removes the label and lifts both.",
+    )
+    holding.add_argument("number", type=int)
+    holding.add_argument("--release", action="store_true")
+    holding.add_argument("--why", default="")
     # `record`: the evidence the gate reads, written: an approval, a verdict, a check pass
     records = commands.add_parser(
         "record",
@@ -14719,6 +14767,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         if args.takeover and args.release:
             raise Refused("claim --takeover and --release are two verbs: pass one")
         return claim_verb(args.issue, args.takeover, args.release)
+    if args.command == "hold":
+        return hold_verb(args.number, args.release, args.why)
     if args.command == "breakglass-proof":
         return breakglass_proof(
             args.pr, args.head, args.failed_run, args.rerun, args.smoke, args.earlier
