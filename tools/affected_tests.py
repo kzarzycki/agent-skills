@@ -292,6 +292,15 @@ def load_map():
         return None
 
 
+def failed() -> set[str]:
+    """The node ids the map's run failed (`failed` beside it, from tools/test_map_plugin.py): tools/test_map_check.py dropped
+    their contexts from the map, so the map cannot say what they ran and the name match must (#1400)."""
+    try:
+        return set((MAP / "failed").read_text().split("\n")) - {""}
+    except OSError:
+        return set()
+
+
 def skipped() -> set[str] | None:
     """The node ids the map's run skipped (`skipped` beside it, from tools/test_map_plugin.py), or None for a map with no
     such list, whose skips are then guessed from the test files' text (SKIPS)."""
@@ -400,6 +409,7 @@ def targets(
     ran: set[str] = set()
     moved = moved_since(mapped[0], base) if mapped else set()
     skips = skipped() if mapped else None
+    red = failed() if mapped else set()
     for f in files:
         path = Path(f)
         if by_path := {str(t) for t, text in sources.items() if reads(f, text)}:
@@ -454,6 +464,13 @@ def targets(
                     if str(t) in moved or (skips is None and SKIPS.search(text))
                 }
                 picked.update(floor)
+                named_files = {str(t) for t in named}
+                blind = {n for n in red if n.split("::")[0] in named_files}
+                if blind:
+                    say(
+                        f"{f}: {len(blind)} tests failed in the map's run, so it holds no lines of theirs: by name"
+                    )
+                    ran |= blind
                 skipped_here = set()
                 if skips is not None:  # the tests of these files the map's run skipped, by node id
                     skipped_here = {n for n in skips if n.split("::")[0] in {str(t) for t in named}}
@@ -462,6 +479,7 @@ def targets(
                     not by_run
                     and not floor
                     and not skipped_here
+                    and not blind
                     and (pkg := package_tests(f, tests))
                 ):
                     say(f"{f}: no test ran it: the package's {len(pkg)} test files")

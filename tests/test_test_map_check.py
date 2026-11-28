@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
 from coverage import CoverageData
 
 from tools import affected_tests as a
@@ -26,6 +27,16 @@ def git(*args: str) -> str:
     ).stdout.strip()
 
 
+def nightly_core() -> str:
+    """The `COVERAGE_CORE` the nightly's map run sets: a test here runs under the nightly's own tracer, not one it picks."""
+    workflow = yaml.safe_load((ROOT / ".github/workflows/engineering-ci.yml").read_text())
+    steps = [s for job in workflow["jobs"].values() for s in job["steps"]]
+    mapped = [
+        s for s in steps if "--cov-context=test" in s.get("env", {}).get("PYTEST_ADDOPTS", "")
+    ]
+    return str(mapped[0]["env"].get("COVERAGE_CORE", "sysmon"))
+
+
 def run_suite(project: Path, tests: dict[str, str]) -> Path:
     """Run `tests` under `project` the way the nightly does (one coverage context per test, the map plugin's failed,
     skipped and durations lists) and return the map directory."""
@@ -41,7 +52,7 @@ def run_suite(project: Path, tests: dict[str, str]) -> Path:
     env = {
         **os.environ,
         "PYTHONPATH": f"{ROOT}{os.pathsep}{project}",
-        "COVERAGE_CORE": "ctrace",  # sysmon, the default, records no per-test contexts
+        "COVERAGE_CORE": nightly_core(),
         "COVERAGE_FILE": str(root / "coverage"),
         "TEST_MAP_FAILED": str(root / "failed"),
         "TEST_MAP_SKIPPED": str(root / "skipped"),
@@ -137,5 +148,58 @@ def test_a_map_from_a_run_with_one_failing_test_still_selects_by_lines(
     git("commit", "-qam", "edit good")
     picked = a.targets(["pkg/mod.py"])
     assert "tests/test_good.py::test_good" in picked
-    assert not any("test_fine" in p or "test_red" in p for p in picked), picked
+    assert not any("test_fine" in p for p in picked), picked
     assert "map of " in capsys.readouterr().err
+
+
+def test_two_tests_sharing_a_line_both_keep_their_context_under_the_nightly_settings(
+    tmp_path, monkeypatch
+) -> None:
+    root = run_suite(
+        tmp_path,
+        {
+            "test_first.py": "from pkg import mod\n\n\ndef test_first():\n    assert mod.good() == 1\n",
+            "test_second.py": "from pkg import mod\n\n\ndef test_second():\n    assert mod.good() == 1\n",
+        },
+    )
+    with sqlite3.connect(root / "coverage") as db:
+        who = {
+            c.split("|")[0]
+            for (c,) in db.execute(
+                "select context from context where id in (select context_id from line_bits)"
+            )
+        }
+    assert {"tests/test_first.py::test_first", "tests/test_second.py::test_second"} <= who
+
+
+def test_a_failed_test_is_selected_by_name_for_the_script_it_names(tmp_path, monkeypatch) -> None:
+    """The map holds no line of a failed test, so its fix would select nothing by lines (#1400)."""
+    root = run_suite(
+        tmp_path,
+        {
+            "test_good.py": "from pkg import mod\n\n\ndef test_good():\n    assert mod.good() == 1\n",
+            "test_red.py": "from pkg import mod\n\n\ndef test_red():\n    assert mod.bad() == 3\n",
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    git("add", ".")
+    git("commit", "-qm", "base")
+    (root / "sha").write_text(git("rev-parse", "HEAD"))
+    assert check.main(["test_map_check.py", str(root)]) == 0
+    monkeypatch.setattr(a, "MAP", root)
+    (tmp_path / "pkg/mod.py").write_text(MOD.replace("return 2", "return 3"))
+    git("commit", "-qam", "fix bad")
+    assert "tests/test_red.py::test_red" in a.targets(["pkg/mod.py"])
+
+
+def test_a_map_whose_source_files_ran_no_line_fails_the_map_step(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Coverage lists the unexecuted files of a measured package too: a run that touched none of them is an empty map."""
+    root = run_suite(
+        tmp_path,
+        {"test_idle.py": "def test_idle():\n    assert True\n"},
+    )
+    monkeypatch.chdir(tmp_path)
+    assert check.main(["test_map_check.py", str(root)]) == 1
+    assert "map is empty" in capsys.readouterr().err

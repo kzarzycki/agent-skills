@@ -183,6 +183,7 @@ jobs:
           TEST_DURATIONS: ${{ github.workspace }}/.test-map/durations.log
           # the tests it fails: tools/test_map_check.py drops them from the map, so one red test leaves the rest selectable (#1400)
           TEST_MAP_FAILED: ${{ github.workspace }}/.test-map/failed
+          COVERAGE_CORE: ctrace # sysmon, the default on Python 3.14, drops a test's context from a line another test already ran (#1400)
           GATE_TEST_PARALLEL: "0" # serial: under xdist --cov-context=test records no per-test contexts, so the map would name no test (#1610)
           TEST_SHARDS: "4" # one serial pytest per runner core, each on its share of the test files: the whole suite in a quarter of the time (#2804)
           PYTEST_ADDOPTS: -n 0 --cov --cov-context=test --cov-append --cov-report= # bare --cov: the packages are pyproject.toml's [tool.coverage.run] source, the one list tests/test_packages.py checks (#1400)

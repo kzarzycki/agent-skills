@@ -155,6 +155,16 @@ def test_without_a_map_it_falls_back_to_the_batchs_affected_tests_and_says_why(
     )
 
 
+def test_an_empty_map_falls_back_to_the_batchs_affected_tests_and_says_so(
+    mapped, monkeypatch, capsys
+) -> None:
+    """`load_map()` is `(sha, None)` for a map that measures no file: the cache the queue restores may be one (#1400)."""
+    tip, heads = draft((1, "x.py"), (2, "y.py"))
+    monkeypatch.setattr(a, "load_map", lambda: ("abcdef0123456789", None))
+    assert c.select(tip, records(*heads.values()), list) == ([], ["t_x", "t_y"])
+    assert "the per-test map of abcdef012345 is empty" in capsys.readouterr().err
+
+
 def test_commits_that_are_not_merges_fall_back_too(mapped, capsys) -> None:
     git("init", "-q", "-b", "main")
     commit("seed.py")

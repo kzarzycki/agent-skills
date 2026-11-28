@@ -65,7 +65,13 @@ def named_tests(coverage: Path) -> tuple[set[str], set[str]]:
                 "select distinct context from context where id in (select context_id from line_bits)"
             )
         }
-        paths = {p for (p,) in db.execute("select path from file")}
+        # a source file counts only with a line a test ran: coverage lists the unexecuted files of its `source` too
+        paths = {
+            p
+            for (p,) in db.execute(
+                "select path from file where id in (select file_id from line_bits)"
+            )
+        }
     tests = {c.rsplit("|", 1)[0] for c in used if c}
     sources = {
         p

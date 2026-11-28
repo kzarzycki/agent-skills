@@ -137,6 +137,7 @@ printf '%s\\n' $files | xargs uv run ruff format --check --force-exclude"""
 description = "The PR head's check (`qualify`): vendor check, the whole-repo lint (the `lint` task; a PR push's own lint-only run is `lint-changed`) and the Mergify config drift check (the pack template rendered with gatekeeper.md's `land` and `timeouts`), no tests. The tests run once per tree, on the batch (test-batch)."
 run = """mise run vendor-engineering-check
 mise run lint
+uv run python -m tools.script_docstring_size
 uv run gatekeeper/skills/gatekeeper/scripts/approvals.py queue-config | cmp - .mergify.yml || { echo 'error: .mergify.yml drifted from `approvals.py queue-config`, the pack template rendered with gatekeeper.md'"'"'s land block: write its output to .mergify.yml' >&2; exit 1; }"""
 
 [tasks.check-affected]
