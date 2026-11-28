@@ -72,6 +72,17 @@ def world(tmp_path):
         )
         return done.returncode, done.stderr
 
+    call.repo = repo
+    call.run = lambda *argv: subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", *argv],
+        check=True,
+        capture_output=True,
+    )
+    call.env = lambda: {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "FAKE_GH_STATE": str(state),
+    }
     return set_state, call
 
 
@@ -118,3 +129,57 @@ def test_an_unrelated_command_and_an_unreadable_label_are_allowed(world):
     set_state({"7": ["loop:hold"]})
     assert call("git status")[0] == 0
     assert call("git push --delete origin claude/work")[0] == 0
+
+
+def branch_with_commit(call, message):
+    call.run("commit", "--allow-empty", "-m", "base")
+    call.run("update-ref", "refs/remotes/origin/main", "HEAD")
+    call.run("commit", "--allow-empty", "-m", message)
+
+
+def test_the_first_push_of_a_branch_is_refused_when_a_commit_names_a_held_issue_before_any_pr_exists(
+    world,
+):
+    set_state, call = world
+    branch_with_commit(call, "Build it\n\nImplements #5")
+    set_state({"5": ["loop:hold"]}, pulls=[])
+    code, err = call("git push -u origin claude/work")
+    assert code == 2
+    assert "#5" in err and "@boss" in err
+    set_state({"5": []}, pulls=[])
+    assert call("git push -u origin claude/work")[0] == 0
+
+
+def test_a_pr_that_implements_a_held_issue_is_refused_like_one_that_closes_it(world):
+    set_state, call = world
+    set_state({"5": ["loop:hold"]}, pulls=[])
+    assert call("gh pr create --draft --body 'Implements #5'")[0] == 2
+
+
+def test_git_pre_push_hook_refuses_a_held_branch_for_an_agent_with_no_claude_hook(world):
+    set_state, call = world
+    branch_with_commit(call, "Closes #5")
+    set_state({"5": ["loop:hold"]}, pulls=[])
+    refs = "refs/heads/claude/work " + "1" * 40 + " refs/heads/claude/work " + "0" * 40 + "\n"
+
+    def run():
+        return subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--pre-push",
+                "origin",
+                "git@github.com:acme/widgets.git",
+            ],
+            input=refs,
+            capture_output=True,
+            text=True,
+            cwd=call.repo,
+            env=call.env(),
+            check=False,
+        )
+
+    done = run()
+    assert done.returncode == 1 and "loop:hold" in done.stderr
+    set_state({"5": []}, pulls=[])
+    assert run().returncode == 0

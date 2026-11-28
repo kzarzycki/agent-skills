@@ -30,7 +30,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from heavy_run_guard import LOOP_FILE, SHELL_DEPTH, repo_root, segments, shell_string, strip_leading
 
 HOLD = "loop:hold"
-CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+#(\d+)", re.IGNORECASE)
+# the words that tie a PR or a commit to the issue it builds: the closing keywords and the loop's `Implements #n` (lead.md)
+CLOSES = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|implement(?:s|ed)?)[ \t]+#(\d+)", re.IGNORECASE
+)
 REMOTE = re.compile(r"github\.com[:/]+([^/\s]+/[^/\s]+?)(?:\.git)?/?$")
 
 
@@ -87,6 +90,51 @@ def push_branch(rest: list[str], cwd: Path) -> str | None:
             return dst
     out = run(cwd, "git", "symbolic-ref", "--short", "HEAD")
     return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def branch_held(cwd: Path, repo: str, branch: str) -> str:
+    """The refusal line when ``branch`` of ``repo`` is held: its open PR, an issue that PR's body names, or, before
+    any PR exists (the first push of a branch opens it, #2998), an issue a commit the branch adds names."""
+    owner = repo.split("/")[0]
+    pulls = api(cwd, f"repos/{repo}/pulls", "-f", f"head={owner}:{branch}", "-f", "state=open")
+    numbers: list[int] = []
+    for pull in pulls if isinstance(pulls, list) else []:
+        numbers += [int(n) for n in [pull.get("number")] if n] + closed_issues(
+            pull.get("body") or ""
+        )
+    base = next(
+        (
+            b
+            for b in ("origin/HEAD", "origin/main")
+            if run(cwd, "git", "rev-parse", "-q", "--verify", b).returncode == 0
+        ),
+        None,
+    )
+    if base:
+        log = run(cwd, "git", "log", "--format=%B", f"{base}..HEAD")
+        numbers += closed_issues(log.stdout) if log.returncode == 0 else []
+    for number in dict.fromkeys(numbers):
+        if line := held(cwd, repo, number):
+            return line
+    return ""
+
+
+def pre_push(remote_url: str, lines: list[str]) -> str:
+    """The git ``pre-push`` hook's check, for an agent that has no Claude Bash hook (Codex, a plain shell): ``lines`` are
+    the ``<local ref> <local sha> <remote ref> <remote sha>`` rows git feeds it; a deletion is allowed."""
+    match = REMOTE.search(remote_url.strip())
+    if not match:
+        return ""
+    cwd = Path.cwd()
+    root = repo_root(cwd)
+    if root is None or not (root / LOOP_FILE).is_file():
+        return ""
+    for row in lines:
+        parts = row.split()
+        pushed = len(parts) == 4 and parts[2].startswith("refs/heads/") and set(parts[1]) != {"0"}
+        if pushed and (line := branch_held(cwd, match[1], parts[2].removeprefix("refs/heads/"))):
+            return line
+    return ""
 
 
 def pushing(rest: list[str]) -> tuple[bool, Path | None]:
@@ -162,15 +210,8 @@ def judge(command: str, cwd: Path, depth: int = 0) -> str:
             repo, branch = repo_of(run_in), push_branch(rest, run_in)
             if not repo or not branch:
                 continue
-            owner = repo.split("/")[0]
-            pulls = api(
-                run_in, f"repos/{repo}/pulls", "-f", f"head={owner}:{branch}", "-f", "state=open"
-            )
-            for pull in pulls if isinstance(pulls, list) else []:
-                numbers = [pull.get("number"), *closed_issues(pull.get("body") or "")]
-                for number in filter(None, numbers):
-                    if line := held(run_in, repo, int(number)):
-                        return line
+            if line := branch_held(run_in, repo, branch):
+                return line
             continue
         creates, body, named = create_body(rest, run_in)
         if creates and (repo := named or repo_of(run_in)):
@@ -191,6 +232,16 @@ def verdict(payload: dict) -> tuple[int, str]:
 
 
 def main() -> int:
+    if sys.argv[1:2] == [
+        "--pre-push"
+    ]:  # git's hook: `hold_guard.py --pre-push <remote> <url>`, the refs on stdin
+        try:
+            line = pre_push(sys.argv[3] if len(sys.argv) > 3 else "", sys.stdin.read().splitlines())
+        except Exception:  # noqa: BLE001  (a parse or network bug must never block a push)
+            return 0
+        if line:
+            print(line, file=sys.stderr)
+        return 1 if line else 0
     try:
         payload = json.load(sys.stdin)
         code, line = verdict(payload) if isinstance(payload, dict) else (0, "")

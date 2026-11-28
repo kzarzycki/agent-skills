@@ -34,3 +34,17 @@ def test_hold_puts_the_label_on_with_a_comment_naming_who_and_why_and_release_li
     assert "loop:hold" not in labelled["labels"]
     assert "lifted" in labelled["comments"][1]
     assert capsys.readouterr().out.splitlines()[-1] == "#9: hold lifted"
+
+
+def test_hold_and_release_work_on_a_pr_number_whose_issue_lookup_fails(
+    labelled, monkeypatch, capsys
+):
+    def no_issue(_n):
+        raise approvals.Refused("#9 is a pull request, not an issue")
+
+    monkeypatch.setattr(approvals, "issue_node", no_issue)
+    monkeypatch.setattr(approvals, "pull_request", lambda n: approved(n, *labelled["labels"]))
+    assert approvals.main(["hold", "9"]) == 0
+    assert labelled["labels"] == {"loop:hold"}
+    assert approvals.main(["hold", "9", "--release"]) == 0
+    assert labelled["labels"] == set()

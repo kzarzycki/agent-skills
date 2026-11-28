@@ -2387,7 +2387,15 @@ def hold_verb(number: int, release: bool = False, why: str = "") -> int:
     with `--release` (#2998). The label is the hold: the pre-push hook and the PR-create check of engineering-hooks'
     hold_guard refuse a push or a PR for a held number, so a lead told to stop mid-turn is stopped by code, whether or
     not it has read the message yet. The manager's stop or hold command is this verb, so no separate step sets it."""
-    node = issue_node(number)
+    try:
+        node = issue_node(number)
+    except (
+        Refused,
+        subprocess.CalledProcessError,
+        KeyError,
+        TypeError,
+    ):  # a PR number: GraphQL's issue lookup has none, the PR lookup does (#2998)
+        node = pull_request(number)
     held = HOLD in names(node)
     login = viewer() or "unknown"
     if release:
