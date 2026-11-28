@@ -10929,17 +10929,12 @@ def command_line(
     return shlex.join(words), words[assigned:], sets
 
 
-def ran_gate(
-    cwd: Path | None = None, out: Any = None, passed: list[str] | tuple[str, ...] = ()
-) -> int:
-    """Run each step of the gate that may run here (gate_plan, here), in order, to the first that fails, and return
-    that step's exit, else 0; nothing is recorded (a checkout with changes)."""
-    for step in gate_plan(passed, every=True):
-        if step["on_demand"] and not ASKED.get():
-            print(skipped(step))
-        elif here(step) and (code := ran_step(step, cwd, out)[0]):
-            return code
-    return 0
+def refuse_changes() -> None:
+    """Refuse a recording run (`local-ci --record`, `affected-tests --record`) on a checkout with changes: it can never
+    give the record asked for, so it ends here, naming each changed file, before a detach, a base or plan is read, a
+    fetch or any host slot is taken (#3006)."""
+    if changes := checkout_state()[1]:
+        raise Refused(f"the tree has changes, so the check would not run on the head:\n{changes}")
 
 
 def heavy(words: list[str]) -> int:
@@ -11292,6 +11287,8 @@ def affected_tests(given: str | None = None, record: bool = False, text: str | N
 
     `text`, when given, is the loop.md the command and its `Gate base:` come from instead of the policy's: a rerun's
     (rerun_tests), the red head's own."""
+    if record:
+        refuse_changes()  # whichever path records: narrowed, a fallback's full check or a stepped gate (#3006)
     root = toplevel()
     text = loop_md() if text is None else text
     written = narrowing(text)
@@ -14155,11 +14152,8 @@ def local_ci(
         passed = proof["env"] if proof else (RERUN_VAR,) if rerun else ()
         # a checkout with changes can never give the record asked for, so it is refused before the gate plan is read
         # or any host slot is taken (#3006)
-        head, changes = checkout_state()
-        if changes:
-            raise Refused(
-                f"the tree has changes, so the check would not run on the head:\n{changes}"
-            )
+        head = checkout_state()[0]
+        refuse_changes()
         # the commands this run must leave a pass of, one per line, for `--status` (ran_command_file)
         RAN["command"] = "\n".join(step["command"] for step in gate_plan(passed) if here(step))
         # a run of named steps (`--step`) says which, never that the gate passed
@@ -14781,6 +14775,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
             raise Refused(
                 "--no-push goes with --rerun: only a rerun's record is kept for another job to push"
             )
+        if args.record:
+            refuse_changes()  # before the detach, a step name's plan or a narrowed base is read (#3006)
         KEEP.set(args.no_push)
         if args.step:
             asked_steps(args)

@@ -5934,6 +5934,28 @@ def test_record_on_a_checkout_with_changes_never_takes_the_host_slot(
     assert "gate.log" in out.out + out.err and "gate.pid" in out.out + out.err
 
 
+@pytest.mark.parametrize("flags", [[], ["--step", "check"], ["--rerun"]])
+def test_record_on_a_checkout_with_changes_is_refused_before_the_dispatch_detaches_or_reads_a_plan(
+    checkout: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flags: list[str],
+) -> None:
+    """A caller that does not lead its session would detach and follow a run already going on the head; a `--step` name
+    reads the plan and a narrowed `--rerun` resolves its base: the refusal comes first, naming the files (#3006)."""
+
+    def boom(*_: Any, **__: Any) -> Any:
+        raise AssertionError("the dispatch went on past a checkout with changes")
+
+    for name in ("detach", "asked_steps", "selection_base", "gate_plan"):
+        monkeypatch.setattr(approvals, name, boom)
+    monkeypatch.setattr(approvals, "leads_its_session", lambda: False)
+    checkout.update({"status": "?? gate.pid\n", "exit": 0})
+    assert approvals.main(["local-ci", "--record", *flags]) == 1
+    assert "gate.pid" in capsys.readouterr().out
+    assert checkout["runs"] == 0
+
+
 def test_record_on_a_checkout_with_changes_is_refused_before_the_check_runs(
     github: list[tuple[Any, ...]],
     checkout: dict[str, Any],
@@ -6872,7 +6894,7 @@ def test_status_never_says_passed_for_a_run_that_recorded_nothing(tmp_path: Path
     )
     assert (status.returncode, status.stdout.split(":")[0]) == (
         1,
-        f"failed (exit 1) on {head}",
+        f"no detached local-ci run on {head}\n",
     )
 
 

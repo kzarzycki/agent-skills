@@ -146,6 +146,34 @@ def test_the_opt_out_runs_check_with_no_base_set(
     assert worker["ran"]() == ["mise run check base=unset"]
 
 
+@pytest.mark.parametrize(
+    "loop",
+    ["Affected tests: {selector}\nGate: full\n", "# no selector line\n"],
+    ids=["opt-out", "no-selector"],
+)
+def test_a_dirty_record_is_refused_before_the_fallback_takes_the_slot(
+    worker: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    loop: str,
+) -> None:
+    """`affected-tests --record` refuses a checkout with changes whichever path it would take, the full-check fallbacks
+    too, before any slot or step (#3006)."""
+    worker["set_loop"](f"# Loop\n\n{loop.format(selector=worker['selector'])}")
+    worker["commit"]("app.py", "value = 2\n")
+    Path("app.py").write_text("value = 3\n")
+    Path("gate.pid").write_text("1\n")
+
+    def slot(*_: Any, **__: Any) -> Any:
+        raise AssertionError("a dirty --record took the host gate slot")
+
+    monkeypatch.setattr(approvals, "heavy_slot", slot)
+    assert approvals.main(["affected-tests", "--record", "--base", "HEAD"]) == 1
+    assert worker["ran"]() == []
+    out = capsys.readouterr().out
+    assert "app.py" in out and "gate.pid" in out
+
+
 def test_a_selector_that_fails_fails_the_gate(worker: dict[str, Any]) -> None:
     worker["set_loop"](f"# Loop\n\nAffected tests: {sys.executable} -c 'raise SystemExit(3)'\n")
     assert approvals.main(["affected-tests"]) == 3
