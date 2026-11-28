@@ -152,3 +152,12 @@ def test_diff_is_stored_digested_cut_at_80_lines_and_round_trips(home):
     assert [e.what for e in entries] == ["small", "big"]
     assert entries[0].diff == "```diff\n" + small + "```"
     assert entries[1].diff == "```diff\n" + "\n".join(shown) + "\n```"
+
+
+def test_diff_fence_outgrows_indented_backticks_and_an_empty_diff_is_refused(home):
+    md = "--- a/s.md\n+++ b/s.md\n@@ -1 +1 @@\n ```\n-old\n+new\n"
+    args = ("--now", "2026-11-25T01:00Z", "log", "--what", "w", "--why", "y", "--undo", "u")
+    assert run(home, *args, "--diff", "-", stdin=md).returncode == 0
+    text = (home / "tmp" / "loop" / "decisions.md").read_text()
+    assert "````diff\n" + md + "````" in text
+    assert run(home, *args, "--diff", "").returncode == 1

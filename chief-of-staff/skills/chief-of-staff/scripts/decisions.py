@@ -83,7 +83,7 @@ def _diff_block(path: Path, diff: str, stamp: str) -> str:
         keep.write_text("\n".join(lines) + "\n")
         rel = keep.relative_to(path.parent)
         lines = lines[:DIFF_MAX] + [f"… {len(lines) - DIFF_MAX} more lines (full diff: {rel})"]
-    ticks = max([3] + [len(m.group(0)) + 1 for ln in lines if (m := re.match(r"`+", ln))])
+    ticks = max([3] + [len(m.group(1)) + 1 for ln in lines if (m := re.match(r" {0,3}(`+)", ln))])
     fence = "`" * ticks
     return "\n".join([f"{fence}diff", *lines, fence])
 
@@ -220,8 +220,12 @@ def main(argv: list[str] | None = None) -> int:
         path = v.path("decisions.file")
         if a.cmd == "log":
             diff = ""
-            if a.diff:
+            if a.diff is not None:
                 try:
+                    if not a.diff:
+                        raise LogError(
+                            "--diff is empty: give a unified diff or leave the option out"
+                        )
                     diff = sys.stdin.read() if a.diff == "-" else Path(a.diff).read_text()
                 except OSError as err:
                     raise LogError(f"--diff: {err}") from err
