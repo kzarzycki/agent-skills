@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.10 - 2026-11-28
+
+- `decisions.py log --diff <file|->` stores a unified diff under the entry as a fenced `diff` block, cut at 80 lines with the rest kept in a file beside the log; `digest` prints it under the entry. The skill says an automation change reaches the owner as a diff (#3028).
+
 ## 0.1.9 - 2026-11-27
 
 - The values file takes an optional `verifier:` block (`route`, `model`, `fallback`), the setup's default verifier, checked by `cos_values.py` (#2840).

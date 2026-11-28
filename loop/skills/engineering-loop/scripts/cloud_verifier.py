@@ -1144,11 +1144,12 @@ def review(
         cmd = ["claude", "-p", "--permission-mode", "bypassPermissions", "--output-format", "text"]
         cmd += ["--model", model] if model else []
     elif harness == "gemini":
-        # the VM is the sandbox; the brief is the prompt on stdin, and the final message is what `-p` prints
+        # the VM is the sandbox; `agy -p` ignores stdin, so the brief is its prompt argument (#3052), and the final
+        # message is what `-p` prints
         cmd = [
             "agy",
             "-p",
-            "Follow the brief on stdin.",
+            brief,
             "--dangerously-skip-permissions",
             "--print-timeout",
             AGY_PRINT_TIMEOUT,

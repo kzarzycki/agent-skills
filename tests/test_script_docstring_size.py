@@ -173,6 +173,51 @@ def test_rerun_tests_says_when_the_whole_selection_runs_in_listing_description_a
     assert "A pass is a flake only" not in description
 
 
+def function_doc(name):
+    import ast
+
+    tree = ast.parse(GATEKEEPER.read_text())
+    (node,) = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name]
+    return flat_text(ast.get_docstring(node) or "")
+
+
+SKILL = ROOT / "loop/skills/engineering-loop/SKILL.md"
+
+
+def test_carry_text_says_a_clean_base_merge_or_rebase_carries_with_no_setting_2966():
+    """reviewed() and carries() once said carry needs a loop.md opt-in; carried() and catch_up() carry by default."""
+    reviewed = function_doc("reviewed")
+    assert "opts in" not in reviewed
+    assert (
+        "clean merge of the base or a clean rebase" in reviewed and "no setting needed" in reviewed
+    )
+    assert (
+        "either way" not in reviewed
+    )  # a refused carry prints nothing: the head needs a verdict of its own
+    assert "prints the proof's line when it carries and nothing when it doesn't" in reviewed
+    carries = function_doc("carries")
+    assert "opts in" not in carries and "why it carries nothing" not in carries
+    assert "a refusal prints nothing" in carries
+    policy = flat_text((GATEKEEPER.parent.parent / "policy.md").read_text())
+    skill = flat_text(SKILL.read_text())
+    for text in (policy, skill):
+        assert "carry_over_main" not in text
+    cap = skill.split("## The cap", 1)[1].split("## ", 1)[0]
+    assert "opt-in" not in cap and "opts in" not in cap
+    assert "only takes the base in with no hand edit" in cap
+
+
+def test_flake_text_names_only_the_failed_tests_the_change_did_not_select_again_2966():
+    doc = function_doc("rerun_tests")
+    assert "did not reselect" in doc and "flake candidates" in doc
+    assert "A failed test that passes there is a flake" not in doc
+    assert "only when the whole selection exits green" in doc and "red again" in doc
+    r5 = flat_text(SKILL.read_text()).split("**R5.", 1)[1].split("- **R6", 1)[0]
+    assert "A failed test that passes there is a flake" not in r5
+    assert "only a failed test the change did not select again" in r5.lower()
+    assert "only when the whole selection runs green" in r5 and "is red again" in r5
+
+
 def test_gate_record_says_it_finds_a_step_by_its_inputs_and_prints_a_missing_tree_alone():
     listing = flat_text(run_help())
     description = flat_text(run_help("gate-record"))
