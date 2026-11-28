@@ -5690,6 +5690,12 @@ def start(
         f" {picked or 'the harness default'} (from {effort_source})",
         file=sys.stderr,
     )
+    if (
+        harness == CLOUD_HARNESS and not chosen
+    ):  # the server refuses an ACP session with no model (#896)
+        raise Fail(
+            f"{agent} needs a model: set `{role_name or 'model'}.model` in {AGENTS_FILE.name}, or pass --model"
+        )
     model = chosen
     source = f"{source} model"
     if chosen:

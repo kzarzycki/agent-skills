@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -42,3 +43,25 @@ def harness_config_home(
     (home / ".claude").mkdir()
     (home / ".claude/settings.json").write_text('{"effortLevel": "high"}')
     monkeypatch.setenv("HOME", str(home))
+
+
+@pytest.fixture(autouse=True)
+def cloud_model(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A claude-cloud start is refused with no model (#2979), so a test of the cloud path that is not about that
+    names one, as an agents.yml would. A module that tests the refusal sets `REFUSES_NO_CLOUD_MODEL = True`."""
+    agent = sys.modules.get("omnigent_agent")
+    if agent is None or getattr(request.module, "REFUSES_NO_CLOUD_MODEL", False):
+        return
+    real = agent.start
+
+    def start(og, agent_name, *args, **kw):  # type: ignore[no-untyped-def]
+        harness = agent_name if agent_name in agent.AGENTS else og.harness(agent_name)
+        if (
+            harness == agent.CLOUD_HARNESS
+            and not kw.get("model")
+            and not Path.home().joinpath(".agents/agents.yml").is_file()
+        ):
+            kw["model"] = "sonnet"
+        return real(og, agent_name, *args, **kw)
+
+    monkeypatch.setattr(agent, "start", start)
