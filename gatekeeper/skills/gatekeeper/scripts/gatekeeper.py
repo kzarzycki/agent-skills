@@ -416,6 +416,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "delegate_spec": bool,
         "pack_staleness": Choice(("warn", "refuse")),
         "stalled_after_hours": int,
+        "required_checks": list,
         "rerun_pusher": str,
         "session_field_id": int,
     },
@@ -679,6 +680,12 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
             kind is list and not all(isinstance(item, str) for item in value)
         ):
             raise Refused(f"{file}'s {where} must be {KINDS[kind]}, not {value!r}")
+        elif (
+            key == "required_checks" and name == "loop" and not all(item.strip() for item in value)
+        ):
+            raise Refused(
+                f"{file}'s {where} names a blank check: list check names, or drop the entry"
+            )
         elif kind is str and isinstance(schema, dict) and not value:
             raise Refused(
                 f"{file}'s {where} is empty"
@@ -3577,7 +3584,7 @@ def waits(
 ) -> list[str]:
     """One line per thing the merge waits for: ran()'s checks (`checks`, when the caller read them), and the owner's go
     (owner_waits)."""
-    return (ran(pull) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
+    return (ran(pull, loop) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
 
 
 def opted_out(loop: str | None) -> bool:
@@ -3864,13 +3871,21 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
     )
 
 
-def ran(pull: dict[str, Any]) -> list[str]:
+def listed_checks(loop: str | None) -> set[str]:
+    """The check names `loop.required_checks` lists (#3023): checks that must be green on the head whether or not the
+    forge requires them, since a base with no branch protection or rules (a free plan's 403 reads as none) would
+    otherwise hold a merge on no CI check. The forge's own required checks stay the authority and the list adds to
+    them: a name both name is one check, and the loop's own statuses (OWN) are never listed."""
+    return {str(name) for name in settings(loop).get("required_checks") or ()} - OWN
+
+
+def ran(pull: dict[str, Any], loop: str | None = None) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s lines for the checks the base branch requires but the
     loop's own statuses (OWN), since GitHub merges nothing without them. A base that requires none waits for nothing:
     no aggregate `check`, and no local-ci pass, since the verifier's record is the merge's proof and no gate runs
     between it and the merge (#1872)."""
     # the approvals status is check merge's own output: waiting for it never ends
-    required = required_checks(pull["baseRefName"]) - OWN
+    required = (required_checks(pull["baseRefName"]) - OWN) | listed_checks(loop)
     return ci(f"PR #{pull['number']}", pull, required) if required else []
 
 
@@ -6311,7 +6326,7 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     after = flag(pull, issues, loop) if point == "merge" else [] if found else claim(pull, issues)
     if point == "build" and not found:
         found = owner_record(pull)
-    covered = breakglass_cover(pull, loop, ran(pull)) if point == "merge" else Covered([], [])
+    covered = breakglass_cover(pull, loop, ran(pull, loop)) if point == "merge" else Covered([], [])
     waiting = waits(pull, issues, loop, checks=covered.lines) if point == "merge" else []
     rated = rating(pull, issues, loop) if point == "merge" else None
     if rated is not None:
@@ -7279,7 +7294,7 @@ def landing_run(pr: int | Sequence[int] | None, only: bool = False) -> tuple[int
         )  # before any lock, draft or step: a host that can't run it refuses up front (#2577)
         # the base's rules pick the merge queue, and with it whether a cloud land signs (placed)
         rules = required_checks(base)
-        watched["required"] = set(rules) - OWN
+        watched["required"] = (set(rules) - OWN) | listed_checks(loop)
         # Mergify, like GitHub's queue, merges and signs each PR itself, so a cloud land needs no key for it
         with placed(loop, held_by(loop, rules) != "land"):
             code, again = landing_here(
@@ -7348,7 +7363,7 @@ def landing_here(
     # the base's rules and the policy pick the merge queue (held_by), never a mix of two;
     # `loop:approvals`, `gatekeeper` and `land` are the loop's own statuses (OWN), on the proofs land reads itself
     rules = required_checks(base) if rules is None else rules
-    required = rules - OWN
+    required = (rules - OWN) | listed_checks(loop)
     said, red = red_base(base, loop)
     for line in said:
         print(line)
@@ -7390,8 +7405,10 @@ def landing_here(
             named = unreadied(
                 [{k: v for k, v in pull.items() if k != "verdict"} for pull in named], base, *fresh
             )
+        # the fetched policy's listed checks decide the batch, not the ones read before the lock (#3023)
+        under_lock = (rules - OWN) | listed_checks(fresh[1])
         with placed(fresh[1]):
-            return local_queue(named, base, *fresh, required, only, held, worst)
+            return local_queue(named, base, *fresh, under_lock, only, held, worst)
     finally:
         # a stop from here on waits, blocked, until the lock is released and the handlers are back: raised inside the
         # release it would kill its push and leave the lock. The push runs in a session of its own, since some of its
@@ -8001,7 +8018,7 @@ def unreadied(
     """The named PRs once the policy changed while the land waited for the lock: each draft readied() marked ready that
     `landable` under the new policy would not ready goes back to draft, with a line
     saying why, and is returned as a draft with that verdict, so the batch leaves it out; the rest as they were."""
-    required = required_checks(base) - OWN
+    required = (required_checks(base) - OWN) | listed_checks(loop)
     found = []
     for pull in named:
         if not pull.get("readied"):
@@ -8012,7 +8029,18 @@ def unreadied(
         }
         verdict = landable(draft, tracker, loop, required, named=True)
         if verdict.draft:
-            found.append(pull)
+            # CI started on ready, so the wait follows the fetched policy's required checks, not the ones readied() saw
+            if not required and not pull.get("waiting"):
+                found.append(pull)
+                continue
+            lines = ci(f"PR #{pull['number']}", pull, required) if required else []
+            for line in lines:
+                print(line)  # the wait names the check that holds it, as landable does
+            if required and not lines and not pull.get("waiting"):
+                print(
+                    f"PR #{pull['number']}: CI starts on ready, so its required checks are pending"
+                )
+            found.append({**pull, "waiting": (WAITING, True) if required else None})
             continue
         port("forge").ready(pull["number"], undo=True)
         print(
