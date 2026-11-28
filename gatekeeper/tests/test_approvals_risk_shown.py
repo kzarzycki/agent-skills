@@ -182,3 +182,26 @@ def test_conflicting_labels_with_no_verdict_do_not_disagree_with_a_verdict(
     _, _, err = check_merge(capsys)
     second = "\n".join(each for each in err if each.startswith("PR #7:")).splitlines()[1]
     assert second.startswith("PR #7: the PR's labels disagree:") and "verdict" not in second
+
+
+def test_conflicting_labels_with_no_verdict_and_a_low_rating_say_the_labels_disagree(
+    gating: Gate, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The inline note, when no rule rates the change above low: no verdict to disagree with."""
+    state, _ = gating
+    state["pull"] = judged_pr(labels=("risk:low", "risk:medium"))
+    _, _, err = check_merge(capsys)
+    line = "\n".join(each for each in err if each.startswith("PR #7:"))
+    assert "; the PR's labels disagree: PR label `risk:low` vs PR label `risk:medium`" in line
+    assert "verdict" not in line
+
+
+def test_a_single_label_alone_on_a_critical_path_does_not_name_a_verdict(
+    gating: Gate, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state, _ = gating
+    policy(CRITICAL)
+    state["pull"] = judged_pr(labels=("risk:medium",))
+    _, _, err = check_merge(capsys)
+    second = "\n".join(each for each in err if each.startswith("PR #7:")).splitlines()[1]
+    assert second == "PR #7: the PR's label states: PR label `risk:medium`"
