@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.28 - 2026-11-28
+
+- `check merge`, `land` and `record verdict` print the risk a PR's `risk:*` label and the verifier's `Risk:` line state (`risk: medium`) instead of `risk: low` when no gate rule rates it higher, and name both when they disagree; `land` no longer reports "the PR closes no open issue" for a merged PR whose `Closes #n` issue the merge closed (#2876).
+
 ## 0.1.27 - 2026-11-28
 
 - `gatekeeper.py`'s module docstring, and so `gatekeeper.py --help`, is a short summary (72 KB before); each verb has its own `--help`, and the full usage lines and prose it held are in the new `verbs.md` (#2834).
