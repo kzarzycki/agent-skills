@@ -508,7 +508,7 @@ gatekeeper.md's policy (Settings) holds:
   release of its own pack (a version, or the pack's tag `<pack>-vX.Y.Z` or its `-next` tag
   `<pack>-vX.Y.Z-next`, never a branch or a commit), the rest being the lock and generated
   files `paths` covers, is a pack bump: its issue's spec needs no approval, since the
-  releases it pins were reviewed and tagged. The verifier still reviews it. Name the pack bump's section by the branch
+  releases it pins were reviewed and tagged. Name the pack bump's section by the branch
   `claude/ready-pack-bump-<tag>`, which a cloud session may push. A PR labelled
   `verify` (a major update) needs the review either way. Without the section, every PR needs
   one.
