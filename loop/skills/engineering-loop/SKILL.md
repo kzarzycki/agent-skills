@@ -1151,9 +1151,9 @@ that nobody sees) or visible (crash, stale result, usability).
 A fail-fast guard is the cheapest thing that turns a silent wrong answer into a loud
 refusal at the boundary (an assert on the assumption, a raise naming the ceiling) plus a
 `ponytail:` comment. A rejection costs one line in the PR body. A fix that needs a new
-mechanism (a lock, a trap, a baseline format) is a design change: one design note or ADR,
-implemented once, not iterated against the verifier. A finding that contradicts the spec
-may be resolved by correcting the spec.
+mechanism (a lock, a trap, a baseline format), or a finding the brief's repeat count shows reported twice, is a
+design change: one design note or ADR naming the class and the one mechanism that replaces the patches, implemented
+once, not iterated against the verifier (or the `Cap:` exit). A finding that contradicts the spec may be resolved by correcting the spec.
 
 The ledger (loop.md § Ledger) has one line per entry: what, where, the guard if
 any, what would make it matter, and its issue. The lead writes it during triage,
