@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """One-shot verifier support (#2996): the deterministic steps around one Codex review of one bundle.
 
-    one_shot.py tier --head SHA [--against REF] --policy gatekeeper.md --low-risk GLOB...   # gates only, or a review, and why
+    one_shot.py tier --head SHA [--base SHA | --against REF] --policy gatekeeper.md --low-risk GLOB...   # gates only, or a review, and why
     one_shot.py plan --head SHA --verdicts FILE           # first pass, a delta pass (its base), or refused
-    one_shot.py bundle --head SHA --spec FILE --diff FILE --policy gatekeeper.md [--against REF]
-                       [--rules FILE] [--nearby-from-git] [--base SHA] [--max-diff-bytes N]
-    one_shot.py verdict --json FILE --head SHA --family F --pass N [--calls N --credits X]   # a report `approvals.py report` reads
+    one_shot.py bundle --head SHA --spec FILE --policy gatekeeper.md [--base SHA | --against REF]
+                       [--gate-job NAME] [--rules FILE] [--nearby-from-git] [--max-diff-bytes N]
+    one_shot.py verdict --json FILE --head SHA --family F --pass N --report FILE [--calls N --credits X]
+                       # FILE is a report `approvals.py report` reads, or FILE.question (exit 3) when a check was not run
 
 The model only judges. The gate result is the gatekeeper's own `gate-record` lookup of the pass record origin holds
-for the head's tree (never a file a caller gives; a record keeps no log, so the lookup's output is the gate's raw
-result). The build inputs come from the gatekeeper's parse of the policy. Changed paths are git's own
-(`diff --name-only -z`). A cut, or an input not given, is named in the bundle. Standard library, and the gatekeeper skill.
+for the head's tree, plus the raw log of the gate's CI job on that same head, fetched from the forge (never a file a
+caller gives). One range, the delta's or the PR's, gives the paths, the diff and the heading. The build inputs come from the gatekeeper's parse of the policy. Changed paths are git's own
+(`diff --name-status -z -M -C`: a rename or copy gives both sides). A cut, or an input not given, is named in the bundle. Standard library, and the gatekeeper skill.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -112,6 +114,45 @@ def trusted_gate(head: str) -> tuple[int, str]:
     return run.returncode, (run.stdout + run.stderr).strip()
 
 
+GATE_JOB = "qualify"
+
+
+def _curl(url: str) -> str:
+    run = subprocess.run(
+        ["curl", "-sSL", "--fail", url], capture_output=True, text=True, check=False
+    )
+    if run.returncode:
+        raise Refused(f"could not fetch {url}: {run.stderr.strip()[:200]}")
+    return run.stdout
+
+
+def forge_repo() -> str:
+    m = re.search(
+        r"github\.com[:/]([^/\s]+/[^/\s]+?)(?:\.git)?\s*$", _git("remote", "get-url", "origin")
+    )
+    if not m:
+        raise Refused("origin is not a GitHub repository")
+    return m.group(1)
+
+
+def ci_gate_log(head: str, job: str = GATE_JOB, repo: str | None = None, fetch=_curl) -> str:
+    """The raw log of the successful `job` check run the forge lists for commit `head`, so the output is the head's
+    own run. Absent, failed, wrong-head or empty is refused."""
+    repo = repo or forge_repo()
+    runs = json.loads(
+        fetch(f"https://api.github.com/repos/{repo}/commits/{head}/check-runs?per_page=100")
+    )
+    found = [
+        r for r in runs.get("check_runs", []) if r.get("name") == job and r.get("head_sha") == head
+    ]
+    if not found or found[0].get("conclusion") != "success":
+        raise Refused(f"no successful `{job}` run on {head} to take the raw gate output from")
+    log = fetch(f"https://api.github.com/repos/{repo}/actions/jobs/{found[0]['id']}/logs")
+    if not log.strip():
+        raise Refused(f"the `{job}` run on {head} has an empty log")
+    return log
+
+
 def cut(name: str, text: str, limit: int) -> tuple[str, list[str]]:
     data = text.encode()
     if len(data) <= limit:
@@ -125,7 +166,7 @@ def bundle(
     spec: str,
     diff: str,
     paths: list[str],
-    gate: tuple[int, str],
+    gate: tuple[int, str, str],
     inputs: list[str],
     nearby: dict[str, str] | None = None,
     rules: str | None = None,
@@ -133,11 +174,13 @@ def bundle(
     base: str | None = None,
     max_part_bytes: int = 20_000,
 ) -> str:
-    """`gate` is trusted_gate's result and `paths` git's list of changed paths."""
+    """`gate` is (trusted_gate's exit, its record text, ci_gate_log's raw log); `paths` is changed_paths' list."""
     if gate[0] != 0:
         raise Refused(f"no gate record on {head} (gate-record exit {gate[0]}): {gate[1]}")
     shown, cuts = cut("diff", diff, max_diff_bytes)
-    log, c = cut("gate record", gate[1], max_part_bytes)
+    if not gate[2].strip():
+        raise Refused("no raw gate output for the head: the bundle needs the gate's own log")
+    log, c = cut("gate log", gate[2], max_part_bytes)
     cuts += c
     near = []
     for path, text in (nearby or {}).items():
@@ -173,6 +216,9 @@ def bundle(
     out += [
         "",
         "## Gate record (the gatekeeper's gate-record lookup)",
+        gate[1].strip(),
+        "",
+        "## Gate output (raw, from the gate's CI run on this head)",
         log.strip(),
     ]
     out += ["", "## Rules", rules_text.strip() or "none", "", "## Nearby code", *(near or ["none"])]
@@ -187,8 +233,8 @@ def verdict(
     number: int,
     calls: int | None = None,
     credits: float | None = None,
-) -> str:
-    """Map the rubric's JSON to a report `approvals.py report` reads: findings as `### Fn (severity) path:line: title`,
+) -> tuple[str | None, str | None]:
+    """Map the rubric's JSON to (report, question). A report is what `approvals.py report` reads (findings as `### Fn (severity) path:line: title`,
     a `## Criteria` section, and the closing lines. The runaway marker rides on the `Verifier:` line's qualifier, which
     the posted review keeps."""
     criteria = review.get("criteria")
@@ -206,7 +252,16 @@ def verdict(
         body.append(
             f"### F{i} ({kind}) {loc}: {f['priority']} {f['title']}\n{f.get('body', '')}{rules}"
         )
-    not_run = review.get("acceptance_not_run", [])
+    if review.get("acceptance_not_run"):
+        # an ordinary run not made goes to the lead's proof run as `<report>.question`, never as an owner action
+        steps = "\n".join(f"- {x}" for x in review["acceptance_not_run"])
+        found = "\n".join(f"- {f['priority']} {f['title']}" for f in review.get("findings", []))
+        return None, (
+            f"Verifier: {family}, pass {number} could not run these checks on {head}:\n{steps}\n"
+            + (f"\nFindings so far:\n{found}\n" if found else "")
+            + "\nRun them in the proof run and send the output back.\n"
+        )
+    not_run = review.get("owner_only_not_run", [])
     satisfied = (
         review.get("overall_correctness") == "patch is correct"
         and not counts["blocker"]
@@ -229,11 +284,12 @@ def verdict(
     if body:
         lines += ["## Findings", "", *body]
     if not_run:
-        # the verifier's outstanding-proof path: a run not made, with who must make it
+        # a step only the owner can take, which the gatekeeper reads as the outstanding-proof line
         lines.append(
             "Not run: "
             + "; ".join(not_run)
-            + ", owner action: run the check each Acceptance line names"
+            + ", owner action: "
+            + review.get("owner_action", "the owner takes it")
         )
     lines += [
         f"Head: {head}",
@@ -241,7 +297,7 @@ def verdict(
         f"SATISFIED: {'yes' if satisfied else 'no'}",
         f"Risk: {review.get('risk', 'high — not rated by the review')}",
     ]
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", None
 
 
 def _git(*args: str) -> str:
@@ -252,9 +308,28 @@ def read(path: str) -> str:
     return Path(path).read_text()
 
 
-def changed_paths(head: str, against: str) -> list[str]:
-    """The paths `against...head` changes, as git names them (NUL-separated, so a space or quote is no break)."""
-    return [p for p in _git("diff", "--name-only", "-z", f"{against}...{head}").split("\0") if p]
+def diff_range(head: str, base: str | None, against: str) -> list[str]:
+    """The one range a pass reviews: `base head` for a delta since the last verdict, else `against...head`. The paths, the
+    diff and the heading all come from it."""
+    return [base, head] if base else [f"{against}...{head}"]
+
+
+def changed_paths(head: str, base: str | None = None, against: str = "origin/main") -> list[str]:
+    """Every path the range changes, a rename's or copy's source as well as its destination (both sides are checked
+    against the gate inputs), as git names them (NUL-separated, so a space or quote is no break)."""
+    out = _git("diff", "--name-status", "-z", "-M", "-C", *diff_range(head, base, against)).split(
+        "\0"
+    )
+    paths, i = [], 0
+    while i < len(out) and out[i]:
+        take = 2 if out[i][0] in "RC" else 1
+        paths += out[i + 1 : i + 1 + take]
+        i += 1 + take
+    return paths
+
+
+def range_diff(head: str, base: str | None, against: str) -> str:
+    return _git("diff", "-M", "-C", *diff_range(head, base, against))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -264,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("tier")
     t.add_argument("--head", required=True)
+    t.add_argument("--base")
     t.add_argument("--against", default="origin/main")
     t.add_argument("--policy", required=True)
     t.add_argument("--low-risk", nargs="*", default=[])
@@ -271,9 +347,10 @@ def main(argv: list[str] | None = None) -> int:
     pl.add_argument("--head", required=True)
     pl.add_argument("--verdicts", required=True)
     b = sub.add_parser("bundle")
-    for name in ("head", "spec", "diff", "policy"):
+    for name in ("head", "spec", "policy"):
         b.add_argument(f"--{name}", required=True)
     b.add_argument("--against", default="origin/main")
+    b.add_argument("--gate-job", default=GATE_JOB)
     b.add_argument("--rules")
     b.add_argument("--nearby-from-git", action="store_true")
     b.add_argument("--base")
@@ -285,19 +362,24 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--pass", dest="number", type=int, required=True)
     v.add_argument("--calls", type=int)
     v.add_argument("--credits", type=float)
+    v.add_argument("--report", required=True)
     a = p.parse_args(argv)
     try:
         if a.cmd == "tier":
             print(
                 json.dumps(
-                    tier(changed_paths(a.head, a.against), a.low_risk, build_inputs(read(a.policy)))
+                    tier(
+                        changed_paths(a.head, a.base, a.against),
+                        a.low_risk,
+                        build_inputs(read(a.policy)),
+                    )
                 )
             )
         elif a.cmd == "plan":
             print(json.dumps(plan(a.head, json.loads(read(a.verdicts)))))
         elif a.cmd == "bundle":
-            diff = read(a.diff)
-            paths = changed_paths(a.head, a.against)
+            diff = range_diff(a.head, a.base, a.against)
+            paths = changed_paths(a.head, a.base, a.against)
             nearby = None
             if a.nearby_from_git:
                 nearby = {}
@@ -312,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
                     read(a.spec),
                     diff,
                     paths,
-                    trusted_gate(a.head),
+                    (*trusted_gate(a.head), ci_gate_log(a.head, a.gate_job)),
                     build_inputs(read(a.policy)),
                     nearby,
                     read(a.rules) if a.rules else None,
@@ -321,10 +403,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         else:
-            print(
-                verdict(json.loads(read(a.json)), a.head, a.family, a.number, a.calls, a.credits),
-                end="",
+            report, question = verdict(
+                json.loads(read(a.json)), a.head, a.family, a.number, a.calls, a.credits
             )
+            if report is None:
+                Path(f"{a.report}.question").write_text(question or "")
+                print(f"{a.report}.question")
+                return 3
+            Path(a.report).write_text(report)
+            print(a.report)
     except Refused as e:
         print(f"refused: {e}", file=sys.stderr)
         return 2

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -17,7 +18,7 @@ SPEC.loader.exec_module(os_)
 gatekeeper = os_.gatekeeper
 
 H = "a" * 40
-GATE = (0, "recorded: tree t, as refs/loop/records/x")
+GATE = (0, "recorded: tree t, as refs/loop/records/x", "RAW_GATE_OUTPUT: lint ok, 12 passed")
 INPUTS = ["pyproject.toml", "tools/affected_tests.py"]
 DIFF = "diff --git a/x.py b/x.py\n+1\n"
 POLICY = (ROOT / "docs/agents/gatekeeper.md").read_text()
@@ -61,24 +62,12 @@ def test_gate_config_edit_gets_a_finding_including_test_selection() -> None:
 
 def test_a_gate_result_the_gatekeeper_does_not_hold_is_refused(monkeypatch) -> None:
     with pytest.raises(os_.Refused):
-        build(gate=(1, "no record of `mise run check-fast` on tree t: run it"))
+        build(gate=(1, "no record of the gate on tree t: run it", "log"))
+    with pytest.raises(os_.Refused):
+        build(gate=(0, "recorded", "  "))
     # a caller's own JSON and log are not inputs at all
     with pytest.raises(SystemExit):
-        os_.main(
-            [
-                "bundle",
-                "--head",
-                H,
-                "--spec",
-                "s",
-                "--diff",
-                "d",
-                "--policy",
-                "p",
-                "--gate-record",
-                "r",
-            ]
-        )
+        os_.main(["bundle", "--head", H, "--spec", "s", "--policy", "p", "--gate-record", "r"])
     calls = []
     monkeypatch.setattr(
         os_.subprocess,
@@ -97,9 +86,28 @@ def test_a_cut_or_a_missing_input_is_named_and_nearby_code_and_rules_are_in_the_
     assert "nearby code: not supplied" in bare and "rules: not supplied" in bare
 
 
-def test_a_path_with_spaces_reaches_nearby_code_and_the_gate_config_finding(
-    tmp_path, monkeypatch
-) -> None:
+def _fetch(check_runs, log="RAW\nlint ok"):
+    return lambda url: json.dumps({"check_runs": check_runs}) if "check-runs" in url else log
+
+
+def test_the_raw_gate_log_is_the_forge_run_on_that_head_and_nothing_else_counts() -> None:
+    run = {"id": 7, "name": "qualify", "head_sha": H, "conclusion": "success"}
+    assert os_.ci_gate_log(H, repo="o/r", fetch=_fetch([run])) == "RAW\nlint ok"
+    other = "c" * 40
+    for bad in (
+        [],
+        [{**run, "head_sha": other}],
+        [{**run, "conclusion": "failure"}],
+        [{**run, "name": "lint"}],
+    ):
+        with pytest.raises(os_.Refused):
+            os_.ci_gate_log(H, repo="o/r", fetch=_fetch(bad))
+    with pytest.raises(os_.Refused):
+        os_.ci_gate_log(H, repo="o/r", fetch=_fetch([run], log=" "))
+    assert "RAW_GATE_OUTPUT: lint ok" in build()
+
+
+def _repo(tmp_path):
     def git(*a):
         return subprocess.run(
             ["git", *a], cwd=tmp_path, check=True, capture_output=True, text=True
@@ -108,6 +116,35 @@ def test_a_path_with_spaces_reaches_nearby_code_and_the_gate_config_finding(
     git("init", "-q", "-b", "main")
     git("config", "user.email", "t@example.com")
     git("config", "user.name", "t")
+    return git
+
+
+def test_a_rename_checks_both_sides_and_a_delta_uses_one_range(tmp_path, monkeypatch) -> None:
+    git = _repo(tmp_path)
+    (tmp_path / "mise.toml").write_text("[tasks]\nx = 1\n")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD").strip()
+    git("mv", "mise.toml", "README.md")
+    git("commit", "-qm", "rename")
+    first = git("rev-parse", "HEAD").strip()
+    (tmp_path / "current.txt").write_text("c")
+    git("add", "-A")
+    git("commit", "-qm", "current")
+    head = git("rev-parse", "HEAD").strip()
+    monkeypatch.chdir(tmp_path)
+    paths = os_.changed_paths(first, None, base)
+    assert paths == ["mise.toml", "README.md"]
+    assert os_.tier(paths, ["*.md"], INPUTS)["review"] is True
+    # a delta since the last verdict is that range alone: the earlier rename is not in it
+    assert os_.changed_paths(head, first) == ["current.txt"]
+    assert "mise.toml" not in os_.range_diff(head, first, "origin/main")
+
+
+def test_a_path_with_spaces_reaches_nearby_code_and_the_gate_config_finding(
+    tmp_path, monkeypatch
+) -> None:
+    git = _repo(tmp_path)
     (tmp_path / "keep").write_text("k")
     git("add", "-A")
     git("commit", "-qm", "base")
@@ -118,31 +155,20 @@ def test_a_path_with_spaces_reaches_nearby_code_and_the_gate_config_finding(
     git("commit", "-qm", "change")
     head = git("rev-parse", "HEAD").strip()
     (tmp_path / "spec.md").write_text("the spec")
-    (tmp_path / "diff.txt").write_text(
-        'diff --git "a/dir/test config.py" "b/dir/test config.py"\n+1\n'
-    )
     (tmp_path / "rules.md").write_text("RULE_TEXT: no mocks")
     policy = POLICY.replace("    - uv.lock\n", '    - uv.lock\n    - "dir/test config.py"\n', 1)
     (tmp_path / "policy.md").write_text(policy)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(os_, "trusted_gate", lambda h: GATE)
+    monkeypatch.setattr(os_, "trusted_gate", lambda h: GATE[:2])
+    monkeypatch.setattr(os_, "ci_gate_log", lambda h, job: GATE[2])
     out: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a))))
-    argv = [
-        "bundle",
-        "--head",
-        head,
-        "--spec",
-        "spec.md",
-        "--diff",
-        "diff.txt",
-        "--policy",
-        "policy.md",
-    ]
+    argv = ["bundle", "--head", head, "--spec", "spec.md", "--policy", "policy.md"]
     assert os_.main([*argv, "--against", base, "--rules", "rules.md", "--nearby-from-git"]) == 0
     text = out[0]
     assert "NEARBY_SOURCE = 1" in text and "RULE_TEXT: no mocks" in text
     assert "FINDING (gate config): dir/test config.py" in text
+    assert "RAW_GATE_OUTPUT: lint ok" in text
 
 
 REVIEW = {
@@ -157,7 +183,9 @@ REVIEW = {
 
 def facts(tmp_path, review, **kw):
     path = tmp_path / "r.md"
-    path.write_text(os_.verdict(review, H, "codex", 1, **kw))
+    report, question = os_.verdict(review, H, "codex", 1, **kw)
+    assert question is None
+    path.write_text(report)
     return gatekeeper.report_facts(path)
 
 
@@ -177,12 +205,20 @@ def test_the_verdict_is_read_by_the_real_report_parser_and_keeps_the_guard_marke
     assert got["satisfied"] is True and got["verifier"]["qualifier"] == ""
 
 
-def test_a_clean_review_with_outstanding_checks_goes_the_outstanding_proof_path(tmp_path) -> None:
-    review = {
-        **REVIEW,
-        "findings": [],
-        "overall_correctness": "patch is correct",
-        "acceptance_not_run": ["Pilot"],
-    }
-    got = facts(tmp_path, review)
+def test_an_unrun_check_goes_to_the_proof_run_question_never_an_owner_action(tmp_path) -> None:
+    review = {**REVIEW, "findings": [], "overall_correctness": "patch is correct"}
+    report, question = os_.verdict({**review, "acceptance_not_run": ["Pilot"]}, H, "codex", 1)
+    assert report is None and "Pilot" in question and "owner action" not in question
+    # a step only the owner can take is the gatekeeper's own `Not run: ..., owner action:` line
+    owner = {**review, "owner_only_not_run": ["sign the release"], "owner_action": "sign it"}
+    got = facts(tmp_path, owner)
     assert got["satisfied"] is False and got["verdict"] == {"blocker": 0, "major": 0, "minor": 0}
+
+
+def test_the_cli_writes_a_question_file_and_exits_3_for_an_unrun_check(tmp_path) -> None:
+    review = tmp_path / "r.json"
+    review.write_text(json.dumps({**REVIEW, "findings": [], "acceptance_not_run": ["Pilot"]}))
+    out = tmp_path / "rep.md"
+    argv = ["verdict", "--json", str(review), "--head", H, "--family", "codex", "--pass", "1"]
+    assert os_.main([*argv, "--report", str(out)]) == 3
+    assert (tmp_path / "rep.md.question").exists() and not out.exists()
