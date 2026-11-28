@@ -703,3 +703,26 @@ def test_a_counted_session_whose_read_raises_holds_no_card(tmp_path, monkeypatch
     monkeypatch.setattr(ManagerCard, "info", info)
     _, _, events = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 1})
     assert "pr-stall:o/r#12" in events
+
+
+@pytest.mark.parametrize("mark", ["", "\tverdict"])
+def test_a_card_on_a_session_that_is_not_followed_holds_no_stall(
+    tmp_path, monkeypatch, mark
+) -> None:
+    """#2954: a worker or verifier a lead owes a report is no followed session: its card is neither read nor held."""
+    original = globals()["following"]
+
+    def with_worker(where):
+        registry = original(where)
+        with registry.open("a") as f:
+            f.write(f"worker={where / 'worker.md'}{mark}\n")
+        return registry
+
+    monkeypatch.setitem(globals(), "following", with_worker)
+    _, reads, events = _sweep(
+        tmp_path,
+        monkeypatch,
+        counts={"a": 0, "cos": 0, "worker": 1},
+        setup=lambda og: setattr(og, "holder", "worker"),
+    )
+    assert "pr-stall:o/r#12" in events and "worker" not in reads

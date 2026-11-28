@@ -11623,7 +11623,7 @@ def supervise_registry(
             """The open cards of each followed session and the notify manager, read once for this round and shared by
             every due repo (#2954). The session listing says which hold any (``pending_elicitations_count`` above 0; a
             count of 0, or a session missing from it, holds no card), and only those are read, by the same ``og.info``
-            the poll makes, whose cards ``Uncarded`` keeps. The listing is cached for ``CREATED_SECONDS``, so a card
+            the poll makes, whose cards ``Uncarded`` keeps. Only followed sessions (the manager and its leads) and the notify manager hold one: a worker or verifier a lead owes a report holds none. The listing is cached for ``CREATED_SECONDS``, so a card
             that opened or closed within it can take that long to count. A listing or read that raises holds no card."""
             nonlocal snap
             if snap is None:
@@ -11635,7 +11635,9 @@ def supervise_registry(
                     }
                 except Exception:  # noqa: BLE001 - an optional lookup: no card is the safe reading
                     counts = {}
-                for s in dict.fromkeys([*owed, *filter(None, [notify])]):
+                for s in dict.fromkeys(
+                    [*(s for s, o in owed.items() if o[3]), *filter(None, [notify])]
+                ):
                     if not counts.get(s):
                         continue
                     with contextlib.suppress(Exception):  # one unreadable session holds no card
