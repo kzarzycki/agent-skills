@@ -3972,13 +3972,36 @@ def _load_verifier_pass() -> Any:
         return None
 
 
+def _can_write(login: str) -> bool:
+    """Whether `login` can write to the repo, by its collaborator permission; one GitHub can't answer can't."""
+    shared = _load_verifier_pass()
+    try:
+        got = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission",
+                "--jq",
+                ".permission",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (subprocess.CalledProcessError, OSError):
+        return False
+    return bool(shared and shared.can_write(got))
+
+
 def earlier_codex_pass(
     reviews: list[Any], comments: list[Any], head: str, logins: Any = ()
 ) -> tuple[str, str] | None:
     """The (family, pass) of the newest Codex verifier pass already on `head`, else None, by verifier_pass.py's
     predicate (the heading first, a trusted author), the one cloud_verifier.py's guard uses too."""
     shared = _load_verifier_pass()
-    return shared.earlier_codex_pass(reviews, comments, head, logins) if shared else None
+    return (
+        shared.earlier_codex_pass(reviews, comments, head, logins, _can_write) if shared else None
+    )
 
 
 def codex_pass_on_head(pr: int | None) -> str | None:

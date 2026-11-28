@@ -8,6 +8,15 @@ import json
 import pytest
 from test_cloud_verifier import checkout, cv  # noqa: F401 - `checkout` is a fixture
 
+
+@pytest.fixture(autouse=True)
+def who_can_write(monkeypatch):
+    """GitHub's answer: `writer` writes, `reader` is an org member who reads, and the PR's author and the runner are
+    `author` and `runner`."""
+    monkeypatch.setattr(cv, "can_write", lambda login: login == "writer")
+    monkeypatch.setattr(cv, "pass_logins", lambda pr: {"author", "runner"})
+
+
 REPORT = "# Report\n\nHead: x\nVERDICT: 0 blocker\nSATISFIED: yes\nRisk: low\n"
 
 
@@ -33,9 +42,9 @@ def test_a_second_codex_pass_on_an_unchanged_head_is_refused_naming_the_first(
     _, head, brief, posted, seen = checkout
     seen["report"] = REPORT
     first = {
-        "author_association": "OWNER",
+        "user": {"login": "writer"},
         "commit_id": head,
-        "body": "**Verifier (codex/terra-6.1/med), pass 1** on abc",
+        "body": "Verifier (codex/terra-6.1/med), pass 1 on abc",
     }
     monkeypatch.setattr(cv, "pass_history", lambda pr: ([first], []))
     with pytest.raises(
@@ -48,7 +57,7 @@ def test_a_second_codex_pass_on_an_unchanged_head_is_refused_naming_the_first(
 def test_a_pass_comment_of_this_script_counts_and_another_head_or_family_does_not(checkout) -> None:  # noqa: F811
     head = checkout[1]
     comment = {
-        "author_association": "OWNER",
+        "user": {"login": "writer"},
         "body": f"Head: {head}\nVERDICT: 0 blocker\n\nVerifier: codex/sol-6.1/high, pass 2\n",
     }
     assert cv.earlier_codex_pass([], [comment], head) == ("codex/sol-6.1/high", "2")
@@ -76,9 +85,9 @@ def test_a_thread_pass_on_an_unchanged_head_is_refused_before_a_thread_is_made(
         lambda *cmd, **kw: cv.subprocess.CompletedProcess(cmd, 0, "abc o/r feat/pr\n", ""),
     )
     first = {
-        "author_association": "OWNER",
+        "user": {"login": "writer"},
         "commit_id": "abc",
-        "body": "**Verifier (codex/terra-6.1/med), pass 1**",
+        "body": "Verifier (codex/terra-6.1/med), pass 1",
     }
     monkeypatch.setattr(cv, "pass_history", lambda pr: ([first], []))
 
@@ -93,40 +102,47 @@ def test_a_thread_pass_on_an_unchanged_head_is_refused_before_a_thread_is_made(
     assert head  # a later head is another pass: see earlier_codex_pass's test
 
 
-def quoting_review(head: str) -> dict:
-    return {
-        "author_association": "OWNER",
-        "commit_id": head,
-        "body": "Re the earlier run:\n\n> **Verifier (codex/terra-6.1/med), pass 1**\n",
-    }
+def by(login: str, body: str, head: str) -> dict:
+    return {"user": {"login": login}, "commit_id": head, "body": body}
 
 
 def test_a_review_quoting_a_verdict_or_an_untrusted_heading_does_not_refuse_a_pass_3003(
     checkout,  # noqa: F811
     monkeypatch,
 ) -> None:
-    _, head, _, _, seen = checkout
-    seen["report"] = REPORT
-    stranger = {
-        "author_association": "NONE",
-        "user": {"login": "stranger"},
-        "commit_id": head,
-        "body": "**Verifier (codex/terra-6.1/med), pass 1**",
-    }
-    monkeypatch.setattr(cv, "pass_history", lambda pr: ([quoting_review(head), stranger], []))
+    head = checkout[1]
+    heading = "Verifier (codex/terra-6.1/med), pass 1"
+    reviews = [
+        by("author", f"Re the earlier run:\n\n{heading}\n", head),  # after other text
+        by("author", f"> {heading}\n", head),  # a blockquote of one
+        by("reader", heading, head),  # an org member who only reads
+        by("stranger", heading, head),
+    ]
+    monkeypatch.setattr(cv, "pass_history", lambda pr: (reviews, []))
     cv.refuse_repeat_codex_pass(7, head)  # no refusal
-    monkeypatch.setattr(cv, "pass_logins", lambda pr: set())
-    real = {**stranger, "author_association": "MEMBER"}
-    monkeypatch.setattr(cv, "pass_history", lambda pr: ([quoting_review(head), real], []))
+    monkeypatch.setattr(cv, "pass_history", lambda pr: ([by("writer", heading, head)], []))
     with pytest.raises(cv.Refused, match=r"pass 1"):
         cv.refuse_repeat_codex_pass(7, head)
+
+
+def test_the_report_this_script_posts_is_found_as_a_pass_3003(checkout) -> None:  # noqa: F811
+    head = checkout[1]
+    report = (
+        f"Head: {head}\nVERDICT: 0 blocker\nSATISFIED: yes\nRisk: low\n\n"
+        "Verifier: codex/terra-6.1/med, pass 1\n\nThe criteria...\n"
+    )
+    posted = {"user": {"login": "author"}, "body": cv.folded_report(report)}
+    assert posted["body"].startswith("## Verifier report")
+    assert cv.earlier_codex_pass([], [posted], head, {"author"}) == ("codex/terra-6.1/med", "1")
+    chatter = {"user": {"login": "author"}, "body": f"As posted:\n\n{posted['body']}"}
+    assert cv.earlier_codex_pass([], [chatter], head, {"author"}) is None
 
 
 def test_the_guard_uses_the_shared_predicate_3003(checkout, monkeypatch) -> None:  # noqa: F811
     head = checkout[1]
     seen = []
 
-    def shared(reviews, comments, head, logins=()):
+    def shared(reviews, comments, head, logins=(), writer=None):
         seen.append(head)
         return ("codex/shared", "9")
 

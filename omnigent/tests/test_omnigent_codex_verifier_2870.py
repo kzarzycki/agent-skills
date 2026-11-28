@@ -59,15 +59,18 @@ def test_a_start_that_names_a_model_and_effort_keeps_them(
     assert (og.overrides["s0"], og.efforts["s0"]) == ("gpt-6.1-sol", "high")
 
 
-def test_a_pass_already_on_the_head_is_found_in_a_review_or_a_comment() -> None:
+def test_a_pass_already_on_the_head_is_found_in_a_review_or_a_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(omnigent_agent, "_can_write", lambda login: login == "writer")
     head = "a" * 40
     review = {
-        "author_association": "OWNER",
+        "user": {"login": "writer"},
         "commit_id": head,
-        "body": "**Verifier (codex/terra-6.1/med), pass 1**",
+        "body": "Verifier (codex/terra-6.1/med), pass 1",
     }
     comment = {
-        "author_association": "OWNER",
+        "user": {"login": "writer"},
         "body": f"Head: {head}\n\nVerifier: codex/sol-6.1/high, pass 2\n",
     }
     assert omnigent_agent.earlier_codex_pass([review], [comment], head) == (
@@ -89,9 +92,9 @@ def test_the_refusal_names_the_earlier_pass_and_a_forge_that_cannot_answer_refus
         "repos/{owner}/{repo}/pulls/7/reviews": json.dumps(
             [
                 {
-                    "author_association": "OWNER",
+                    "user": {"login": "writer"},
                     "commit_id": head,
-                    "body": "**Verifier (codex/terra-6.1/med), pass 3**",
+                    "body": "Verifier (codex/terra-6.1/med), pass 3",
                 }
             ]
         ),
@@ -102,6 +105,7 @@ def test_the_refusal_names_the_earlier_pass_and_a_forge_that_cannot_answer_refus
         return subprocess.CompletedProcess(cmd, 0, answers[cmd[-1]], "")
 
     monkeypatch.setattr(omnigent_agent.subprocess, "run", gh)
+    monkeypatch.setattr(omnigent_agent, "_can_write", lambda login: login == "writer")
     why = omnigent_agent.codex_pass_on_head(7)
     assert why and "codex/terra-6.1/med, pass 3" in why and head[:12] in why
     assert omnigent_agent.codex_pass_on_head(None) is None
@@ -149,7 +153,7 @@ def test_the_model_variable_outranks_the_terra_tier(
 def forge(monkeypatch: pytest.MonkeyPatch, head: str, reviews: list[dict]) -> None:
     answers = {
         "repos/{owner}/{repo}/pulls/7": json.dumps(
-            {"head": {"sha": head}, "user": {"login": "pr-author"}}
+            {"head": {"sha": head}, "user": {"login": "author"}}
         ),
         "repos/{owner}/{repo}/pulls/7/reviews": json.dumps(reviews),
         "repos/{owner}/{repo}/issues/7/comments": "[]",
@@ -157,30 +161,29 @@ def forge(monkeypatch: pytest.MonkeyPatch, head: str, reviews: list[dict]) -> No
     }
 
     def gh(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 0, answers[cmd[-1]], "")
+        return subprocess.CompletedProcess(
+            cmd, 0, answers[cmd[3] if cmd[-1] == ".permission" else cmd[-1]], ""
+        )
 
     monkeypatch.setattr(omnigent_agent.subprocess, "run", gh)
+    monkeypatch.setattr(omnigent_agent, "_can_write", lambda login: login == "writer")
 
 
 def test_a_review_quoting_a_verdict_or_an_untrusted_heading_does_not_refuse_a_start_3003(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     head = "d" * 40
-    quoting = {
-        "author_association": "OWNER",
-        "commit_id": head,
-        "body": "Earlier run:\n\n> Verifier (codex/terra-6.1/med), pass 1\n",
-    }
-    stranger = {
-        "author_association": "NONE",
-        "user": {"login": "stranger"},
-        "commit_id": head,
-        "body": "**Verifier (codex/terra-6.1/med), pass 1**",
-    }
-    forge(monkeypatch, head, [quoting, stranger])
+    heading = "Verifier (codex/terra-6.1/med), pass 1"
+    by = lambda login, body: {"user": {"login": login}, "commit_id": head, "body": body}
+    reviews = [
+        by("author", f"Earlier run:\n\n{heading}\n"),
+        by("author", f"> {heading}\n"),
+        by("reader", heading),  # an org member who only reads
+        by("stranger", heading),
+    ]
+    forge(monkeypatch, head, reviews)
     assert omnigent_agent.codex_pass_on_head(7) is None
-    runner = {**stranger, "user": {"login": "runner"}}  # the account running it is trusted
-    forge(monkeypatch, head, [quoting, runner])
+    forge(monkeypatch, head, [*reviews, by("runner", heading)])  # the account running it is trusted
     why = omnigent_agent.codex_pass_on_head(7)
     assert why and "codex/terra-6.1/med, pass 1" in why
 
@@ -192,3 +195,8 @@ def test_the_start_guard_uses_the_shared_predicate_3003(monkeypatch: pytest.Monk
     monkeypatch.setattr(omnigent_agent, "_load_verifier_pass", lambda: shared)
     why = omnigent_agent.codex_pass_on_head(7)
     assert why and "codex/shared, pass 9" in why
+
+
+def test_the_omnigent_package_depends_on_the_package_that_ships_the_shared_predicate_3003() -> None:
+    manifest = (Path(omnigent_agent.__file__).parents[3] / "apm.yml").read_text()
+    assert "kzarzycki/agent-skills/gatekeeper" in manifest

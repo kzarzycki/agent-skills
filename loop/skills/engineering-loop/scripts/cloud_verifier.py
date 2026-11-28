@@ -623,7 +623,7 @@ def earlier_codex_pass(
     """The (family, pass) of a Codex verifier pass already posted on `head`, else None, by gatekeeper's one predicate
     (verifier_pass.py, the same rules as its `passes()`: the heading first, a trusted author) so a review that only
     quotes a verdict is none (#2870, #3003)."""
-    return verifier_pass.earlier_codex_pass(reviews, comments, head, logins)
+    return verifier_pass.earlier_codex_pass(reviews, comments, head, logins, can_write)
 
 
 def pass_history(pr: int) -> tuple[list[dict], list[dict]]:
@@ -638,6 +638,19 @@ def pass_history(pr: int) -> tuple[list[dict], list[dict]]:
         ).stdout
         both.append(json_arrays(got))
     return both[0], both[1]
+
+
+def can_write(login: str) -> bool:
+    """Whether `login` can write to the repo, by its collaborator permission; one GitHub can't answer can't."""
+    got = run(
+        "gh",
+        "api",
+        f"repos/{{owner}}/{{repo}}/collaborators/{login}/permission",
+        "--jq",
+        ".permission",
+        check=False,
+    )
+    return got.returncode == 0 and verifier_pass.can_write(got.stdout)
 
 
 def pass_logins(pr: int) -> set[str]:
