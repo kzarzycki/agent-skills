@@ -209,6 +209,19 @@ def test_a_draft_land_readied_is_not_made_to_wait_for_a_check_the_base_dropped_a
     assert (code, lands["merged"]()) == (0, ["7"]), lines
 
 
+def test_a_draft_land_readied_that_waits_for_a_check_the_lock_added_names_it(
+    lands: dict[str, Any], required: list[str], no_clock_wait: None, at_the_lock: Any
+) -> None:
+    listed_policy(lands, "")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["isDraft"] = True
+    only_check(lands, 7, "lint", "SUCCESS")
+    at_the_lock("    - ci-tests")
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"]()) == (approvals.WAITING, []), lines
+    assert "PR #7: no `ci-tests` on the head commit yet" in lines, lines
+
+
 def test_a_conflicting_draft_land_readied_goes_back_to_draft_when_the_lock_adds_a_listed_check(
     lands: dict[str, Any], required: list[str], no_clock_wait: None, at_the_lock: Any
 ) -> None:
