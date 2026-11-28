@@ -86,44 +86,6 @@ def test_a_cut_or_a_missing_input_is_named_and_nearby_code_and_rules_are_in_the_
     assert "nearby code: not supplied" in bare and "rules: not supplied" in bare
 
 
-def test_the_raw_gate_output_comes_from_running_the_gate_on_the_clean_head(
-    tmp_path, monkeypatch
-) -> None:
-    git = _repo(tmp_path)
-    (tmp_path / "f").write_text("x")
-    git("add", "-A")
-    git("commit", "-qm", "c")
-    head = git("rev-parse", "HEAD").strip()
-    monkeypatch.chdir(tmp_path)
-    ran = []
-
-    def run(words, **kw):
-        ran.append(words)
-        return subprocess.CompletedProcess(words, 0, "RAW lint ok\n", "")
-
-    plan = [
-        {
-            "command": "mise run check-fast",
-            "words": ["mise", "run", "check-fast"],
-            "sets": {},
-            "where": "any",
-        },
-        {"command": "on host", "words": ["h"], "sets": {}, "where": "host"},
-    ]
-    out = os_.run_gate(head, plan, run)
-    assert "RAW lint ok" in out and "[exit 0]" in out and "host-only step, not run" in out
-    assert ran == [["mise", "run", "check-fast"]]
-    # a failing step, another head and a dirty checkout are refused; a CI log is never an input
-    with pytest.raises(os_.Refused):
-        os_.run_gate(head, plan, lambda w, **kw: subprocess.CompletedProcess(w, 1, "", "boom"))
-    with pytest.raises(os_.Refused):
-        os_.run_gate("c" * 40, plan, run)
-    (tmp_path / "f").write_text("dirty")
-    with pytest.raises(os_.Refused):
-        os_.run_gate(head, plan, run)
-    assert not hasattr(os_, "ci_gate_log")
-
-
 def _repo(tmp_path):
     def git(*a):
         return subprocess.run(
@@ -307,38 +269,92 @@ def test_the_briefs_example_is_accepted_by_the_verdict_cli_and_blank_fields_are_
     review.write_text(json.dumps(example))
     argv = ["verdict", "--json", str(review), "--head", H, "--family", "codex", "--pass", "1"]
     assert os_.main([*argv, "--report", str(tmp_path / "a.md")]) == 3
-    for blank in (
-        {"check": "x", "command": " "},
-        {**MUTATION, "mutation": {**MUTATION["mutation"], "undo": ""}},
-    ):
-        review.write_text(json.dumps({**example, "acceptance_not_run": [blank]}))
-        assert os_.main([*argv, "--report", str(tmp_path / "b.md")]) == 2
+    for field in ("check", "command", "patch", "undo", "redo"):
+        item = json.loads(json.dumps(MUTATION))
+        (item["mutation"] if field in item["mutation"] else item)[field] = "  "
+        review.write_text(json.dumps({**example, "acceptance_not_run": [item]}))
+        report = tmp_path / f"{field}.md"
+        assert os_.main([*argv, "--report", str(report)]) == 2, field
+        assert not Path(f"{report}.question").exists(), field
 
 
-def test_the_gate_runs_in_the_gatekeepers_env_on_a_clean_checkout_and_a_missing_record_runs_nothing(
-    tmp_path, monkeypatch
-) -> None:
-    git = _repo(tmp_path)
-    (tmp_path / "docs/agents").mkdir(parents=True)
-    (tmp_path / "docs/agents/gatekeeper.md").write_text(
-        "## Policy\n\n```yaml\nloop:\n  gate: PROBE_GATE_MODE=strict python3 gate.py\n```\n"
+GATE_PY = """import os, pathlib
+print("CHILD:mode=" + os.environ.get("PROBE_GATE_MODE", "missing") + " base=" + os.environ.get("GATE_BASE", "filtered"))
+action = os.environ.get("PROBE_ACTION", "")
+if action == "rewrite":
+    pathlib.Path("tracked.txt").write_text("changed by the gate")
+if action == "marker":
+    pathlib.Path("/tmp/PROBE_MARKER_PATH").write_text("ran")
+"""
+
+
+def _gate_checkout(tmp_path, monkeypatch, marker=None):
+    """A clean scratch repo whose policy gate is `PROBE_GATE_MODE=strict python3 gate.py`, and a bundle argv for it."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = _repo(repo)
+    (repo / "docs/agents").mkdir(parents=True)
+    policy = "## Policy\n\n```yaml\nloop:\n  gate: PROBE_GATE_MODE=strict python3 gate.py\n```\n"
+    (repo / "docs/agents/gatekeeper.md").write_text(policy)
+    (repo / "gate.py").write_text(
+        GATE_PY.replace("/tmp/PROBE_MARKER_PATH", str(marker or tmp_path / "m"))
     )
-    (tmp_path / "gate.py").write_text(
-        'import os\nprint("MODE=" + os.environ.get("PROBE_GATE_MODE", "missing"))\n'
-    )
+    (repo / "tracked.txt").write_text("original")
     git("add", "-A")
-    git("commit", "-qm", "c")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD").strip()
+    (repo / "extra.txt").write_text("e")
+    git("add", "-A")
+    git("commit", "-qm", "head")
     head = git("rev-parse", "HEAD").strip()
-    monkeypatch.chdir(tmp_path)
-    out = os_.run_gate(head)  # the real gate_plan(), not a supplied one
-    assert "MODE=strict" in out and "[exit 0]" in out
-    # an untracked file counts as dirty even where git is told to hide it
+    (tmp_path / "spec.md").write_text("spec")
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("GATE_BASE", "ambient-leak")
+    argv = [
+        "bundle",
+        "--head",
+        head,
+        "--spec",
+        str(tmp_path / "spec.md"),
+        "--policy",
+        "docs/agents/gatekeeper.md",
+    ]
+    return repo, git, head, [*argv, "--against", base]
+
+
+def test_the_bundle_cli_runs_the_gate_in_the_gatekeepers_env_and_prints_the_childs_own_output(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    _, _, _, argv = _gate_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(os_, "trusted_gate", lambda h: (0, "recorded"))
+    assert os_.main(argv) == 0
+    text = capsys.readouterr().out
+    # the child's own line: the step's variable set, the ambient gate base filtered out
+    assert "\nCHILD:mode=strict base=filtered\n" in text and "[exit 0]" in text
+
+
+def test_a_gate_step_that_changes_the_checkout_or_a_dirty_start_is_refused(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    repo, git, _, argv = _gate_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(os_, "trusted_gate", lambda h: (0, "recorded"))
+    monkeypatch.setenv("PROBE_ACTION", "rewrite")
+    assert os_.main(argv) == 2
+    assert "changed the checkout" in capsys.readouterr().err
+    git("checkout", "--", "tracked.txt")
+    monkeypatch.delenv("PROBE_ACTION")
     git("config", "status.showUntrackedFiles", "no")
-    (tmp_path / "local.cfg").write_text("x")
-    with pytest.raises(os_.Refused):
-        os_.run_gate(head)
-    # a missing record is refused before the gate runs once
+    (repo / "local.cfg").write_text("x")
+    assert os_.main(argv) == 2
+    assert "uncommitted" in capsys.readouterr().err
+
+
+def test_a_missing_record_through_the_bundle_cli_runs_no_gate(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    marker = tmp_path / "ran-marker"
+    _, _, _, argv = _gate_checkout(tmp_path, monkeypatch, marker)
+    monkeypatch.setenv("PROBE_ACTION", "marker")
     monkeypatch.setattr(os_, "trusted_gate", lambda h: (1, "no record"))
-    monkeypatch.setattr(os_, "run_gate", lambda h: pytest.fail("the gate ran with no record"))
-    with pytest.raises(os_.Refused):
-        os_.gate_evidence(head)
+    assert os_.main(argv) == 2
+    assert "no gate record" in capsys.readouterr().err and not marker.exists()

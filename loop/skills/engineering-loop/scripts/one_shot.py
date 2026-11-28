@@ -21,6 +21,7 @@ import fnmatch
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 sys.dont_write_bytecode = True
@@ -113,12 +114,12 @@ def trusted_gate(head: str) -> tuple[int, str]:
     return run.returncode, (run.stdout + run.stderr).strip()
 
 
-def run_gate(head: str, plan=None, run=subprocess.run) -> str:
-    """The raw output of the gate's own steps run on `head`'s checkout now, by this script: the output is bound to the
-    head (the checkout must be that clean commit) and to the gate the base's policy defines (the gatekeeper's
-    `gate_plan`). A CI job that reused an existing record ran nothing, so no log fetched from one counts. A step that
-    fails is refused; a host-only step is named as not run here."""
-    # the gatekeeper's own cleanliness rule (untracked files and index-flag-hidden changes count), not a second copy
+def run_gate(head: str, plan=None) -> str:
+    """The raw output of the gate's own steps run on `head`'s checkout now, by the gatekeeper's own step runner
+    (`ran_step`: the step's environment, `gate_env`, and the host gate slot) and its own cleanliness rule
+    (`checkout_state`, taken before and after every step, as `run_steps` does). The output is bound to the head and
+    to the gate the base's policy defines (`gate_plan`). A CI job that reused a record ran nothing, so no log fetched
+    from one counts. A step that fails or changes the checkout is refused; a step that may not run here is named."""
     at, changes = gatekeeper.checkout_state()
     if at.strip() != head:
         raise Refused(f"the checkout is not at {head}: the gate runs on the head's own tree")
@@ -127,23 +128,23 @@ def run_gate(head: str, plan=None, run=subprocess.run) -> str:
             "the checkout has uncommitted changes: the gate output would not be the head's"
         )
     out = []
-    for step in plan if plan is not None else gatekeeper.gate_plan():
-        if step.get("where") == "host":
-            out.append(f"$ {step['command']}\n[host-only step, not run in this session]")
-            continue
-        # the gatekeeper's own environment for the step: its filtering, and the variables the command sets
-        done = run(
-            step["words"],
-            capture_output=True,
-            text=True,
-            check=False,
-            env=gatekeeper.gate_env(step),
-        )
-        out.append(f"$ {step['command']}\n{done.stdout}{done.stderr}[exit {done.returncode}]")
-        if done.returncode:
-            raise Refused(
-                f"the gate step `{step['command']}` fails on {head} (exit {done.returncode})"
-            )
+    with tempfile.TemporaryFile("w+") as sink:
+        for step in plan if plan is not None else gatekeeper.gate_plan():
+            if not gatekeeper.here(step):
+                out.append(f"$ {step['command']}\n[not run in this session: where {step['where']}]")
+                continue
+            sink.seek(0)
+            sink.truncate()
+            code = gatekeeper.ran_step(step, Path.cwd(), sink)[0]
+            sink.seek(0)
+            out.append(f"$ {step['command']}\n{sink.read()}[exit {code}]")
+            if code:
+                raise Refused(f"the gate step `{step['command']}` fails on {head} (exit {code})")
+            now, moved = gatekeeper.checkout_state()
+            if now.strip() != head or moved.strip():
+                raise Refused(
+                    f"the gate step `{step['command']}` changed the checkout: its output is not the head's"
+                )
     return "\n".join(out)
 
 
