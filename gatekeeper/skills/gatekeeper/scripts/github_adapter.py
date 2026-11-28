@@ -867,7 +867,7 @@ def rest_pull(pr: int) -> dict[str, Any]:
                         f"pulls/{pr}/reviews/{review['id']}/comments?per_page=100"
                     )
                 ]
-                if (review.get("body") or "").startswith("Verifier (")
+                if review.get("id") and (review.get("body") or "").startswith("Verifier (")
                 else []
             },
         }
