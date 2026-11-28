@@ -564,7 +564,9 @@ def test_no_setting_keeps_the_codex_default(
 ) -> None:
     for values in (None, "hygiene:\n  repos: [a/b]\n"):
         created = verifier_start(tmp_path, monkeypatch, role_file, values)
-        assert created == [("codex", None)]
+        assert created == [
+            ("codex", "gpt-6.1-terra")
+        ]  # no setting: the Terra tier, not Codex's own default (#2870)
 
 
 def test_flags_and_the_variable_override_the_setting(

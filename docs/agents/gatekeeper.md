@@ -28,7 +28,7 @@ incubating:
     - docs/layers.md
 
 bot:
-  pack-bump:   # the engineering pack's bump, which a cloud worker pushes to claude/ready-pack-bump-<tag>
+  pack-bump:   # a pack bump (any pack of this repository, `-next` tags included), which a cloud worker pushes to claude/ready-pack-bump-<tag>
     branch: claude/ready-pack-bump-
     paths:
       - apm.yml

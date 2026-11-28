@@ -232,6 +232,8 @@ def vm(world, tmp_path, monkeypatch):
     seen: dict = {}
 
     def run(*cmd: str, check: bool = True, **kw):
+        if cmd[:3] == ("gh", "api", "--paginate"):  # the PR's earlier passes: none
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
         if cmd[:2] == ("gh", "api") and "/pulls/" in cmd[2]:
             if "stderr" in seen:  # a command that fails echoing secrets on its stderr
                 return stub("sh", "-c", seen["stderr"], check=check)

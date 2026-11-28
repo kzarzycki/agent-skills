@@ -5,7 +5,7 @@
     python3 scripts/omnigent_agent.py start <claude|codex|AGENT> <title> <brief-file> <report-path> [--role FILE|lead|worker|verifier] [--effort LEVEL] [--pr N] [--host NAME|ID (claude-cloud child)] [--top-level [--host NAME|ID [--file PATH]...] [--after SESSION] [--leads FILE] [--direct]] [--workspace DIR]
     python3 scripts/omnigent_agent.py launch-dir <remote> <branch> [<env-id>] <path> [--trust] [--clone]
     python3 scripts/omnigent_agent.py claude-cloud-env <checkout>   # alias: cloud-env
-    python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--timeout S] -- <command...>
+    python3 scripts/omnigent_agent.py claude-cloud-run [--checkout DIR] [--pr N] [--timeout S] -- <command...>
     python3 scripts/omnigent_agent.py ssh <host> --why <purpose> -- <command...>
     python3 scripts/omnigent_agent.py wait <session> <report-path> [--pr N] [--keep|--no-keep] [--notify]
    python3 scripts/omnigent_agent.py wait-until --every <s> --limit <s> -- <cmd>...
@@ -524,6 +524,199 @@ RESETS = re.compile(
     re.IGNORECASE,
 )
 MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
+
+# Antigravity's out-of-quota banner: "Individual quota reached. Please upgrade ... Resets in 129h5m17s." The agent prints it
+# and then sits idle, so a turn that ended on it is a failure, and the reset time it names holds every later gemini
+# start (#2919). Both parts must be there, so a Claude or Codex turn that says "quota reached" is never one.
+AGY_QUOTA = re.compile(r"\bIndividual quota reached\b", re.IGNORECASE)
+AGY_RESETS_IN = re.compile(r"\bresets?\s+in\s+((?:\d+\s*[dhms]\s*)+)", re.IGNORECASE)
+
+
+def agy_quota_reset(text: str, now: float) -> tuple[float, str] | None:
+    """The instant (epoch seconds) and the printed duration of an Antigravity quota banner in ``text``, else None:
+    text with no ``Individual quota reached`` and a ``Resets in`` time is no banner."""
+    if not AGY_QUOTA.search(text) or not (match := AGY_RESETS_IN.search(text)):
+        return None
+    seconds = sum(
+        int(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[u.lower()]
+        for n, u in re.findall(r"(\d+)\s*([dhms])", match[1], re.IGNORECASE)
+    )
+    return now + seconds, match[1].strip()
+
+
+def agy_quota_path() -> Path:
+    """Where the last Antigravity quota-out is recorded, one file per host account."""
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "engineering-loop"
+    return cache / "agy-quota.json"
+
+
+AGY_ERROR_ID = re.compile(r"\bError ID:\s*([0-9a-f][0-9a-f-]{7,})", re.IGNORECASE)
+
+
+def agy_quota_state() -> dict:
+    """The recorded quota-out: ``until`` (its latest reset) and ``seen`` (each banner's Error ID with its reset)."""
+    try:
+        state = json.loads(agy_quota_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def record_agy_quota(reset: float, key: str | None = None) -> None:
+    """Record that Antigravity's quota is out until ``reset``, never lowering an earlier, later reset, and the banner's
+    Error ID ``key`` as seen, so the same banner left in a pane later is no new quota-out."""
+    state = agy_quota_state()
+    seen = state.get("seen") if isinstance(state.get("seen"), dict) else {}
+    if key:
+        seen[key] = reset
+    try:
+        until = max(float(state.get("until", 0.0)), reset)
+    except (TypeError, ValueError):
+        until = reset
+    path = agy_quota_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"until": until, "seen": seen}))
+    except OSError:
+        pass  # the failed turn still names the reset; only the start's refusal is lost
+
+
+def agy_quota_until(now: float) -> float | None:
+    """The reset instant of a recorded quota-out still in force at ``now``, else None."""
+    try:
+        until = float(agy_quota_state().get("until", 0.0))
+    except (TypeError, ValueError):
+        return None
+    return until if until > now else None
+
+
+def agy_banner(
+    text: str, now: float, need_id: bool = False, baseline: frozenset[str] | set[str] = frozenset()
+) -> tuple[float, str, str | None] | None:
+    """The newest fresh Antigravity quota banner in ``text`` as (reset instant, printed duration, Error ID), else None.
+    Each banner is the text from its ``Individual quota reached`` to the next one. One whose Error ID was recorded
+    keeps its first reset and counts only while that is ahead (an old one left in scrollback is none). One whose ID is
+    in ``baseline`` (the pane's IDs when the wait attached) is older than this wait, and none: a pane holds no
+    timestamp, so only a banner that appeared after the wait attached is fresh. With ``need_id`` (a pane, which may hold
+    anything an agent quoted) a banner with no Error ID is none."""
+    starts = [m.start() for m in AGY_QUOTA.finditer(text)]
+    seen = agy_quota_state().get("seen")
+    seen = seen if isinstance(seen, dict) else {}
+    for i in reversed(range(len(starts))):
+        block = text[starts[i] : starts[i + 1] if i + 1 < len(starts) else None]
+        if not (found := agy_quota_reset(block, now)):
+            continue
+        match = AGY_ERROR_ID.search(block)
+        key = match[1] if match else None
+        if need_id and not key:
+            continue
+        if key and key in seen:
+            try:
+                first = float(seen[key])
+            except (TypeError, ValueError):
+                continue
+            if first > now:
+                return first, found[1], key
+            continue
+        if key and key in baseline:
+            continue
+        return found[0], found[1], key
+    return None
+
+
+def agy_quota_banner(info: dict, items: list[dict]) -> tuple[float, str, str | None] | None:
+    """The quota banner the harness reported since the last user message, else None: an agy session's non-assistant
+    items only (an error), since an assistant that quotes the banner has said nothing of its own quota, and
+    another harness's session never has one."""
+    if not agy_session(info):
+        return None
+    now = time.time()
+    for item in reversed(items):
+        if item.get("role") == "user":
+            break
+        if item.get("role") == "assistant":
+            continue
+        if found := agy_banner(text_of(item), now):
+            return found
+    return None
+
+
+AGY_SILENT_SECONDS = (
+    300.0  # an agy session with no assistant item this long after its brief is read at its pane
+)
+
+
+def agy_session(info: dict) -> bool:
+    """Whether ``info`` is an Antigravity session (its harness or agent name says so)."""
+    return "antigravity" in f"{info.get('harness') or ''} {info.get('agent_name') or ''}".lower()
+
+
+def agy_pane(sid: str) -> str:
+    """The text of the terminal pane agy runs in, which is the only place its quota banner appears (the session's
+    history holds the brief and nothing else). ``$OMNIGENT_AGY_PANE_CMD`` names the command that prints ``sid``'s own
+    pane (``{sid}`` is replaced by its id); with none set, nothing is read, since a scan of every pane would
+    attribute another session's banner to this one. Empty when it reads nothing: the pane then lives where this
+    script can't see it (the harness-side fix)."""
+    template = os.environ.get("OMNIGENT_AGY_PANE_CMD")
+    if not template:
+        return ""
+    try:
+        return subprocess.run(
+            template.replace("{sid}", sid),
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def agy_quota_failure(sid: str, banner: tuple[float, str, str | None]) -> Fail:
+    """Record the quota-out ``banner`` and the failure of session ``sid`` naming its reset time."""
+    record_agy_quota(banner[0], banner[2])
+    return Fail(
+        f"session {sid} ended: Antigravity's quota is out (resets in {banner[1]}, at"
+        f" {datetime.fromtimestamp(banner[0], timezone.utc):%Y-%m-%d %H:%MZ}); start the verifier on"
+        " the Codex route (--verifier-route codex) until then"
+    )
+
+
+def agy_pane_ids(sid: str) -> set[str]:
+    """The Error IDs the pane of ``sid`` already shows: what a wait that attaches now did not see arrive."""
+    return set(AGY_ERROR_ID.findall(agy_pane(sid)))
+
+
+AGY_NOTED: set[str] = set()
+
+
+def agy_silent_banner(
+    sid: str, info: dict, items: list[dict], baseline: set[str] | None = None
+) -> tuple[float, str, str | None] | None:
+    """The quota banner that appeared in the pane of an agy session that has said nothing since its brief,
+    ``AGY_SILENT_SECONDS`` on: the banner never reaches its history, so the history alone reads as a stall or an
+    endless turn. Read only through ``$OMNIGENT_AGY_PANE_CMD``; with none set the session's silence is said once on
+    stderr, naming it."""
+    if not agy_session(info) or any(
+        i.get("type") == "message" and i.get("role") == "assistant" for i in items
+    ):
+        return None
+    sent = [float(i.get("created_at") or 0) for i in items if i.get("role") == "user"]
+    if not sent or time.time() - max(sent) < AGY_SILENT_SECONDS:
+        return None
+    if not os.environ.get("OMNIGENT_AGY_PANE_CMD"):
+        if sid not in AGY_NOTED:
+            AGY_NOTED.add(sid)
+            print(
+                f"session {sid} is Antigravity and has said nothing for {AGY_SILENT_SECONDS:.0f}s: its quota banner"
+                " shows only in its terminal pane, which this wait reads only through $OMNIGENT_AGY_PANE_CMD"
+                " (unset); check the pane if it stays silent",
+                file=sys.stderr,
+            )
+        return None
+    return agy_banner(agy_pane(sid), time.time(), need_id=True, baseline=baseline or set())
 
 
 def backoff(count: int) -> float:
@@ -3723,6 +3916,105 @@ EFFORTS = {
 AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 # the verifier's routes (`--verifier-route`): with no setting the default stays Codex, the other two are its fallback when it refuses
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
+# a Codex verifier start with no model or effort named runs on these (cloud_verifier.py's CODEX_MODEL and CODEX_EFFORT)
+# (the model is a tier, never an id: a generation drops tiers, and `start` refuses an older generation's)
+CODEX_VERIFIER_TIER, CODEX_VERIFIER_EFFORT = "terra", "medium"
+CODEX_TIERS = (
+    "luna",
+    "terra",
+    "sol",
+    "astra",
+)  # smallest to largest, as engineering-loop SKILL.md, Models, names them
+
+
+def tier_model(listed: list[str], tier: str) -> str | None:
+    """The model of `tier` among Codex ids `listed` (`gpt-<generation>-<tier>`): the newest generation's, else that
+    generation's closest higher tier, else its highest, never an older generation's; None when none is listed."""
+    found: dict[tuple[int, ...], dict[str, str]] = {}
+    for i in listed:
+        if m := re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-([a-z]+)", i):
+            found.setdefault(tuple(map(int, m[1].split("."))), {})[m[2]] = i
+    if not found:
+        return None
+    tiers = found[max(found)]
+    above = [t for t in CODEX_TIERS[CODEX_TIERS.index(tier) :] if t in tiers]
+    return (
+        tiers[above[0]]
+        if above
+        else tiers[max(tiers, key=lambda t: CODEX_TIERS.index(t) if t in CODEX_TIERS else -1)]
+    )
+
+
+CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
+
+
+def earlier_codex_pass(
+    reviews: list[Any], comments: list[Any], head: str
+) -> tuple[str, str] | None:
+    """The (family, pass) of the newest Codex verifier pass already posted on `head`, else None: a review on that
+    commit headed `Verifier (codex/...), pass <n>`, or a cloud_verifier.py comment (`Head: <sha>` in view,
+    `Verifier: codex/..., pass <n>` folded below). Twin of cloud_verifier.py's, which a VM runs without this file."""
+    found = [
+        (int(m[2]), m[1])
+        for r in reviews
+        if isinstance(r, dict)
+        and r.get("commit_id") == head
+        and (m := CODEX_PASS.search(r.get("body") or ""))
+    ] + [
+        (int(m[2]), m[1])
+        for c in comments
+        if isinstance(c, dict)
+        and re.search(rf"^Head: {re.escape(head)}\s*$", c.get("body") or "", re.MULTILINE)
+        and (m := CODEX_PASS.search(c.get("body") or ""))
+    ]
+    if not found:
+        return None
+    number, family = max(found)
+    return family, str(number)
+
+
+def codex_pass_on_head(pr: int | None) -> str | None:
+    """Why a Codex verifier start on `pr` is refused, or None: its head already has a Codex pass. An answer from
+    GitHub that can't be read is no refusal, since the start itself is what the lead asked for."""
+    if not pr:
+        return None
+    try:
+
+        def get(path: str) -> list[Any]:
+            out = subprocess.run(
+                ["gh", "api", "--paginate", f"repos/{{owner}}/{{repo}}/{path}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            items, at, decoder = [], 0, json.JSONDecoder()
+            while at < len(out):
+                if out[at].isspace():
+                    at += 1
+                    continue
+                part, at = decoder.raw_decode(out, at)
+                items += part if isinstance(part, list) else []
+            return items
+
+        head = json.loads(
+            subprocess.run(
+                ["gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )["head"]["sha"]
+        again = earlier_codex_pass(get(f"pulls/{pr}/reviews"), get(f"issues/{pr}/comments"), head)
+    except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError):
+        return None
+    if not again:
+        return None
+    return (
+        f"PR #{pr} head {head[:12]} already has a Codex verifier pass ({again[0]}, pass {again[1]}): a second pass on an"
+        " unchanged head repeats it. Push a fix and verify the new head, or start another route (--verifier-route)"
+    )
+
+
 VALUES_FILE, VALUES_ENV = "cos-values.yml", "COS_VALUES"
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
@@ -4491,11 +4783,49 @@ def git_out(root: Path, *args: str) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def run_head(checkout: Path, command: str = "") -> tuple[Path, str, str, str, str]:
+def detached_branch(path: Path, remote: str, pr: int = 0) -> tuple[str, str]:
+    """The (local name, remote branch) a detached HEAD runs on: PR ``pr``'s head branch when given, else the
+    one ``remote`` branch that contains HEAD; ("", "") when none or several do."""
+    if pr:
+        try:
+            name = pr_branch(pr, path)
+        except Fail:
+            return "", ""
+        return name, name
+    # refresh the tracking refs first: a clone that fetched only the tip has none, and a deleted branch leaves a stale one
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "fetch",
+            "-q",
+            "--prune",
+            "--no-tags",
+            remote,
+            f"+refs/heads/*:refs/remotes/{remote}/*",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    base = f"refs/remotes/{remote}/"  # full names: a tag or local branch of the same name can't change the parse
+    held = [
+        b.removeprefix(base)
+        for b in git_out(
+            path, "for-each-ref", "--contains", "HEAD", "--format=%(refname)", base
+        ).split()
+        if b != f"{base}HEAD"
+    ]
+    return (held[0], held[0]) if len(held) == 1 else ("", "")
+
+
+def run_head(checkout: Path, command: str = "", pr: int = 0) -> tuple[Path, str, str, str, str]:
     """The checkout's root, branch, remote, remote branch and HEAD a cloud run clones, refusing
-    before any session exists what a cloud session can't see: tracked changes, a detached HEAD, or a
-    HEAD its branch's remote doesn't hold, since the session clones from the remote. Each refusal
-    names the host fallback for ``command``, as any other failed route does."""
+    before any session exists what a cloud session can't see: tracked changes, a detached HEAD no
+    remote branch holds (one at a pushed branch's tip, as a verifier's worktree is, runs on that branch:
+    PR ``pr``'s, else the single remote branch containing HEAD), or a HEAD its branch's remote
+    doesn't hold, since the session clones from the remote. Each refusal names the host fallback for
+    ``command``, as any other failed route does."""
     root = checkout_root(str(checkout))
     if not root:
         raise cloud_run_failed(f"claude-cloud-run: {checkout} is not inside a checkout", command)
@@ -4512,13 +4842,19 @@ def run_head(checkout: Path, command: str = "") -> tuple[Path, str, str, str, st
             command,
         )
     branch = git_out(path, "symbolic-ref", "--short", "HEAD")
-    if not branch:
-        raise cloud_run_failed(
-            f"claude-cloud-run: {path} has a detached HEAD: check out a branch, `git push` it, and run it again",
-            command,
-        )
     remote = forge_remote(path)
-    merge = git_out(path, "config", f"branch.{branch}.merge").removeprefix("refs/heads/") or branch
+    if branch:
+        merge = (
+            git_out(path, "config", f"branch.{branch}.merge").removeprefix("refs/heads/") or branch
+        )
+    else:
+        branch, merge = detached_branch(path, remote, pr)
+        if not branch:
+            raise cloud_run_failed(
+                f"claude-cloud-run: {path} has a detached HEAD that no single branch of {remote} holds:"
+                " check out a branch, `git push` it, and run it again",
+                command,
+            )
     head = git_out(path, "rev-parse", "HEAD")
     fetched = subprocess.run(
         ["git", "-C", root, "fetch", "-q", remote, f"refs/heads/{merge}"],
@@ -4579,11 +4915,12 @@ def cloud_run(
     timeout: float,
     launch: Callable[[list[str]], int],
     server: str = "",
+    pr: int = 0,
 ) -> int:
     """Run ``command`` in a Claude cloud session on ``checkout``'s HEAD and return its exit code,
     else ``CLOUD_RUN_FAILED`` with the reason and the host fallback. ``launch`` runs the launcher's
     own ``run`` (``command``'s argv), which writes the session's report to the report path."""
-    root, branch, remote, merge, head = run_head(checkout, command)
+    root, branch, remote, merge, head = run_head(checkout, command, pr)
     try:
         return cloud_run_route(root, branch, remote, merge, head, command, timeout, launch, server)
     except Interrupted:
@@ -5651,6 +5988,9 @@ def wait(
     recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
     continued: float | None = None  # when the stalled session was told to continue
     ended: dict[str, float] = {}
+    pane_ids: set[str] | None = (
+        None  # the Error IDs an Antigravity pane showed when this wait attached
+    )
     question = question_of(report)
     missing = (
         f"a verdict in {report}"
@@ -5704,6 +6044,10 @@ def wait(
                     file=sys.stderr,
                 )
             break
+        if pane_ids is None and agy_session(info):
+            pane_ids = agy_pane_ids(sid)
+        if not counts() and (banner := agy_silent_banner(sid, info, items, pane_ids)):
+            raise agy_quota_failure(sid, banner)
         prompts = prompts_of(info)
         if prompts and not counts():  # a report that counts is taken once settled
             raise Fail(
@@ -5768,6 +6112,8 @@ def wait(
         if turn_ended and not counts():
             if stamp(question) is not None:
                 raise Asked(str(question))
+            if banner := agy_quota_banner(info, items):
+                raise agy_quota_failure(sid, banner)
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
                 kind = recovery(error, items)
@@ -8671,6 +9017,12 @@ def apply_route(args: argparse.Namespace) -> None:
                 " The verifier must be started by the coordinator on a host with an Omnigent server route: ask"
                 " your coordinator to start it, or use --verifier-route claude only if it says Gemini can't run (#2572)"
             )
+        if (until := agy_quota_until(time.time())) is not None:
+            raise Fail(
+                "--verifier-route gemini: Antigravity's quota is out until"
+                f" {datetime.fromtimestamp(until, timezone.utc):%Y-%m-%d %H:%MZ} (a recorded banner); use the Codex"
+                " route (--verifier-route codex) until then"
+            )
         if not args.host:
             raise Fail(
                 "--verifier-route gemini runs agy on a host that has it logged in: pass --host"
@@ -8998,24 +9350,41 @@ def pair(text: str) -> tuple[str, Path]:
 
 
 def edit_registry(path: Path, edit: Callable[[list[str]], list[str]] | None = None) -> list[str]:
-    """The registry's lines, read under an exclusive lock; with ``edit``, rewritten in place to
-    ``edit(lines)`` under the same lock, so a ``run`` arming while the supervisor drops another
-    session loses neither line. A missing file reads as empty."""
-    if edit:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with open(path, "a+" if edit else "r") as f:  # closing releases the lock
-            fcntl.flock(f, fcntl.LOCK_EX)
-            f.seek(0)
-            lines = f.read().splitlines()
-            if edit:
-                lines = edit(lines)
-                f.seek(0)
-                f.truncate()
-                f.write("".join(line + "\n" for line in lines))
-            return lines
-    except FileNotFoundError:  # only a read opens without creating
-        return []
+    """The registry's lines; with ``edit``, rewritten to ``edit(lines)`` under an exclusive lock, so a ``run`` arming while the supervisor drops another
+    session loses neither line. The lock is on a sidecar ``<registry>.lock`` file, since the
+    registry itself is replaced, and the new text goes to a temp file beside it, then
+    ``os.replace``: a writer that dies or fails mid-write leaves the old file whole, never a
+    truncated one (#2406). A missing file reads as empty."""
+    if not edit:
+        try:
+            return path.read_text().splitlines()  # a replace is atomic: a read sees a whole file
+        except FileNotFoundError:
+            return []
+    path = path.resolve()  # a replace of a symlink would swap the link, not its target
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "a") as lock:  # closing releases the lock
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            lines = path.read_text().splitlines()
+        except FileNotFoundError:
+            lines = []
+        lines = edit(lines)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            # created with the file's own mode, never wider, before any text; a first write
+            # takes the umask's default, as the old `open(path, "a+")` did
+            mode = path.stat().st_mode & 0o7777 if path.exists() else None
+            fd = os.open(
+                tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666 if mode is None else mode
+            )
+            with os.fdopen(fd, "w") as out:
+                if mode is not None:
+                    os.fchmod(out.fileno(), mode)
+                out.write("".join(line + "\n" for line in lines))
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return lines
 
 
 def entry(line: str) -> tuple[str, Path, list[Path], bool, bool, str, bool, str]:
@@ -13111,6 +13480,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         default=Path("."),
         help="the checkout whose HEAD runs (default: this directory); its branch must be pushed",
     )
+    p.add_argument(
+        "--pr",
+        type=int,
+        default=0,
+        help="on a detached HEAD, run on this PR's head branch (default: the one remote branch containing HEAD)",
+    )
     p.add_argument("run", nargs=argparse.REMAINDER, metavar="-- COMMAND")
     p = sub.add_parser(
         "claude-cloud-env",
@@ -13599,7 +13974,12 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # one word is a shell command as written; several are joined as argv
             line = words[0] if len(words) == 1 else shlex.join(words)
             return cloud_run(
-                args.checkout, line, args.timeout, lambda argv: command(argv, {}), args.server
+                args.checkout,
+                line,
+                args.timeout,
+                lambda argv: command(argv, {}),
+                args.server,
+                args.pr,
             )
         if args.cmd == "launch-dir":
             launch_dir(args.remote, args.branch, args.env, args.path, args.trust, clone=args.clone)
@@ -13872,6 +14252,30 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             # the model's
             if verifier and not args.model and args.verifier_route == setting.get("route"):
                 args.model = setting.get("model")
+            if (
+                verifier
+                and args.verifier_route == "codex"
+                and (args.agent == "codex" or "codex" in og.harness(args.agent))
+            ):
+                # never Codex's own defaults: a Sol model and an unset effort resend ~100k tokens of context per
+                # tool call at the larger model's rate (#2870); a start asks for Sol or another effort itself
+                if not model_for(args.agent, args.model)[
+                    0
+                ]:  # no flag, no $OMNIGENT_MODEL_CODEX, no setting
+                    with contextlib.suppress(
+                        Fail
+                    ):  # a host that lists none leaves the agent's own model
+                        args.model = tier_model(
+                            og.models(args.agent, og.host(args.host) if args.host else None),
+                            CODEX_VERIFIER_TIER,
+                        )
+                # `$OMNIGENT_EFFORT_CODEX` (read by `start` for the two aliases) outranks the default effort
+                if not (
+                    args.agent in AGENTS and os.environ.get(f"OMNIGENT_EFFORT_{args.agent.upper()}")
+                ):
+                    args.effort = args.effort or CODEX_VERIFIER_EFFORT
+                if again := codex_pass_on_head(args.pr):
+                    raise Fail(again)
             if verifier:
                 print(
                     f"verifier route: {args.verifier_route} (from {source}), model: {args.model or 'the agent default'}"
