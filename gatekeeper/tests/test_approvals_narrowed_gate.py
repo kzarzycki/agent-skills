@@ -26,8 +26,6 @@ MISE = """#!/bin/sh
 echo "mise $* base=${GATE_BASE:-unset}" >> "$(dirname "$0")/ran.log"
 """
 
-NO_CI = "## Settings\n\n```yaml\nloop:\n  ci: false\n```\n"
-
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -228,7 +226,7 @@ def batch_of(repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[dict
 
 @pytest.mark.parametrize("working_tree", [True, False])
 @pytest.mark.parametrize("required", [set(), {"qualify"}])
-@pytest.mark.parametrize("loop", ["# Loop\n\nAffected tests: SELECTOR\n", f"# Loop\n\n{NO_CI}"])
+@pytest.mark.parametrize("loop", ["# Loop\n\nAffected tests: SELECTOR\n"])
 def test_land_merges_the_batch_with_no_gate_command_run(
     repo: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -253,21 +251,14 @@ def test_land_merges_the_batch_with_no_gate_command_run(
     assert [pull["number"] for pull, _ in landed] == [7, 8]
 
 
-# --- ci: false: the narrowed record, check merge and local-ci --status ---
-
-
-def test_a_ci_false_record_is_narrowed_and_check_merge_needs_none(
+def test_a_narrowed_record_against_a_base_is_found_by_status(
     repo: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\n{NO_CI}")
-    base = git_in(repo["work"], "merge-base", "origin/main", "HEAD").strip()
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert repo["ran"]() == [f"selected app.py docs/agents/loop.md against {base}"]
-    assert approvals.ran(pull(repo)) == []
-    # never a full pass: the full gate finds none on the head
-    assert approvals.reusable(repo["head"]()) is None
-    # the files a detached run leaves (detach): its exit and the commands it had to pass
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    base = repo["base"]()
+    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
     head = repo["head"]()
+    # the files a detached run leaves (detach): its exit and the commands it had to pass
     _, _, exit_file = approvals.run_files(head)
     exit_file.write_text("0")
     with approvals.narrowed_to(base):
@@ -275,13 +266,6 @@ def test_a_ci_false_record_is_narrowed_and_check_merge_needs_none(
     capsys.readouterr()
     assert approvals.main(["local-ci", "--status", head]) == 0
     assert f"narrowed against {base}" in capsys.readouterr().out
-
-
-def test_with_the_opt_out_a_ci_false_record_runs_the_full_gate(repo: dict[str, Any]) -> None:
-    repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\nGate: full\n\n{NO_CI}")
-    assert approvals.main(["local-ci", "--record"]) == 0
-    assert repo["ran"]() == ["mise run check:all base=unset"]
-    assert approvals.ran(pull(repo)) == []
 
 
 def test_with_ci_a_record_without_base_stays_full(repo: dict[str, Any]) -> None:
@@ -330,22 +314,6 @@ def test_check_build_says_when_every_gate_runs_the_full_check(
     assert (line in capsys.readouterr().err) is said
 
 
-def test_local_ci_for_a_ci_false_pr_posts_its_narrowed_pass(
-    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\n{NO_CI}")
-    head = repo["head"]()
-    monkeypatch.setattr(approvals, "settled_head", lambda pr, want: head)
-    monkeypatch.setattr(approvals, "pull_status", lambda pr: {"baseRefName": "main"})
-    monkeypatch.setattr(approvals, "base_branch", lambda pr: "main")
-    posted: list[str] = []
-    monkeypatch.setattr(approvals, "comment", lambda pr, body: posted.append(body))
-    assert approvals.main(["local-ci", "7", "--run"]) == 0
-    assert len(repo["ran"]()) == 1 and repo["ran"]()[0].startswith("selected app.py")
-    assert "(narrowed)" in posted[0]
-    assert approvals.reusable(head) is None  # never a full pass
-
-
 def pr_ready(repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """`local-ci 7 --run` against a stand-in GitHub: the PR's head, base and the comments it posts."""
     head = repo["head"]()
@@ -365,20 +333,6 @@ def test_local_ci_for_a_pr_on_a_project_with_ci_is_not_narrowed(
     posted = pr_ready(repo, monkeypatch)
     assert approvals.main(["local-ci", "7", "--run"]) == 0
     assert repo["ran"]() == ["mise run check:all base=unset"]
-    assert "(narrowed)" not in posted[0]
-
-
-def test_under_ci_false_a_head_with_a_full_pass_takes_it_and_is_not_gated_again(
-    repo: dict[str, Any], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    repo["loop"](f"# Loop\n\nAffected tests: SELECTOR\n\n{NO_CI}")
-    posted = pr_ready(repo, monkeypatch)
-    approvals.run_local_ci(
-        None, None, []
-    )  # the full gate's pass on the head, as `Gate: full` records it
-    assert repo["ran"]() == ["mise run check:all base=unset"]
-    assert approvals.main(["local-ci", "7", "--run"]) == 0
-    assert repo["ran"]() == ["mise run check:all base=unset"]  # nothing ran again
     assert "(narrowed)" not in posted[0]
 
 

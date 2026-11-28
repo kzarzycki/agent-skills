@@ -189,8 +189,7 @@ GitHub implements tracker, forge and evidence (`github`); Omnigent implements ru
 The gatekeeper's policy is the settings block of today's loop.md, which #613 moves to
 `docs/agents/gatekeeper.md`:
 
-- today's sections: `spec`, `loop`, `practice`, `risk`, `plan`, `signoff`, `bot`, `land`,
-  `carry_over_main`;
+- today's sections: `spec`, `loop`, `practice`, `risk`, `plan`, `signoff`, `bot`, `land`;
 - `checks: {changed, check, all}`: the command for each check;
 - `adapters: {tracker, forge, evidence}`: the adapter for each port.
 
