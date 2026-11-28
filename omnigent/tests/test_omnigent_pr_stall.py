@@ -5,8 +5,10 @@ repo's loop events, so ``pr_stalls`` and the supervisor read them as they would 
 
 import json
 import re
+import sys
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from test_omnigent_agent import (
@@ -453,3 +455,251 @@ def test_the_queue_holds_by_its_newest_check_run_or_status(
     """A queue that reports through a commit status holds a PR as one with a check run does; any queue check run still running holds it, whichever started last; a status context is read
     at its newest (statuses come newest first)."""
     assert omnigent_agent.queue_holds(QUEUED, checks, statuses) is holds
+
+
+def _card(text: str) -> dict:
+    return {
+        "elicitation_id": "question_pr12",
+        "params": {"policy_name": "sys_ask_user_question", "message": text},
+    }
+
+
+def test_a_pr_with_an_open_card_naming_it_raises_no_stall_until_the_card_closes(
+    monkeypatch,
+) -> None:
+    """#2954: a satisfied verdict with no go is no stall while a followed session's open card names the PR."""
+    p = pr(12, timeline_extra=[])
+    p["timeline"].append(verdict(12, "yes", 90 * 60))
+    open_ = [_card("Land o/r#12 now?")]
+
+    og = SimpleNamespace(cards={"mgr": open_, "other": [_card("About #120 and other/r#12")]})
+
+    def carded(repo: str, n: int) -> list[str]:
+        return omnigent_agent.cards_naming_pr(og, ["mgr", "other"], n, repo)
+
+    github(monkeypatch, [p])
+    memo: dict = {}
+    assert omnigent_agent.pr_stalls("o/r", HOUR, memo, carded=carded) == []
+    open_.clear()  # answered or closed
+    found = omnigent_agent.pr_stalls("o/r", HOUR, memo, carded=carded)
+    assert [eid.split("#")[1].split(":")[0] for eid, _ in found] == ["12"]
+
+
+@pytest.mark.parametrize(
+    "text, number, repo, named",
+    [
+        ("Land #12?", 12, "o/r", True),
+        ("Land o/r#12?", 12, "o/r", True),
+        ("see https://github.com/o/r/pull/12", 12, "o/r", True),
+        ("Land #120?", 12, "o/r", False),
+        ("Land other/x#12?", 12, "o/r", False),
+        ("Land other/x#12?", 12, None, True),
+    ],
+)
+def test_names_pr(text, number, repo, named) -> None:
+    assert omnigent_agent.names_pr(text, number, repo) is named
+
+
+@pytest.mark.parametrize(
+    "text, named",
+    [
+        ("Land other-o/r#12?", False),  # a longer owner is another repository
+        ("https://notgithub.com/o/r/pull/12", False),
+        ("https://github.com/O/R/pull/12", True),  # repository case is GitHub's own
+        ("Land O/R#12?", True),
+        ("Land o/r#12.", True),
+    ],
+)
+def test_names_pr_bounds_the_qualified_forms(text, named) -> None:
+    assert omnigent_agent.names_pr(text, 12, "o/r") is named
+
+
+class ManagerCard(Lead):
+    """A followed lead, ``a``, whose session listing carries ``counts`` (``pending_elicitations_count`` per session id) and
+    whose ``holder`` session shows ``manager_cards`` in its pending elicitations."""
+
+    def __init__(self, *items: dict) -> None:
+        super().__init__(*items)
+        self.manager_cards: list[dict] = []
+        self.holder = "cos"
+        self.counts: dict[str, int] = {}
+        self.rows_missing: set[str] = set()
+        self.listings = 0
+
+    def info(self, sid: str) -> dict:
+        got = super().info(sid)
+        return {**got, "pending_elicitations": self.manager_cards} if sid == self.holder else got
+
+    def listing(self) -> list[dict]:
+        self.listings += 1
+        return [
+            {"id": s, "pending_elicitations_count": n}
+            for s, n in self.counts.items()
+            if s not in self.rows_missing
+        ]
+
+
+def _open_card() -> dict:
+    return {
+        "elicitation_id": "question_12",
+        "params": {"policy_name": "sys_ask_user_question", "message": "Land o/r#12?"},
+    }
+
+
+def _lookup_reads(og: ManagerCard, monkeypatch) -> list[str]:
+    """The sessions read by the stall sweep's card lookup alone (``read_cards``), as the call list."""
+    reads: list[str] = []
+    real = ManagerCard.info
+
+    def info(self, sid: str) -> dict:
+        frame = sys._getframe(1)
+        while frame:
+            if frame.f_code.co_name == "read_cards":
+                reads.append(sid)
+                break
+            frame = frame.f_back
+        return real(self, sid)
+
+    monkeypatch.setattr(ManagerCard, "info", info)
+    return reads
+
+
+def _sweep(
+    tmp_path, monkeypatch, *, counts, notify="cos", polls=4, between=None, setup=None, repos=()
+):
+    """A stalled o/r#12 (satisfied verdict, no go) under a supervisor whose lead ``a`` is followed and whose
+    notify session holds an open card naming it. ``counts`` is the listing's count per session."""
+    registry = following(tmp_path)
+    og = ManagerCard(told("brief", 9000), ending("STILL WORKING: waiting on CI\nWaits: CI", 8000))
+    og.holder, og.manager_cards, og.counts = notify, [_open_card()], dict(counts)
+    reads = _lookup_reads(og, monkeypatch)
+    if setup:
+        setup(og)
+    in_checkout(og)
+    p = pr(12)
+    p["timeline"].append(verdict(12, "yes", 90 * 60))
+    github(monkeypatch, [p])
+    monkeypatch.setattr(omnigent_agent, "PR_STALL_POLL", 0.0)
+    monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 1e9)
+    supervised(
+        og,
+        registry,
+        monkeypatch,
+        polls,
+        between=(lambda n: between(og, registry, n)) if between else (lambda n: None),
+        notify=notify,
+        console=True,
+        stall_repos=repos,
+    )
+    return og, reads, registry.with_suffix(".events.jsonl").read_text()
+
+
+def test_a_card_only_the_notify_manager_holds_quiets_the_sweep_until_it_closes(
+    tmp_path, monkeypatch
+) -> None:
+    """#2954: the manager's card naming o/r#12 holds the stall back; once it is answered (count 0) the next sweep wakes
+    the manager."""
+
+    def close(og, registry, poll) -> None:
+        if poll == 2:
+            assert "pr-stall" not in registry.with_suffix(".events.jsonl").read_text()
+            og.manager_cards, og.counts["cos"] = [], 0
+
+    _, _, events = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 1}, polls=6, between=close)
+    assert "pr-stall:o/r#12" in events and "a verdict without a go" in events
+
+
+def test_a_count_of_zero_means_no_card_and_reads_nothing(tmp_path, monkeypatch) -> None:
+    """Every count 0: the lookup reads no session, and a card still shown on the session holds nothing."""
+    _, reads, events = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 0})
+    assert reads == [] and "pr-stall:o/r#12" in events
+
+
+def test_a_count_above_zero_with_no_card_behind_it_holds_nothing(tmp_path, monkeypatch) -> None:
+    """The count is stale or counts an approval: the session is read, its empty card list holds no stall."""
+
+    def none(og) -> None:
+        og.manager_cards = []
+
+    _, reads, events = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 1}, setup=none)
+    assert "cos" in reads and "pr-stall:o/r#12" in events
+
+
+def test_a_stale_cards_entry_on_a_count_zero_session_is_ignored(tmp_path, monkeypatch) -> None:
+    """An entry left in ``og.cards`` for a session the listing counts 0 holds no stall."""
+    real = omnigent_agent.Uncarded.__init__
+
+    def init(self, og) -> None:
+        real(self, og)
+        self.cards = {"cos": [_open_card()]}
+
+    monkeypatch.setattr(omnigent_agent.Uncarded, "__init__", init)
+    _, _, events = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 0})
+    assert "pr-stall:o/r#12" in events
+
+
+def test_a_notify_session_that_is_also_followed_is_read_once(tmp_path, monkeypatch) -> None:
+    """The session list names ``a`` twice; one round reads it once."""
+    _, reads, _ = _sweep(tmp_path, monkeypatch, counts={"a": 1}, notify="a", polls=1)
+    assert reads == ["a"]
+
+
+def test_repos_due_together_read_each_counted_session_once_per_round(tmp_path, monkeypatch) -> None:
+    seen: list[str] = []
+
+    def pr_stalls(repo, threshold, memo, now=None, carded=None):
+        seen.append(repo)
+        if carded:
+            carded(repo, 12)
+        return []
+
+    monkeypatch.setattr(omnigent_agent, "pr_stalls", pr_stalls)
+    repos = ("o/r", "o/r2", "o/r3")
+    _, reads, _ = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 1}, repos=repos)
+    rounds = seen.count("o/r")
+    assert rounds and seen.count("o/r3") == rounds and reads.count("cos") == rounds
+
+
+def test_the_listing_is_read_in_every_page() -> None:
+    """The listing a lookup counts from pages on ``after`` while ``has_more``, so a followed session on page 2 counts."""
+    pages = {
+        "": {
+            "data": [{"id": "x", "pending_elicitations_count": 0}],
+            "has_more": True,
+            "last_id": "x",
+        },
+        "x": {"data": [{"id": "cos", "pending_elicitations_count": 1}], "has_more": False},
+    }
+    og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
+    og.call = lambda method, path, body=None, **kw: pages[path.partition("&after=")[2]]  # type: ignore[method-assign]
+    assert [r["id"] for r in og.listing()] == ["x", "cos"]
+
+
+def test_a_session_missing_from_the_listing_holds_no_card(tmp_path, monkeypatch) -> None:
+    def missing(og) -> None:
+        og.rows_missing = {"cos"}
+
+    _, reads, events = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 1}, setup=missing)
+    assert reads == [] and "pr-stall:o/r#12" in events
+
+
+def test_a_listing_that_raises_holds_no_card_and_stops_no_pr_check(tmp_path, monkeypatch) -> None:
+    def broken(og) -> None:
+        og.listing = lambda: (_ for _ in ()).throw(json.JSONDecodeError("bad", "", 0))
+
+    _, _, events = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 1}, setup=broken)
+    assert "pr-stall:o/r#12" in events
+
+
+def test_a_counted_session_whose_read_raises_holds_no_card(tmp_path, monkeypatch) -> None:
+    """One unreadable session (a decode failure from the client) stops no PR check."""
+    real = ManagerCard.info
+
+    def info(self, sid: str) -> dict:
+        if sid == "cos":
+            raise json.JSONDecodeError("bad", "", 0)
+        return real(self, sid)
+
+    monkeypatch.setattr(ManagerCard, "info", info)
+    _, _, events = _sweep(tmp_path, monkeypatch, counts={"a": 0, "cos": 1})
+    assert "pr-stall:o/r#12" in events

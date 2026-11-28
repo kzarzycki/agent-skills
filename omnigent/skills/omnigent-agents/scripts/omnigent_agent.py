@@ -291,10 +291,11 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -2868,6 +2869,57 @@ def cards_of(info: dict) -> list[str]:
     return [_asks(e) for e in info.get("pending_elicitations") or [] if not holds_input(e)]
 
 
+def card_text(e: dict) -> str:
+    """Everything an open question card says: its message, preview and each question it asks."""
+    p = e.get("params") or {}
+    ask = p.get("ask_user_question")
+    qs = ask.get("questions") if isinstance(ask, dict) else None
+    parts = [str(p.get("content_preview") or ""), str(p.get("message") or "")]
+    for q in qs or []:
+        if isinstance(q, dict):
+            parts += [str(q.get("header") or ""), str(q.get("question") or "")]
+            parts += [json.dumps(o) for o in q.get("options") or []]
+    return "\n".join(parts)
+
+
+PR_REF = re.compile(
+    r"(?<![\w./#-])(?:https?://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)|([\w.-]+/[\w.-]+)?#(\d+))(?![\w-])",
+    re.IGNORECASE,
+)
+
+
+def pr_refs(text: str) -> set[tuple[str | None, str]]:
+    """The PRs ``text`` names, as ``(repository or None, number)``: `#<n>`, `<owner>/<repo>#<n>` or a
+    github.com pull URL, the repository lower-cased."""
+    return {((m[0] or m[2]).lower() or None, m[1] or m[3]) for m in PR_REF.findall(text)}
+
+
+def same_pr(a: set[tuple[str | None, str]], b: set[tuple[str | None, str]]) -> bool:
+    """Whether the PR refs ``a`` and ``b`` share a PR: one number, and repositories that agree where both say one."""
+    return any(n == m and (r is None or q is None or r == q) for r, n in a for q, m in b)
+
+
+def names_pr(text: str, number: int | str, repo: str | None = None) -> bool:
+    """Whether ``text`` names PR ``number`` of ``repo`` (any repository when None): a name qualified by another
+    repository does not count."""
+    return same_pr(pr_refs(text), {(repo.lower() if repo else None, str(number))})
+
+
+def cards_naming_pr(
+    og: object, sids: Iterable[str], number: int | str, repo: str | None = None
+) -> list[str]:
+    """What each open question card of sessions ``sids`` that names PR ``number`` asks (``_asks``): the one lookup
+    the PR-stall sweep and the ``unasked`` check share (#2954). Reads the cards ``Uncarded`` kept; a session
+    not read yet holds none."""
+    held = getattr(og, "cards", {}) or {}
+    return [
+        _asks(e)
+        for sid in dict.fromkeys(sids)
+        for e in held.get(sid) or []
+        if names_pr(card_text(e), number, repo)
+    ]
+
+
 UNASKED = "unasked"  # an event kind: a turn ended USER NEEDED with no question card open
 UNASKED_LINE = (
     "turn ended USER NEEDED with no question card open: a question that spans projects is yours to put to the"
@@ -2910,6 +2962,7 @@ def named_card_open(
     With ``any_card`` any open question card counts, not only one ``text`` names (#2755).
     An unreadable session counts as holding none."""
     ids = set(re.findall(rf"\b{CARD_ID}[A-Za-z0-9_-]+", text))
+    prs = pr_refs(text)  # a card naming a PR the text names counts too (#2954)
     seen: set[str] = set()
     todo = [(sid, info)]
     if notify and notify != sid:
@@ -2917,7 +2970,7 @@ def named_card_open(
             todo.append((notify, og.info(notify)))
         except Fail:
             pass
-    while (ids or any_card) and todo:
+    while (ids or prs or any_card) and todo:
         at, looked = todo.pop(0)
         if at in seen:
             continue
@@ -2927,7 +2980,9 @@ def named_card_open(
             *(getattr(og, "cards", {}).get(at) or []),
         ]
         if any(
-            str(e.get("elicitation_id") or "") in ids or (any_card and not holds_input(e))
+            str(e.get("elicitation_id") or "") in ids
+            or (any_card and not holds_input(e))
+            or (prs and not holds_input(e) and same_pr(prs, pr_refs(card_text(e))))
             for e in held
         ):  # ``Uncarded`` keeps cards apart
             return True
@@ -7045,14 +7100,20 @@ def loop_cards(repo: str, seen: dict) -> dict[str, list[str]]:
 
 
 def pr_stalls(
-    repo: str, threshold: float, memo: dict, now: float | None = None
+    repo: str,
+    threshold: float,
+    memo: dict,
+    now: float | None = None,
+    carded: Callable[[str, int], list[str]] | None = None,
 ) -> list[tuple[str, str]]:
     """``(id, line)`` for each open, non-draft PR of GitHub repo ``repo`` newly stalled (``pr_stall``): no move toward
     landing for ``threshold`` seconds. ``memo`` is all it keeps between sweeps: per PR, its head and ``updated_at``
     when last read, when it is next due (its last move plus ``threshold``, so a PR that moved costs no read until
     then; one already reported is read again an hour on, or once its listing changes) and the stall it last reported,
     so the same stall (the same newest move) wakes no one twice, and when it first saw its head (the sweep before,
-    since a plain push has no time on GitHub); when it last swept; and the event commits ``loop_cards`` read."""
+    since a plain push has no time on GitHub); when it last swept; and the event commits ``loop_cards`` read.
+    ``carded(repo, number)`` is what the open question cards of the followed sessions that name a PR ask
+    (``cards_naming_pr``): a PR with one open waits on its owner's answer, so it is no stall until the card closes (#2954)."""
     now = time.time() if now is None else now
     listed = rest_pages(f"repos/{repo}/pulls?state=open&per_page=100")
     prs = memo.setdefault("prs", {})
@@ -7073,8 +7134,8 @@ def pr_stalls(
             continue  # its lead is still building it: the lead's own deadline watches that
         key = str(row["number"])
         seen = prs.get(key) or {}
-        if row["number"] in memo["held"]:
-            # no read while held, but its head stays first-seen and it is due at once: it stalls as before when released
+        if row["number"] in memo["held"] or (carded and carded(repo, row["number"])):
+            # no read while held or while a card names it, but its head stays first-seen and it is due at once: it stalls as before when released
             prs[key] = {
                 "head": row["head"]["sha"],
                 "updated": row.get("updated_at"),
@@ -11556,6 +11617,32 @@ def supervise_registry(
         for sid, owes in owed.items():
             if owes[3] and not owes[5] and repos.get(sid) and not first.get(repos[sid]):
                 first[repos[sid]] = sid
+        snap: dict[str, list[dict]] | None = None  # each session's cards as read this round
+
+        def read_cards() -> dict[str, list[dict]]:
+            """The open cards of each followed session and the notify manager, read once for this round and shared by
+            every due repo (#2954). The session listing says which hold any (``pending_elicitations_count`` above 0; a
+            count of 0, or a session missing from it, holds no card), and only those are read, by the same ``og.info``
+            the poll makes, whose cards ``Uncarded`` keeps. The listing is cached for ``CREATED_SECONDS``, so a card
+            that opened or closed within it can take that long to count. A listing or read that raises holds no card."""
+            nonlocal snap
+            if snap is None:
+                snap = {}
+                try:
+                    counts = {
+                        str(r.get("id")): r.get("pending_elicitations_count") or 0
+                        for r in og.listing()
+                    }
+                except Exception:  # noqa: BLE001 - an optional lookup: no card is the safe reading
+                    counts = {}
+                for s in dict.fromkeys([*owed, *filter(None, [notify])]):
+                    if not counts.get(s):
+                        continue
+                    with contextlib.suppress(Exception):  # one unreadable session holds no card
+                        og.info(s)
+                        snap[s] = list(getattr(og, "cards", {}).get(s) or [])
+            return snap
+
         for repo, sid in sorted(first.items()):
             if time.monotonic() - swept.get(repo, -PR_STALL_POLL) < PR_STALL_POLL:
                 continue
@@ -11564,7 +11651,16 @@ def supervise_registry(
             swept[repo] = time.monotonic()
             try:
                 etags_load(etags_path)
-                found = pr_stalls(repo, stall_after, state["pr_stalls"].setdefault(repo, {}))
+                at = SimpleNamespace(cards=read_cards())
+                # the lookup goes in only while a followed session holds a card at all (#2954)
+                look = (
+                    {"carded": lambda r, n, at=at: cards_naming_pr(at, list(at.cards), n, r)}
+                    if any(at.cards.values())
+                    else {}
+                )
+                found = pr_stalls(
+                    repo, stall_after, state["pr_stalls"].setdefault(repo, {}), **look
+                )
             except RateLimited as e:
                 limited[0] = time.monotonic() + e.jittered()
                 swept.pop(repo, None)
