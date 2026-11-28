@@ -59,5 +59,6 @@ When it says no login is usable, the owner logs in to Codex on the host, or runs
 The live-agent suites (`test-engineering-agents`, `test-chief-of-staff-live`) need
 logged-in harnesses and Omnigent, so they stay with the host lead. A cloud session clones the
 pushed branch, so push before starting a worker. `.claude/claude-cloud-setup.sh` (the older `.claude/cloud-setup.sh` is still read) is the
-environment's setup script; the environment keeps its own copy, so apply a change with
-`POST /v1/environment_providers/<id>`, `config.init_script` set to the file.
+environment's setup script; the environment keeps its own copy, so `land` runs `cloud_verifier.py env-sync` after a landing that touches it and prints
+`environment setup is stale` with the command that applies it: `cloud_verifier.py env-sync --apply`
+(a project that keeps the script elsewhere names it on a `Cloud setup script: <path>` line here).

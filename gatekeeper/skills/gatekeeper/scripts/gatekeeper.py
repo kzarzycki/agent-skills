@@ -6522,6 +6522,7 @@ def land_ended(pull: dict[str, Any]) -> None:
         return
     landed_ok.add(branch)
     land_event(pull, "ok")
+    setup_env_check(pull)
     try:
         script = Path(loop_events.__file__).resolve()
         common = git("rev-parse", "--path-format=absolute", "--git-common-dir").strip()
@@ -6548,6 +6549,86 @@ def land_ended(pull: dict[str, Any]) -> None:
     except Exception as exc:  # noqa: BLE001 -- the PR has landed: the refs stay until a `clear` of the branch is run
         print(
             f"PR #{pull.get('number')}: land event refs not cleared: {stderr_of(exc)}",
+            file=sys.stderr,
+        )
+
+
+# loop.md's one line naming the cloud environment's setup script, when it is not one of SETUP_SCRIPTS
+CLOUD_SETUP = re.compile(r"^Cloud setup script:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
+SETUP_SCRIPTS = (".claude/claude-cloud-setup.sh", ".claude/cloud-setup.sh")
+
+
+def active_setup_script(base_ref: str) -> str:
+    """The setup script the environment runs: loop.md's `Cloud setup script:` line, else the first of SETUP_SCRIPTS
+    that `base_ref` has (the first when it has none), the choice cloud_verifier.py env-sync makes too."""
+    found = CLOUD_SETUP.search(loop_md())
+    if found:
+        return found[1].strip("`")
+    for path in SETUP_SCRIPTS:
+        if (
+            subprocess.run(
+                ["git", "cat-file", "-e", f"{base_ref}:{path}"], capture_output=True, check=False
+            ).returncode
+            == 0
+        ):
+            return path
+    return SETUP_SCRIPTS[0]
+
+
+def setup_env_check(pull: dict[str, Any]) -> None:
+    """After a landing whose diff touches the cloud environment's setup script, run the engineering-loop's
+    `cloud_verifier.py env-sync` against the base the PR merged into, freshly fetched, and print what it says, the
+    stale line and its apply command included. The script is the active one only (active_setup_script), a diff the
+    forge could not list in full counts as touching it, and a diff that leaves it alone makes no environment call.
+    Never fatal: the merge has happened, and the environment keeps its own copy of the script until someone applies
+    the new one (#989)."""
+    try:
+        base = pull.get("baseRefName") or default_branch()
+        fetch = subprocess.run(
+            ["git", "fetch", "-q", forge(), f"+refs/heads/{base}:refs/remotes/{forge()}/{base}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        ref = f"{forge()}/{base}"
+        script = active_setup_script(ref)
+        files = pull.get("files") or {}
+        listed = {each["path"] for each in files.get("nodes") or []}
+        if script not in listed and (files.get("totalCount") or 0) <= len(listed):
+            return
+        if fetch.returncode:
+            print(
+                f"PR #{pull['number']} changed {script}: {base} could not be fetched, so the environment's copy was not checked"
+            )
+            return
+        folder = installed_scripts("engineering-loop")
+        if folder is None or not (folder / "cloud_verifier.py").is_file():
+            print(
+                f"PR #{pull['number']} changed {script}: the engineering-loop skill is not installed, so the environment's copy was not checked"
+            )
+            return
+        done = subprocess.run(
+            [
+                sys.executable,
+                str(folder / "cloud_verifier.py"),
+                "env-sync",
+                "--script",
+                script,
+                "--base",
+                ref,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+        said = " ".join((done.stdout or done.stderr).split())
+        print(
+            f"PR #{pull['number']} changed {script}: {said or f'env-sync exited {done.returncode}'}"
+        )
+    except Exception as exc:  # noqa: BLE001 -- the PR has landed: a failed check only says so
+        print(
+            f"PR #{pull.get('number')}: setup-script check failed: {stderr_of(exc)}",
             file=sys.stderr,
         )
 
