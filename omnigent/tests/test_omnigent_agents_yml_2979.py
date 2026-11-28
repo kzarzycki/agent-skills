@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 from test_omnigent_agent import FakeOmnigent, agents_yml, omnigent_agent
 
-REFUSES_NO_CLOUD_MODEL = True  # conftest.py: this module tests that refusal
 SCRIPTS = Path(__file__).resolve().parents[2]
 
 
@@ -212,16 +211,3 @@ def test_a_literal_model_id_in_a_skills_scripts_fails() -> None:
         if ids.search(line) and not line.lstrip().startswith("#")
     ]
     assert found == [], "model ids live in agents.yml, never in a skill's scripts"
-
-
-def test_a_claude_cloud_start_with_no_model_is_refused_before_a_session_exists(
-    tmp_path: Path,
-) -> None:
-    og = FakeOmnigent()
-    og.harnesses = {"claude-cloud": omnigent_agent.CLOUD_HARNESS}
-    with pytest.raises(omnigent_agent.Fail, match=r"claude-cloud needs a model: set .*agents.yml"):
-        omnigent_agent.start(og, "claude-cloud", "t", "do X", tmp_path / "r.md", None, 0)
-    assert not og.sessions
-    agents_yml("model: sonnet\n")
-    og, sid = start(tmp_path, "claude-cloud")
-    assert og.overrides[sid] == "sonnet"

@@ -107,8 +107,7 @@ list on the host the child runs on (`GET /v1/hosts/<host>/harnesses/<harness>/mo
 `sonnet` and `claude-sonnet-5-5` both pass), naming the ids it does, refuses a Codex model (`gpt-<generation>-<tier>`) when
 the list has a newer generation, naming it (`--allow-older-model` for a deliberate pin), and one it can't check because the
 list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so): Omnigent launches an unlisted id on
-the harness default with no error. A `claude-cloud` session needs a model from the flag or the files, since the server
-refuses an ACP session that names none. A launch that fails on capacity (`server_overloaded`, a rate limit) is retried later
+the harness default with no error. A launch that fails on capacity (`server_overloaded`, a rate limit) is retried later
 with backoff on the same model, never on another, which would leave the work on a model nobody chose.
 
 **Permission mode.** A Claude child starts in `--permission-mode <mode>`, else
