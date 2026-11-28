@@ -127,7 +127,7 @@ harness hook. A commit runs the `lint:` tasks on the staged files (a cloud sessi
 reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, and
 `loop:approvals merge` on ready PRs in CI.
 
-A PR stays a draft until no core finding is open, bar the cap's majors (Review trail on the PR), so CI skips its
+A PR stays a draft until Review trail on the PR's ready condition holds (a satisfied verdict with no core finding open, or the cap's exception), so CI skips its
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) runs have no draft.
