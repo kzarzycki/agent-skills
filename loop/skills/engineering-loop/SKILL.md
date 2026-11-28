@@ -837,9 +837,9 @@ or the owner's private network.
   the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr --wait`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
-  from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
-  the host's Codex is configured with as `--model` and `--effort` (its `agents.yml` verifier entry);
-  without them the CLI's own default runs. It also passes `--requested <unix seconds>`, the time the lead asked for
+  from it as for a host verifier. The VM has no Codex configuration: `cloud_verifier.py` reads the checkout's and the VM's
+  `agents.yml` verifier entry itself (`by_risk` by the PR's rating), and `--model` and `--effort` outrank it; with
+  neither, the CLI's own default runs. It also passes `--requested <unix seconds>`, the time the lead asked for
   the pass (`date +%s` when it sends the brief), so the comment's `Seconds:` footer and the run's JSON line can
   show how long the pass waited to start. Exit 3 means the verifier stopped on a question, posted as that
   comment: answer it and send the pass again. Exit 4 means the pass left the checkout changed, whatever else it did (the

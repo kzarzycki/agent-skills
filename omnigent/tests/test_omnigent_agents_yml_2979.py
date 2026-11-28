@@ -183,13 +183,15 @@ def test_a_verifier_start_runs_by_risk_low_on_a_low_rated_pr_and_its_own_model_o
     agents_yml("verifier:\n  model: claude-sonnet-5-5\n  by_risk: {low: {model: opus}}\n")
     monkeypatch.setattr(omnigent_agent, "installed", lambda skill, **_k: tmp_path)
     rated = {"level": "low"}
+    asked: list[tuple[list[str], object]] = []
     real = subprocess.run
 
     def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
         if "check" not in cmd:
             return real(cmd, **kw)  # type: ignore[call-overload]
-        said = f"PR #7: risk: {rated['level']}; merge: go\n"
-        return subprocess.CompletedProcess(cmd, 0, "", said)
+        asked.append((cmd[-3:], kw.get("cwd")))
+        said = f"PR #7: rerun: not needed (off) (rated {rated['level']})\n"
+        return subprocess.CompletedProcess(cmd, 0, said, "")
 
     monkeypatch.setattr(omnigent_agent.subprocess, "run", run)
     for level, model in (
@@ -200,6 +202,9 @@ def test_a_verifier_start_runs_by_risk_low_on_a_low_rated_pr_and_its_own_model_o
         rated["level"] = level
         og, sid = start(tmp_path, "claude", role=role_file("verifier.md"), about=7)
         assert og.overrides[sid] == model, level
+    # a read-only rating (`check rerun`, never `check merge`'s label writes) in the workspace's own repository
+    assert {cmd[:2] == ["check", "rerun"] for cmd, _ in asked} == {True}
+    assert {Path(str(cwd)).resolve() for _, cwd in asked} == {Path.cwd().resolve()}
 
 
 def test_a_literal_model_id_in_a_skills_scripts_fails() -> None:
@@ -211,3 +216,36 @@ def test_a_literal_model_id_in_a_skills_scripts_fails() -> None:
         if ids.search(line) and not line.lstrip().startswith("#")
     ]
     assert found == [], "model ids live in agents.yml, never in a skill's scripts"
+
+
+def test_a_yaml_block_list_is_read_like_the_flow_form() -> None:
+    block = omnigent_agent.parse_yaml(
+        "verifier:\n  fallback:\n    - codex\n    - claude\n  route: x\n", "f"
+    )
+    assert block == {"verifier": {"fallback": ["codex", "claude"], "route": "x"}}
+    flush = omnigent_agent.parse_yaml("verifier:\n  fallback:\n  - claude\n", "f")
+    assert flush == {"verifier": {"fallback": ["claude"]}}
+
+
+def test_a_model_the_file_names_for_one_route_is_not_sent_to_another(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role_file: Callable[[str], str]
+) -> None:
+    agents_yml("verifier:\n  route: codex\n  model: gpt-6.1-sol\n")
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.md").write_text("review")
+    og = FakeOmnigent()
+    monkeypatch.setattr(omnigent_agent, "Omnigent", lambda: og)
+    base = [
+        "start",
+        "codex",
+        "t",
+        "b.md",
+        str(tmp_path / "r.md"),
+        "--role",
+        role_file("verifier.md"),
+    ]
+    assert omnigent_agent.main(base) == 0
+    assert og.overrides["s0"] == "gpt-6.1-sol"
+    og = FakeOmnigent()
+    assert omnigent_agent.main([*base, "--verifier-route", "claude"]) == 0
+    assert og.overrides["s0"] is None  # the Claude route runs its harness's own model

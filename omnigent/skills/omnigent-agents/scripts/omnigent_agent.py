@@ -2563,6 +2563,11 @@ def parse_yaml(text: str, where: str) -> dict[str, Any]:
             at += 1
             if rest.strip():
                 out[key.strip()] = flow(rest)
+            elif at < len(rows) and rows[at][1].startswith("- ") and rows[at][0] >= indent:
+                items = []
+                while at < len(rows) and rows[at][1].startswith("- ") and rows[at][0] >= indent:
+                    items, at = [*items, flow(rows[at][1][2:])], at + 1
+                out[key.strip()] = items
             elif at < len(rows) and rows[at][0] > indent:
                 out[key.strip()], at = nest(at)
         return out, at
@@ -2665,34 +2670,38 @@ def job_attributes(
     role: str, brief: str, workspace: str, local: bool, pr: int | None
 ) -> dict[str, str | None]:
     """What a `by_<key>` entry matches on: a lead's `size` (the largest size label on the issues its brief names), a
-    worker's `risk` (the highest risk label on them) and a verifier's `risk` (`check merge`'s rating of its PR, so a
+    worker's `risk` (the highest risk label on them) and a verifier's `risk` (`check rerun`'s rating of its PR, so a
     PR the gate rates high never gets the low entry). None where nothing says, which matches no entry."""
     if role == "verifier":
         folder = installed("gatekeeper")
-        if folder is None or not pr:
+        if folder is None or not pr or not local:
             return {"risk": None}
+        # `check rerun` rates the PR in the workspace's own repository and writes nothing (`check merge` flags it)
+        cmd = [
+            "uv",
+            "run",
+            "-q",
+            "--script",
+            str(folder / "gatekeeper.py"),
+            "check",
+            "rerun",
+            str(pr),
+        ]
         try:
             done = subprocess.run(
-                [
-                    "uv",
-                    "run",
-                    "-q",
-                    "--script",
-                    str(folder / "gatekeeper.py"),
-                    "check",
-                    "merge",
-                    str(pr),
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
                 stdin=subprocess.DEVNULL,
                 timeout=120,
                 check=False,
+                cwd=checkout_root(workspace) or workspace,
             )
         except (OSError, subprocess.TimeoutExpired):
             return {"risk": None}
-        rating = rf"^PR #{pr}: risk: ({'|'.join(RISKS)})\b"
-        found = re.search(rating, done.stdout + done.stderr, re.MULTILINE)
+        found = re.search(
+            rf"^PR #{pr}: rerun: .*\(rated ({'|'.join(RISKS)})\)", done.stdout, re.MULTILINE
+        )
         return {"risk": found[1] if found else None}
     if role not in ("lead", "worker"):
         return {}
@@ -5590,6 +5599,7 @@ def start(
     pr: int | None = None,
     files: list[Path] | None = None,
     allow_older_model: bool = False,
+    configured: bool = True,
     about: int | None = None,
     keep: bool = False,
     registered: Callable[[str, bool], None] | None = None,
@@ -5676,6 +5686,10 @@ def start(
         og.loop_text(workspace or os.getcwd(), host_id)
     # the one read of agents.yml, on the host the session runs on, before any session exists
     role_name = Path(role).stem if role else "lead" if top_level else ""
+    if (
+        not configured
+    ):  # a verifier on a route agents.yml doesn't name: no entry of the file's is its own
+        role_name = "route"
     local = not host_id or host_id == og.host_id
     config = agent_config(workspace or os.getcwd(), og, host_id)
     got = resolve(
@@ -14320,6 +14334,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
             if source == "flag" and not args.verifier_route:
                 source = "$OMNIGENT_VERIFIER_ROUTE"
             args.verifier_route = route or "codex"
+            # a model the file names belongs to the route the file names: another route runs the harness's own
+            args.own_route = resolve(config, "verifier", dict)["route"][0] in (None, route)
             if verifier and args.verifier_route not in VERIFIER_ROUTES:
                 raise Fail(
                     f"verifier route {args.verifier_route!r} is none of {', '.join(VERIFIER_ROUTES)}"
@@ -14666,6 +14682,7 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 args.confirm_seconds,
                 model=args.model,
                 allow_older_model=args.allow_older_model,
+                configured=getattr(args, "own_route", True),
                 effort=args.effort,
                 permission_mode=args.permission_mode,
                 top_level=args.top_level,

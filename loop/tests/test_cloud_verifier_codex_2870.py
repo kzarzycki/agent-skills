@@ -82,3 +82,21 @@ def test_a_thread_pass_on_an_unchanged_head_is_refused_before_a_thread_is_made(
     with pytest.raises(cv.Refused, match=r"codex/terra-6.1/med, pass 1"):
         cv.thread_verify(7, brief, None, None, None, "env")
     assert head  # a later head is another pass: see earlier_codex_pass's test
+
+
+def test_a_codex_pass_takes_the_model_and_effort_agents_yml_names(
+    checkout,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _, _, brief, _, seen = checkout
+    seen["report"] = REPORT
+    home = tmp_path / "agents-home"
+    (home / ".agents").mkdir(parents=True)
+    (home / ".agents" / "agents.yml").write_text("verifier:\n  model: m-x\n  effort: low\n")
+    monkeypatch.setenv("HOME", str(home))
+    assert cv.command(["verify", "--pr", "7", "--brief", str(brief)]) == 0
+    assert seen["cmd"][-5:] == ["-m", "m-x", "-c", "model_reasoning_effort=low", "-"]
+    # a flag outranks the file
+    assert cv.command(["verify", "--pr", "7", "--brief", str(brief), "--model", "m-y"]) == 0
+    assert seen["cmd"][seen["cmd"].index("-m") + 1] == "m-y"

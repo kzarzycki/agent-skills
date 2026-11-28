@@ -1635,6 +1635,38 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout, sys.stderr = out, err
 
 
+def configured(args: argparse.Namespace) -> None:
+    """Fill the model and effort a Codex pass was not given from agents.yml's `verifier` entry, by the resolver every
+    start uses (omnigent-agents' omnigent_agent.py: the project's file over the setup's, `by_risk` by the PR's rating).
+    None found, or no omnigent-agents installed: the host's Codex config decides, as with no file."""
+    if (args.command == "verify" and args.harness != "codex") or (args.model and args.effort):
+        return
+    try:
+        path = installed("omnigent-agents") / "omnigent_agent.py"
+        spec = importlib.util.spec_from_file_location("omnigent_agent", path)
+        agent = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(agent)  # type: ignore[union-attr]
+        here = os.getcwd()
+        got = agent.resolve(
+            agent.agent_config(here),
+            "verifier",
+            lambda: agent.job_attributes("verifier", "", here, True, args.pr),
+            {"model": args.model, "effort": args.effort},
+        )
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - the config is an aid: a pass never fails on it
+        print(
+            f"cloud_verifier: agents.yml not read ({e}): the host's Codex config decides",
+            file=sys.stderr,
+        )
+        return
+    args.model, args.effort = got["model"][0], got["effort"][0]
+    print(
+        f"model: {args.model or 'the harness default'} (from {got['model'][1]}), effort:"
+        f" {args.effort or 'the harness default'} (from {got['effort'][1]})",
+        file=sys.stderr,
+    )
+
+
 def command(argv: list[str] | None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1725,6 +1757,7 @@ def command(argv: list[str] | None) -> int:
             )
             print(said, end="")
             return code
+        configured(args)
         if args.command == "thread":
             return thread_verify(
                 args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head
