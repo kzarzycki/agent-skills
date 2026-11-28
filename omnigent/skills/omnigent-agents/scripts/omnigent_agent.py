@@ -2877,17 +2877,27 @@ def card_text(e: dict) -> str:
     return "\n".join(parts)
 
 
+PR_REF = re.compile(
+    r"(?<![\w./#-])(?:https?://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)|([\w.-]+/[\w.-]+)?#(\d+))(?![\w-])",
+    re.IGNORECASE,
+)
+
+
+def pr_refs(text: str) -> set[tuple[str | None, str]]:
+    """The PRs ``text`` names, as ``(repository or None, number)``: `#<n>`, `<owner>/<repo>#<n>` or a
+    github.com pull URL, the repository lower-cased."""
+    return {((m[0] or m[2]).lower() or None, m[1] or m[3]) for m in PR_REF.findall(text)}
+
+
+def same_pr(a: set[tuple[str | None, str]], b: set[tuple[str | None, str]]) -> bool:
+    """Whether the PR refs ``a`` and ``b`` share a PR: one number, and repositories that agree where both say one."""
+    return any(n == m and (r is None or q is None or r == q) for r, n in a for q, m in b)
+
+
 def names_pr(text: str, number: int | str, repo: str | None = None) -> bool:
-    """Whether ``text`` names PR ``number``: `#<n>`, `<owner>/<repo>#<n>` or its URL. With ``repo`` a name
-    qualified by another repository does not count; without it any repository's does."""
-    n = re.escape(str(number))
-    slug = re.escape(repo) if repo else r"[\w.-]+/[\w.-]+"
-    return bool(re.search(rf"(?<![\w/#.-])#{n}\b|{slug}#{n}\b|github\.com/{slug}/pull/{n}\b", text))
-
-
-def pr_refs(text: str) -> set[str]:
-    """The PR numbers ``text`` names (`#<n>`, `<owner>/<repo>#<n>` or a pull URL)."""
-    return {a or b for a, b in re.findall(r"#(\d+)\b|/pull/(\d+)\b", text)}
+    """Whether ``text`` names PR ``number`` of ``repo`` (any repository when None): a name qualified by another
+    repository does not count."""
+    return same_pr(pr_refs(text), {(repo.lower() if repo else None, str(number))})
 
 
 def cards_naming_pr(
@@ -2967,7 +2977,7 @@ def named_card_open(
         if any(
             str(e.get("elicitation_id") or "") in ids
             or (any_card and not holds_input(e))
-            or (prs and not holds_input(e) and any(names_pr(card_text(e), n) for n in prs))
+            or (prs and not holds_input(e) and same_pr(prs, pr_refs(card_text(e))))
             for e in held
         ):  # ``Uncarded`` keeps cards apart
             return True
@@ -11611,6 +11621,13 @@ def supervise_registry(
             try:
                 etags_load(etags_path)
                 mine = [*owed, *([notify] if notify else [])]
+                for (
+                    s
+                ) in mine:  # read now: a card answered or newly posted since its last look (#2954)
+                    try:
+                        og.info(s)
+                    except Fail:
+                        og.cards.pop(s, None)
                 # the lookup goes in only while a followed session holds a card at all (#2954)
                 look = (
                     {"carded": lambda r, n, at=mine: cards_naming_pr(og, at, n, r)}

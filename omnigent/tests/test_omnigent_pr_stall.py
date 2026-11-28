@@ -497,3 +497,59 @@ def test_a_pr_with_an_open_card_naming_it_raises_no_stall_until_the_card_closes(
 )
 def test_names_pr(text, number, repo, named) -> None:
     assert omnigent_agent.names_pr(text, number, repo) is named
+
+
+@pytest.mark.parametrize(
+    "text, named",
+    [
+        ("Land other-o/r#12?", False),  # a longer owner is another repository
+        ("https://notgithub.com/o/r/pull/12", False),
+        ("https://github.com/O/R/pull/12", True),  # repository case is GitHub's own
+        ("Land O/R#12?", True),
+        ("Land o/r#12.", True),
+    ],
+)
+def test_names_pr_bounds_the_qualified_forms(text, named) -> None:
+    assert omnigent_agent.names_pr(text, 12, "o/r") is named
+
+
+class ManagerCard(Lead):
+    """A followed lead whose notify session, ``cos``, holds the cards in ``manager_cards``."""
+
+    def __init__(self, *items: dict) -> None:
+        super().__init__(*items)
+        self.manager_cards: list[dict] = []
+
+    def info(self, sid: str) -> dict:
+        got = super().info(sid)
+        return {**got, "pending_elicitations": self.manager_cards} if sid == "cos" else got
+
+
+def test_a_card_only_the_notify_manager_holds_quiets_the_sweep_until_it_closes(
+    tmp_path, monkeypatch
+) -> None:
+    """#2954 F1: through the supervisor, the manager's card naming o/r#12 holds the stall back; once it is
+    answered the next sweep wakes the manager."""
+    registry = following(tmp_path)
+    og = ManagerCard(told("brief", 9000), ending("STILL WORKING: waiting on CI\nWaits: CI", 8000))
+    og.manager_cards = [
+        {
+            "elicitation_id": "question_m12",
+            "params": {"policy_name": "sys_ask_user_question", "message": "Land o/r#12?"},
+        }
+    ]
+    in_checkout(og)
+    p = pr(12)
+    p["timeline"].append(verdict(12, "yes", 90 * 60))
+    github(monkeypatch, [p])
+    monkeypatch.setattr(omnigent_agent, "PR_STALL_POLL", 0.0)
+    monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 1e9)
+
+    def close(poll: int) -> None:
+        if poll == 2:
+            assert "pr-stall" not in registry.with_suffix(".events.jsonl").read_text()
+            og.manager_cards = []
+
+    supervised(og, registry, monkeypatch, 6, between=close, notify="cos", console=True)
+    events = registry.with_suffix(".events.jsonl").read_text()
+    assert events.count("pr-stall:o/r#12") >= 1 and "a verdict without a go" in events
