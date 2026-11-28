@@ -93,9 +93,18 @@ def test_each_gatekeeper_verb_has_its_own_help(verb):
     assert len(text) < 3000
 
 
+def test_help_says_the_policy_is_read_from_the_base_not_the_checkout():
+    for text in (run_help(), (GATEKEEPER.parent.parent / "SKILL.md").read_text()):
+        flat = " ".join(text.split())
+        assert "origin/<base>" in flat or "origin/`<base>`" in flat
+        assert "at the checkout's root" not in flat
+
+
 def test_check_help_says_what_check_does():
     text = run_help("check")
     assert "proofs" in text and "build" in text and "merge" in text
     flat = " ".join(text.split())
-    assert "rerun (prints `rerun: needed|done|no` and exits 0" in flat  # not under the exit-1 rule
+    assert (
+        "`rerun: not needed (<why>)`, and exits 0 once it has read the PR" in flat
+    )  # not under the exit-1 rule
     assert "eligible to land" in flat and "no go or gate record" in flat  # stalled's two cases
