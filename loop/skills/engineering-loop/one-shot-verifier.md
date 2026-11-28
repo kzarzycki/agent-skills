@@ -25,11 +25,11 @@ Checklist: try the edge inputs (empty, missing, malformed, duplicate, oversized)
 touches; that is where earlier passes' misses cluster.
 
 Report only what the change introduced, with provable impact, citing the AGENTS.md rule each finding breaks. Priority: P0 (blocks
-release), P1 (urgent), P2 (normal), P3 (low). Answer with one JSON block:
+release), P1 (a major, as verifier.md's Major defines it, with its `breaks`, `path` and, from pass 2, `origin` lines), P2 (normal), P3 (low). Answer with one JSON block:
 
 ```json
 {"criteria": ["<Acceptance line: how it was checked>"],
- "findings": [{"priority": "P1", "title": "...", "location": "path:line", "body": "...", "rules": ["..."]}],
+ "findings": [{"priority": "P1", "title": "...", "location": "path:line", "body": "...", "rules": ["..."], "breaks": "Acceptance <line> | repro <command> | standing bar <kind>", "path": "<standing bar's input, steps, impact>", "origin": "new"}],
  "acceptance_not_run": [
    {"check": "<what could not run>", "command": "<exact command>"},
    {"check": "<mutation not run>", "command": "<exact test command>",
