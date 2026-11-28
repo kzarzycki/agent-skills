@@ -280,6 +280,8 @@ key it probably meant): a misspelt key is never read as no setting. So is a valu
 | `verifier_session` | `reuse` or `fresh` (`Verifier session:`) | `fresh`; an agent reads it (lead.md) |
 | `orchestration_backend` | `native`, `omnigent` or `herdr-link` (`Orchestration backend:`) | `native`; an agent reads it (orchestrating-agents) |
 
+In `tools` only the scalar `full` means every tool; a list names additions to the lean set (an item `full` names a tool or server called `full`), so `[full]` is lean plus that name, unlike the old single-word line `Worker tools: full`, which means every tool.
+
 Where a loop.md has no block, the lines above keep their meaning, each read as it always was, so an existing loop.md
 changes nothing. Where it has a block, a key may still be set as its old line when the block does not name it, but a key
 set in both is refused, naming the key. `approvals.py loop-migrate [<loop.md>] [--write]` writes the block from the old

@@ -2478,14 +2478,10 @@ def loop_value(text: str, label: str) -> str:
         if isinstance(value, dict):
             return "hosts: " + ", ".join(value["hosts"])
         if isinstance(value, list):
-            # only the scalar `full` means every tool: a list names additions to the lean set, so one holding `full`
-            # would be joined back to that scalar and drop the restriction
-            if "full" in value:
-                raise Fail(
-                    f"{LOOP_FILE}: `{LOOP_KEYS[label]}` is a list, which adds tools to the lean set: write the "
-                    "scalar `full` for every tool, not a list holding it"
-                )
-            return ", ".join(value)
+            # a list names additions to the lean set, as the old comma list does (an item `full` names a tool or server
+            # called `full`); only the scalar `full` means every tool, so a list of that one item is joined with a
+            # trailing comma, the old line `full,`, which lean_args reads as a name, not as the scalar
+            return ", ".join(value) + ("," if value == ["full"] else "")
         return value or ""
     if label == "Verifier hosts" and LOOP_BLOCK.search(text):
         return ""  # placement's, read as `Placement`

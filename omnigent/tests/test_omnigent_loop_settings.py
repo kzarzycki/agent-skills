@@ -2,6 +2,7 @@
 gatekeeper's one loader (omnigent_agent holds no parser of the block), and a block that holds what the old lines held reads
 the same through every reader."""
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -99,16 +100,35 @@ def test_tools_in_the_block_are_the_roles_beyond_the_lean_set(repo: Path) -> Non
 
 def test_a_list_holding_full_never_widens_a_lean_role_to_every_tool(repo: Path) -> None:
     for role in ("worker", "verifier"):
-        text = f"# Loop\n\n## Loop settings\n\n```yaml\ntools:\n  {role}: [full]\n```\n"
-        with pytest.raises(omnigent_agent.Fail, match=f"tools.{role}"):
-            omnigent_agent.lean_args(write(repo, text), role)
-        for named in ("[NotebookEdit]", "[]"):
+        for named in ("[full]", "[NotebookEdit]", "[]"):
             text = f"# Loop\n\n## Loop settings\n\n```yaml\ntools:\n  {role}: {named}\n```\n"
             args = omnigent_agent.lean_args(write(repo, text), role)
-            assert args[:2] == ["--strict-mcp-config", "--tools"]
+            assert args[:2] == ["--strict-mcp-config", "--tools"]  # lean, never every tool
             assert ("NotebookEdit" in args[2].split(",")) == (named == "[NotebookEdit]")
+            # `full` in a list is a name, as in the old comma list
+            assert ("full" in args[2].split(",")) == (named == "[full]")
         scalar = f"# Loop\n\n## Loop settings\n\n```yaml\ntools:\n  {role}: full\n```\n"
         assert omnigent_agent.lean_args(write(repo, scalar), role) == []
+
+
+def test_a_list_naming_a_server_called_full_is_read_as_the_old_comma_list_is(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (repo / ".mcp.json").write_text(json.dumps({"mcpServers": {"full": {"command": "full-mcp"}}}))
+    (tmp_path / "home").mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    old = omnigent_agent.lean_args(
+        write(repo, "# Loop\n\nWorker tools: full, WebFetch\n"), "worker"
+    )
+    assert old[:2] == ["--strict-mcp-config", "--tools"] and "WebFetch" in old[2].split(",")
+    assert "full-mcp" in old[-1]  # the server named `full` is forwarded
+    block = "# Loop\n\n## Loop settings\n\n```yaml\ntools:\n  worker: [full, WebFetch]\n```\n"
+    assert omnigent_agent.lean_args(write(repo, block), "worker") == old
+    only = omnigent_agent.lean_args(
+        write(repo, block.replace("[full, WebFetch]", "[full]")), "worker"
+    )
+    assert only[:2] == ["--strict-mcp-config", "--tools"] and "full-mcp" in only[-1]
+    assert omnigent_agent.lean_args(write(repo, "# Loop\n\nWorker tools: full\n"), "worker") == []
 
 
 def test_a_misspelt_key_in_the_block_fails_naming_it(repo: Path) -> None:
