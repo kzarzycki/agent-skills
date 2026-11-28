@@ -178,7 +178,14 @@ def test_a_path_with_spaces_reaches_nearby_code_and_the_gate_config_finding(
 REVIEW = {
     "criteria": ["Same head refused: ran the planner"],
     "findings": [
-        {"priority": "P1", "title": "t", "location": "a.py:1", "body": "b", "rules": ["R"]}
+        {
+            "priority": "P1",
+            "title": "t",
+            "location": "a.py:1",
+            "body": "b",
+            "rules": ["R"],
+            "breaks": "Acceptance line 1",
+        }
     ],
     "overall_correctness": "patch is incorrect",
     "risk": "low — helpers only",
@@ -429,3 +436,25 @@ def test_a_missing_record_through_the_bundle_cli_runs_no_step(
     assert os_.main(argv) == 2
     seen = capsys.readouterr()
     assert "no gate record" in seen.err and seen.out == "" and _ran(markers) == []
+
+
+def test_a_p1_finding_carries_its_breaks_path_and_origin_lines_to_the_report(tmp_path) -> None:
+    finding = {
+        **REVIEW["findings"][0],
+        "breaks": "standing bar security",
+        "path": "a forged token",
+        "origin": "new",
+    }
+    got = facts(tmp_path, {**REVIEW, "findings": [finding]})
+    body = got["findings"][0]["body"]
+    assert (
+        "Breaks: standing bar security" in body
+        and "Path: a forged token" in body
+        and "Origin: new" in body
+    )
+
+
+def test_a_p1_finding_with_no_breaks_is_refused_by_the_report_parser(tmp_path) -> None:
+    finding = {k: v for k, v in REVIEW["findings"][0].items() if k != "breaks"}
+    with pytest.raises(gatekeeper.Refused, match="no .Breaks:"):
+        facts(tmp_path, {**REVIEW, "findings": [finding]})

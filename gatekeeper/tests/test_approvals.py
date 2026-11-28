@@ -2349,6 +2349,8 @@ Verifier: claude, same-family, pass 2
 ### C1 (blocker) app.py:12: a draft merges on its skipped checks
 
 - Failing input: a draft.
+Breaks: Acceptance line 1
+Origin: new
 
 ### C2 (minor) app.py:40: a line outside the diff
 
@@ -2689,7 +2691,7 @@ def test_the_verdict_posts_the_report_as_a_review_on_the_commit_it_reviewed(
                 "path": "app.py",
                 "line": 12,
                 "side": "RIGHT",
-                "body": f"**{heading} · C1** (blocker): a draft merges on its skipped checks\n\n- Failing input: a draft.",
+                "body": f"**{heading} · C1** (blocker): a draft merges on its skipped checks\n\n- Failing input: a draft.\nBreaks: Acceptance line 1\nOrigin: new",
             },
             {
                 "path": "app.py",
@@ -2751,6 +2753,7 @@ $ grep x
 # the line that matters
 ### quoted, not a finding
 ```
+Breaks: Acceptance line 1
 
 ### C2 (minor) `app.py:28-29`: a range outside the diff
 
@@ -2778,7 +2781,7 @@ def test_a_finding_takes_a_line_range_any_case_severity_and_a_fenced_heading_in_
             "side": "RIGHT",
             "body": (
                 f"**{heading} · C1** (major): a line range and a capitalised severity\n\n"
-                "```\n$ grep x\n# the line that matters\n### quoted, not a finding\n```"
+                "```\n$ grep x\n# the line that matters\n### quoted, not a finding\n```\nBreaks: Acceptance line 1"
             ),
         },
         {
@@ -2938,7 +2941,10 @@ def test_a_verdict_line_without_all_three_counts_posts_nothing(
 @pytest.mark.parametrize(
     ("extra", "refused"),
     [
-        ("", True),
+        (
+            "",
+            False,
+        ),  # the counts decide: 0 blockers, 0 majors and nothing not run is satisfied (R6)
         ("Not run: gate\n", True),
         ("Not run: login, owner action: sign in to the app\n", False),
     ],

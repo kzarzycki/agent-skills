@@ -218,7 +218,7 @@ def test_report_json_gives_the_reports_facts(
                 "path": "app.py",
                 "line": "12",
                 "title": "a draft merges on its skipped checks",
-                "body": "- Failing input: a draft.",
+                "body": "- Failing input: a draft.\nBreaks: Acceptance line 1\nOrigin: new",
             },
             {
                 "id": "C2",
