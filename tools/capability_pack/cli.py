@@ -153,7 +153,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "smoke-run":
             commit = args.commit
             if not re.fullmatch(r"[0-9a-f]{40}", commit):
-                commit = _git_output(["rev-parse", commit], cwd=Path.cwd())
+                commit = _git_output(["rev-parse", f"{commit}^{{commit}}"], cwd=Path.cwd())
             url, conclusion = run_smoke(commit)
             print(f"smoke run: {conclusion}: {url}")
             return 0 if conclusion == "success" else 1

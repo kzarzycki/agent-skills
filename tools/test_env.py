@@ -70,6 +70,7 @@ HOST_NEUTRAL = (
     "HOME",
     "LOOP_NOTIFY",
     "OMNIGENT_CAPACITY_WAIT_SECONDS",
+    "RELEASE_SMOKE_PR",  # the on-demand smoke-run command's `pr` input, set by the caller (#1454)
     "OMNIGENT_CLOUD_MIN_AVAILABLE_MB",
     "OMNIGENT_MAX_LOAD_PER_CORE",
     "OMNIGENT_MIN_AVAILABLE_MB",

@@ -1397,9 +1397,11 @@ def run_smoke(
     inputs = ["-f", f"ref={head}"]
     if environment.get("RELEASE_SMOKE_PR"):
         inputs += ["-f", f"pr={environment['RELEASE_SMOKE_PR']}"]
-    run(["workflow", "run", workflow, "--repo", repository, *inputs])
-    identifier = None
-    for _ in range(attempts):
+    dispatched = run(["workflow", "run", workflow, "--repo", repository, *inputs])
+    # gh prints the new run's URL when it dispatches: that is this call's own run, whatever else started meanwhile
+    own = re.search(r"/actions/runs/(\d+)", dispatched or "")
+    identifier = int(own.group(1)) if own else None
+    for _ in range(0 if identifier else attempts):
         started = known() - before
         if started:
             identifier = max(started)
@@ -1409,8 +1411,13 @@ def run_smoke(
         raise ConfigurationError(f"smoke run: the {workflow} run for {head} never started")
     view = ["run", "view", str(identifier), "--repo", repository, "--json", "conclusion,url,status"]
     try:
-        run(["run", "watch", str(identifier), "--repo", repository])
+        run(["run", "watch", str(identifier), "--repo", repository, "--exit-status"])
     except ConfigurationError:
         pass  # a failed run exits non-zero; its conclusion is read below
     result = json.loads(run(view))
-    return str(result["url"]), str(result.get("conclusion") or result.get("status"))
+    if result.get("status") != "completed":
+        # the watch itself broke (a network or permission error): the run has no result yet, so report none
+        raise ConfigurationError(
+            f"smoke run: {result.get('url')} has not finished ({result.get('status')})"
+        )
+    return str(result["url"]), str(result.get("conclusion"))
