@@ -33,4 +33,7 @@ second occurrence of a mistake; a line that would not change behaviour goes.
 - Docs hold only what code cannot say, written as current truth: rewrite, never amend,
   and delete a doc with the code it describes. A comment states the current rule; one
   that describes removed behaviour is fixed or deleted.
+- A script's module docstring says what the script is and points to its docs. A rule goes in
+  the docs and in a test, never only in `--help`; tests/test_script_docstring_size.py caps the
+  docstring at 4 KB.
 - A commit body says what and why, with measured evidence.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -77,3 +78,35 @@ def test_a_decision_after_a_code_block_still_counts(body: str) -> None:
     assert (
         verified(at(CAP, "0 blocker, 1 major, 0 minor"), "## Evidence\n\nlog line\n\n" + body) == []
     )
+
+
+def test_minors_only_at_the_cap_land_under_the_cap_line_though_the_verifier_wrote_no() -> None:
+    minors = at(CAP, "0 blocker, 0 major, 1 minor")
+    assert verified(minors, "## Evidence\n\nlog line\n") == [UNSATISFIED]
+    assert verified(minors, DECIDED) == []
+    assert verified(at(CAP + 1, "0 blocker, 0 major, 2 minor"), DECIDED) == []
+
+
+def test_minors_below_the_cap_blocker_at_the_cap_or_nothing_open_still_refuse() -> None:
+    assert UNSATISFIED in verified(at(CAP - 1, "0 blocker, 0 major, 1 minor"), DECIDED)
+    assert UNSATISFIED in verified(at(CAP, "1 blocker, 0 major, 1 minor"), DECIDED)
+    assert UNSATISFIED in verified(at(CAP, "0 blocker, 0 major, 0 minor"), DECIDED)
+
+
+def test_a_cap_line_never_waives_a_run_the_verdict_names_as_not_run() -> None:
+    review = at(CAP, "0 blocker, 0 major, 1 minor")
+    review["body"] += "\nNot run: acceptance line 2, the sandbox refused it\n"
+    assert UNSATISFIED in verified(review, DECIDED)
+    review["body"] = review["body"].replace("Not run: acceptance", "Not run: none\nx acceptance")
+    assert verified(review, DECIDED) == []
+
+
+def test_the_posted_verdict_keeps_a_not_run_line_for_the_gate_to_read(tmp_path: Path) -> None:
+    report = tmp_path / "report.md"
+    report.write_text(
+        "Verifier: claude, pass 3\n\n## Criteria\n\n- A check.\n\n"
+        "### F1 (minor) app.py:1: a nit\n\nbody\n\n"
+        f"Not run: acceptance line 2, the sandbox refused it\n\nHead: {HEAD}\n"
+        "VERDICT: 0 blocker, 0 major, 1 minor\nSATISFIED: no\nRisk: low — small\n"
+    )
+    assert "Not run: acceptance line 2, the sandbox refused it" in approvals.parse_report(report)[3]

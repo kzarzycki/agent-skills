@@ -11,10 +11,11 @@ Your own check run is one `omnigent_agent.py claude-cloud-run -- <command>` on a
 refusal from the heavy-run hook names that call, and `LOOP_HOST_RUN=<reason>` is only for a run
 `claude-cloud-run` could not make or one that needs this host.
 Inside a claude-cloud session, a helper for its own work (a check, a gate, a test run) is a native subagent in the VM, never a session made with `sys_session_create`: a created child lands on the bridge host, which runs no loop work. A worker or verifier the brief asks for is a separate agent, not a helper, and starts as `brief` describes.
-A cloud lead starts its worker through the Omnigent session tools the bridge serves in the VM: `sys_session_create` with an explicit `model` (it fails without one), `sys_session_get_history` for a child's reply and `sys_session_close` to end it. It starts no verifier: it ends its turn with `READY FOR VERIFIER: PR #<n> head <sha>`, and the manager that started it runs the verifier and sends back the verdict, which the lead posts (step 7). `omnigent_agent.py start` needs a server URL and a login the VM lacks, so a cloud lead never calls it.
+A lead that runs as a `claude-cloud` session reads *Cloud lead* below first: it replaces the host rules here.
+A cloud lead starts its worker through the Omnigent session tools the bridge serves in the VM: `sys_session_create` with an explicit `model` (it fails without one), `sys_session_get_history` for a child's reply and `sys_session_update(archived: true)` to end it (`sys_session_close` refuses a sibling: *Cloud lead*, point 2). It starts no verifier: it ends its turn with `READY FOR VERIFIER: PR #<n> head <sha>`, and the manager that started it runs the verifier and sends back the verdict, which the lead posts (step 7). `omnigent_agent.py start` needs a server URL and a login the VM lacks, so a cloud lead never calls it.
 
 Each piece of work is done by you or by a worker, never both. Builds, gates, log forensics,
-edits and commits of a size M or larger change go to a Sonnet worker (an XS or S change stays with you, step 4): your context is re-read on every call (about 150k
+edits and commits of a size M or larger change go to a worker (an XS or S change stays with you, step 4): your context is re-read on every call (about 150k
 tokens), a worker's is short. A piece too small to justify a hand-off stays with you, since
 a hand-off costs about $0.30 in wakes: a one-line check, or reading a failing gate to
 decide what to do, which needs your judgement. Starting a worker and then doing its work
@@ -251,8 +252,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    the host route above; the VM runs the same `agy`, so use an id the host's `agy models` lists; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
    author context, the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
-   of quota)". A satisfied fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
-   its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. agy on another host takes the brief
+   of quota)". A satisfied Gemini fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
+   its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. A same-family verdict lands only up to the risk level loop.md's `verifier.same_family` names (default `never`, or `low` or `high`), or through the date of its `verifier.same_family_until`, and `check merge` names the setting when it refuses. agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), and
    the fix round runs the PR's affected tests only (worker.md, Gates and push). A correctness finding's fix
@@ -288,8 +289,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    of gatekeeper.md's `select` whose `paths` the diff touches, and the product's affected tests
    only when a file is a build input, which includes a file `select` doesn't classify. The
    verifier's own review, repros and mutation runs stay.
-8. **Land** once the last verdict is triaged with no core finding open, or at the cap with no
-   blocker open and your `Cap: #<follow-up>` line in the PR body (SKILL.md, The cap); the merge itself
+8. **Land** once the last verdict is satisfied and triaged with no core finding open, or at the cap under the
+   exception SKILL.md's The cap gives (no blocker, no `Not run:` line, and your `Cap: #<follow-up>` line in the PR body); the merge itself
    waits for the landing rule (SKILL.md):
    - You land your own PRs and never merge `origin/main` into one, stacked or not, unless the gate forces it
      (the next point): a merge of main changes the head, which voids the verifier's verdict and costs another pass.
@@ -305,8 +306,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      findings open, it stays so) and go with no new pass, since no file changed: `check merge`
      and `land` print `verdict on <old> carried: same tree <tree>`. When main's changes touch no file the PR changes and no merge check
      (a `check:` task, a tool it runs, or the lint, type or test configuration), that pass is
-     the short delta pass. Where loop.md still has `carry_over_main` (deprecated), no pass is
-     needed when `check merge` prints that the merge carries the head's verdict. When every
+     the short delta pass. When every
      commit since the last verdict's head is a merge of main and `land` named none of those
      heads in a conflict comment, `check merge` and the verifier brief print `unforced merge
      of <base>: land merges heads itself (lead.md step 8); this pass is avoidable`: a brief
@@ -333,11 +333,9 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
      (`?` for any part you can't know). A lead's line ends `· Session: <server>/c/<session id>`: keep that part, since
      `approvals.py check session <pr>` (run on every pull request, drafts too) and `check merge` fail an `Impl:` line without it.
-   - A project's own batching merge queue (`check queue`, `batch`) is deprecated: where the
-     project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <gatekeeper>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: the
-     newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line),
+     newest verifier review, satisfied with no core finding open (or at the cap, only what a `Cap:` line covers: SKILL.md, The cap),
      covers the head, and every review thread is resolved (SKILL.md, Review trail on the PR). No gate step comes
      between the verdict and the merge: no new gate of record, no `check-fast` run again (the head's CI reads the
      worker's record for its tree), no full suite and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
@@ -437,7 +435,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      never push to another owner's PR (SKILL.md, One concern per PR).
 9. **Accept.** First read main's push run on the merge SHA where the project has one
    (`gh run list --branch main --event push --commit <merge sha> --json conclusion,status`;
-   with `ci: false` there is none; the nightly is the run that tests main in full: SKILL.md, Nightly).
+   the nightly is the run that tests main in full: SKILL.md, Nightly).
    A merge whose tree the queue tested has a push run that tests nothing and names the queue's run in its summary:
    read that run's result instead, and wait on no push run
    (SKILL.md, A check runs only if it can fail because of the change). When it ends red, revert before anything else
@@ -580,3 +578,67 @@ A core finding still open at the cap is your decision: fix it with one pass past
 scoped to the open items; file the majors as a follow-up and record `Cap: #<follow-up>` in
 the PR body to land on the last verdict; or park or close the PR. A blocker is never landed
 on (SKILL.md, The cap).
+
+## Cloud lead
+
+1. **Who you are.** You are a cloud lead when `sys_session_get_info` on your own session
+   names agent `claude-cloud`, or `/root/.ccr/README.md` exists. The host rules in this file
+   (`claude-cloud-run`, `LOOP_HOST_RUN`, `supervise`, `watch`, `--notify`, `LOOP_NOTIFY`, detached
+   host runs, `ssh`) don't apply to you: the VM can't reach the Omnigent server over HTTP, and
+   nothing it starts outlives the VM.
+2. **Starting a worker.** Pass the body that `omnigent_agent.py brief <brief> <report>
+   --cloud --pr <n>` prints as `sys_session_create`'s `message`. Leave out `--role` and name
+   the role file by its repo path in the brief, since the child's clone has it: `--role`
+   inlines the file, which goes over the 8,000-character limit on a sibling's first message
+   (worker.md alone is about 18,900), until `brief` names repo files by path (#1604). Set `agent_id`
+   to the `claude-cloud` id from your own `sys_session_get_info`, since `sys_agent_list`
+   doesn't show it under `builtins`. Set `placement: same_host`, which makes a sibling in your
+   family. Set `permission_mode: auto`: the server refuses an approval-skipping mode for a
+   session another session creates, and `auto` runs edits and Bash with no prompt. Set
+   `model` to the worker tier (the call fails without one). The child gets the agent's default
+   cloud environment, since no MCP call pins one. Give each child a title unique to its PR and
+   role, and record it in `## Lead state` (5). Finish a child with
+   `sys_session_update(archived: true)`, since `sys_session_close` refuses a sibling. The worker
+   pushes to its own session branch, never one you name, so take the branch and head from its
+   report and open or retarget the PR from there.
+3. **The verifier.** You start none: when the PR is ready for review you end the turn with
+   `READY FOR VERIFIER: PR #<n> head <sha>`, and the manager that started you runs it and sends
+   the verdict back, which you post (step 7). It runs in the kept worker's VM (SKILL.md,
+   *Verifier in the worker's VM*): the manager sends the worker the `loop.py brief` text
+   with `sys_session_message`, asking it to run `cloud_verifier.py verify` detached and end with
+   the comment URL. `seed` and the Codex Cloud thread route are host-only. With no usable Codex
+   login in the VM (exit 2) the pass runs as `verify --harness claude`, and the verdict says it
+   is same-family, so the owner can weigh it; where Codex has no quota, step 7's Gemini route
+   (`--harness gemini`, on agy) comes first.
+4. **Waiting.** After you start or send to a child, end the turn with `STILL WORKING` and a
+   `Waits: session <id>` or `Waits: #<pr>` line, which the supervisor reads. Resume on the
+   supervisor's news of the session or PR that line names, or a sub-agent's `finished` notice:
+   a sibling's end posts no `finished` notice into you, and nothing in the VM can watch it.
+   Don't poll, since each check re-reads your whole context. A wait that has to block inside a
+   turn is a foreground `omnigent_agent.py wait-for --pr <n> --until gate|verdict --budget 570`,
+   which reads only REST, so it runs in the VM; a detached run's end wakes no cloud session, so
+   never end a turn on one. This replaces *Waiting* above for you.
+5. **State lives on GitHub, not in the VM.** A later turn may get a fresh VM with a fresh
+   clone. Approvals (statuses, reviews, labels) and `local-ci` record branches are already on
+   GitHub. Your own notes go in one PR comment headed `## Lead state`, which you edit in
+   place: each child by its session title (such as `<issue> worker`), with what the host
+   registry line would hold (its role, report and briefs), the pass count, and the head of the
+   last verdict. Never write a session id there: nothing on GitHub names a session, and a
+   public repo publishes it. Find a child's id again with `sys_session_list` by its title and
+   `created_by_session_id`. At every turn's start, read the comment and `git fetch` before you
+   act. `.git/approvals` (the land lock's local copy, `cloud-gate.json`, caches) is rebuilt by
+   the scripts and is never a record.
+6. **Gate and landing.** Where the project's CI has a required check, that check green on the
+   head is the per-head gate (#1597), so you start no `local-ci --record` session for it.
+   `approvals.py approve merge … --by delegate` and `land` run in the VM, since both read
+   REST, on a base that requires the merge queue or has no `land` section (`where: both`, the
+   default). A project with `land.where: host`, or a signed squash without `signing_key_env`,
+   can't land from a cloud lead: report the head SHA and the reason, ending `USER NEEDED`.
+7. **The record, and telling the parent.** Your report never reaches a host disk, so a
+   supervisor that follows a report path misses it. Whenever a turn ends with a question for
+   the parent, a head SHA for the go, `USER NEEDED` or `DONE`, also send that same text to the
+   parent session. Its id is in your brief, else the `created_by_session_id` in your own
+   `sys_session_get_info`. Use `sys_session_send` for a parent you are a sub-agent of, else
+   `sys_session_message`, since `sys_session_send` reaches only your own children. The parent
+   learns of the result from that message. The PR's comments (worker report, verdict,
+   `## Lead state`, `Landed`) stay the durable copy.
