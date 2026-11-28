@@ -5,6 +5,7 @@ repo's loop events, so ``pr_stalls`` and the supervisor read them as they would 
 
 import json
 import re
+import threading
 import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -519,10 +520,11 @@ class ManagerCard(Lead):
     def __init__(self, *items: dict) -> None:
         super().__init__(*items)
         self.manager_cards: list[dict] = []
+        self.holder = "cos"
 
     def info(self, sid: str) -> dict:
         got = super().info(sid)
-        return {**got, "pending_elicitations": self.manager_cards} if sid == "cos" else got
+        return {**got, "pending_elicitations": self.manager_cards} if sid == self.holder else got
 
 
 def test_a_card_only_the_notify_manager_holds_quiets_the_sweep_until_it_closes(
@@ -607,3 +609,37 @@ def test_the_session_reads_for_cards_do_not_grow_with_the_due_repos(tmp_path, mo
     one = run(("o/r",), tmp_path / "one")
     three = run(("o/r", "o/r2", "o/r3"), tmp_path / "three")
     assert three == one
+
+
+def test_a_session_read_past_the_budget_holds_no_card_and_hides_no_stall(
+    tmp_path, monkeypatch
+) -> None:
+    """#2954 F6, F7: a manager read slower than the budget is not waited on and its card, open at the last look, is
+    not trusted: the stall is raised."""
+    registry = following(tmp_path)
+    og = ManagerCard(told("brief", 9000), ending("STILL WORKING: waiting on CI\nWaits: CI", 8000))
+    og.manager_cards = [
+        {
+            "elicitation_id": "question_slow",
+            "params": {"policy_name": "sys_ask_user_question", "message": "Land o/r#12?"},
+        }
+    ]
+    og.holder = "a"
+    real, reads = ManagerCard.info, []
+
+    def info(self, sid: str) -> dict:
+        reads.append(sid)
+        if sid == "a" and len(reads) > 3:  # the first looks are prompt; the sweep's read is slow
+            threading.Event().wait(0.3)  # time.sleep is the supervisor's poll here
+        return real(self, sid)
+
+    monkeypatch.setattr(ManagerCard, "info", info)
+    monkeypatch.setattr(omnigent_agent, "CARD_READ_BUDGET", 0.05)
+    in_checkout(og)
+    p = pr(12)
+    p["timeline"].append(verdict(12, "yes", 90 * 60))
+    github(monkeypatch, [p])
+    monkeypatch.setattr(omnigent_agent, "PR_STALL_POLL", 0.0)
+    monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 1e9)
+    supervised(og, registry, monkeypatch, 6, notify="a", console=True)
+    assert "pr-stall:o/r#12" in registry.with_suffix(".events.jsonl").read_text()

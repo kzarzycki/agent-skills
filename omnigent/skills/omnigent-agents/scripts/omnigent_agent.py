@@ -293,8 +293,10 @@ import threading
 import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import wait as wait_futures
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -11615,24 +11617,28 @@ def supervise_registry(
         for sid, owes in owed.items():
             if owes[3] and not owes[5] and repos.get(sid) and not first.get(repos[sid]):
                 first[repos[sid]] = sid
-        mine: list[str] | None = None  # the sessions read for their cards, once per round
+        snap: dict[str, list[dict]] | None = None  # each session's cards as read this round
 
-        def read_cards() -> list[str]:
-            """Read each followed session and the notify manager once for this round, so a card answered or posted since
-            its last look counts (#2954). One unreadable session (any error) holds no card and stops no sweep; the
-            reads together stop at ``CARD_READ_BUDGET`` seconds, the sessions left keeping their last look."""
-            nonlocal mine
-            if mine is None:
-                mine = [*owed, *([notify] if notify else [])]
-                end = time.monotonic() + CARD_READ_BUDGET
-                for s in mine:
-                    if time.monotonic() >= end:
-                        break
-                    try:
-                        og.info(s)
-                    except Exception:  # noqa: BLE001 - an optional lookup: no card is the safe reading
-                        og.cards.pop(s, None)
-            return mine
+        def read_cards() -> dict[str, list[dict]]:
+            """Each followed session's and the notify manager's open cards, read fresh once for this round and shared
+            by every due repo (#2954). A session whose read raises, or is not back within ``CARD_READ_BUDGET``
+            seconds of the round's start, holds no card in it: nothing cached from an earlier look is trusted, so a
+            card closed since can hide no stall. The reads run beside the loop; one that outlives the budget is left
+            to finish and is never read."""
+            nonlocal snap
+            if snap is None:
+                snap = {}
+                pool = ThreadPoolExecutor(max_workers=4)
+                reads = {
+                    s: pool.submit(og.info, s)
+                    for s in dict.fromkeys([*owed, *filter(None, [notify])])
+                }
+                wait_futures(reads.values(), timeout=CARD_READ_BUDGET)
+                for s, read in reads.items():
+                    if read.done() and read.exception() is None:
+                        snap[s] = list(getattr(og, "cards", {}).get(s) or [])
+                pool.shutdown(wait=False, cancel_futures=True)
+            return snap
 
         for repo, sid in sorted(first.items()):
             if time.monotonic() - swept.get(repo, -PR_STALL_POLL) < PR_STALL_POLL:
@@ -11642,11 +11648,11 @@ def supervise_registry(
             swept[repo] = time.monotonic()
             try:
                 etags_load(etags_path)
-                at = read_cards()
+                at = SimpleNamespace(cards=read_cards())
                 # the lookup goes in only while a followed session holds a card at all (#2954)
                 look = (
-                    {"carded": lambda r, n, at=at: cards_naming_pr(og, at, n, r)}
-                    if any(getattr(og, "cards", {}).get(s) for s in at)
+                    {"carded": lambda r, n, at=at: cards_naming_pr(at, list(at.cards), n, r)}
+                    if any(at.cards.values())
                     else {}
                 )
                 found = pr_stalls(
