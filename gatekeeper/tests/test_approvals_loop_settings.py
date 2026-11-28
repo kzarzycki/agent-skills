@@ -402,3 +402,33 @@ def test_the_block_is_not_the_deprecated_policy_location() -> None:
     chosen = approvals.chosen(text, policy)
     assert isinstance(chosen, approvals.Policy)
     assert approvals.settings(chosen)["cap"] == 3
+
+
+def held_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, variable: str) -> None:
+    (tmp_path / "docs" / "agents").mkdir(parents=True)
+    (tmp_path / "docs" / "agents" / "loop.md").write_text(text)
+    monkeypatch.setattr(approvals, "toplevel", lambda: tmp_path)
+    monkeypatch.setattr(approvals, "local_ci_env", list)
+    monkeypatch.setenv(variable, "foreign")
+    approvals.loop_block.cache_clear()
+
+
+def test_an_old_gate_base_line_with_trailing_punctuation_still_clears_its_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As on main, `Gate base: CUSTOM_BASE,` and a sentence after it names the variable a plain gate clears."""
+    held_loop(tmp_path, monkeypatch, "# Loop\n\nGate base: CUSTOM_BASE, the selection's base.\n", "CUSTOM_BASE")
+    assert "CUSTOM_BASE" not in approvals.gate_env({"sets": {}})
+
+
+def test_a_block_the_loader_refuses_never_leaves_the_gate_base_variable_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held_loop(
+        tmp_path,
+        monkeypatch,
+        loop("gate_base: CUSTOM_BASE\nafected_tests: mise run x\n"),
+        "CUSTOM_BASE",
+    )
+    with pytest.raises(approvals.Refused, match="afected_tests"):
+        approvals.gate_env({"sets": {}})

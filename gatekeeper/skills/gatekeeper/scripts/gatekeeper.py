@@ -12475,10 +12475,16 @@ def gate_env(step: dict[str, Any]) -> dict[str, str]:
     them from this process's (gate): a caller's base never narrows a plain pass."""
     # the tier's names too (tier): a shell's own `GATE_INCUBATING` would run a reduced gate whose pass is keyed as a full one
     cleared = set(local_ci_env()) | {"GATE_BASE", *INCUBATING_ENV}
+    text = ""
     with contextlib.suppress(Refused, OSError):  # the working tree's loop.md, read with no git call
         held = toplevel() / LOOP
-        named = loop_setting(held.read_text(), "gate_base") if held.exists() else None
-        cleared |= {named} if named and VARIABLE.fullmatch(named) else set()
+        text = held.read_text() if held.exists() else ""
+    # a block the loader refuses is not swallowed, which would leave a foreign base set: the gate stops on it
+    named = loop_block(text).get("gate_base")
+    if named is None:  # the old line, read as it always was: the name, without the punctuation after it
+        line = re.search(r"^Gate base:[ \t]*`?([A-Za-z_]\w*)\b", text, re.MULTILINE)
+        named = line.group(1) if line else None
+    cleared |= {named} if named else set()
     return {name: value for name, value in os.environ.items() if name not in cleared} | step["sets"]
 
 
