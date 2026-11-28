@@ -3493,6 +3493,36 @@ def held(lines: dict[str, str]) -> bool:
     return lines.get("SATISFIED", "").lower().split()[:1] == ["yes"] and counts(lines) == (0, 0)
 
 
+def over_cap(pull: dict[str, Any], number: int, loop: str | None) -> str | None:
+    """Why pass `number` may not start: past the cap's one pass (the lead's fix-the-open-items option), it needs the lead's
+    `Cap: #<issue>` line in the PR body (the issue the follow-up or the owner's exception lives in), else it runs on."""
+    if number <= cap(loop) + 1 or CAP_DECISION.search(QUOTED.sub("", pull.get("body") or "")):
+        return None
+    return (
+        f"pass {number} is past the cap ({cap(loop)}) plus its one scoped pass: the PR body needs a `Cap: #<issue>` line "
+        "(the follow-up for the open findings, or the owner's exception), else park or close it (SKILL.md, The cap)"
+    )
+
+
+# a blocker or major's sibling the verifier didn't run (verifier.md, Siblings): `Sibling: <case>: not run`
+UNRUN_SIBLING = re.compile(r"^Siblings?:.*\bnot run\b", re.IGNORECASE)
+
+
+def check_siblings(report: Path, found: list[tuple[str, ...]], lines: list[str]) -> None:
+    """A blocker or major with a sibling `not run` is refused unless the report's `Budget:` line says why the pass
+    stopped short, since a class left unchecked costs the next pass a case."""
+    if any(re.match(r"Budget:[ \t]*\S", line) for line in lines):
+        return
+    for name, severity, _path, _at, _title, body in found:
+        if severity != "minor" and any(
+            UNRUN_SIBLING.match(line.strip()) for line in body.splitlines()
+        ):
+            raise Refused(
+                f"{report}: {name} is a {severity} with a sibling `not run`: run it before the verdict, or say on a "
+                "`Budget: <why>` line why the pass stopped (the verifier role, Siblings)"
+            )
+
+
 def cap(loop: str | None) -> int:
     """The project's cap: gatekeeper.md's `cap` setting, else this skill's SKILL.md's default."""
     if (own := settings(loop).get("cap")) is not None:
@@ -10572,6 +10602,7 @@ def parse_report(
             f"headings read as one ({tally[0]} blocker, {tally[1]} major, {tally[2]} minor): write each "
             "`### <id> (<blocker|major|minor>) <path>:<line>: <title>`"
         )
+    check_siblings(report, found, lines)
     # the criteria come from the spec before the worker's evidence, so its framing can't narrow the review
     if not criteria(text):
         raise Refused(

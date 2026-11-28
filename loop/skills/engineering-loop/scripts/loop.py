@@ -165,6 +165,8 @@ def brief(
     if isinstance(reviewed, str):
         raise gatekeeper.Refused(f"PR #{pr} {reviewed}")
     number = max((n for _, n, _ in reviewed), default=0) + 1
+    if over := gatekeeper.over_cap(pull, number, loop):
+        raise gatekeeper.Refused(f"PR #{pr}: {over}")
     base = gatekeeper.merge_base(pull["baseRepository"]["defaultBranchRef"]["name"], head)
     issues = sorted(
         {issue["number"] for issue in pull["closingIssuesReferences"]["nodes"]}

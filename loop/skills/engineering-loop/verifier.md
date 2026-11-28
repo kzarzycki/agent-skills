@@ -45,10 +45,9 @@ yourself, keeping standards and spec as separate axes.
   say how that input arises in use (`docs/agents/loop.md` § In use). Also report a spec or design
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
-- **Siblings.** Under a correctness finding, list the sibling inputs you can see: the other
-  cases the same code handles the same way (other states, callers, boundary values), each
-  marked failing with its evidence, fine, or not run. They belong to that finding, not to the
-  verdict's counts, so the fix can cover the class in one round instead of one case a pass.
+- **Siblings.** Under a correctness finding list the other cases the same code handles the same way (states, callers,
+  boundary values), each a line `Sibling: <case>: failing (evidence)|fine|not run`. They belong to that finding, not to
+  the counts. A `not run` one on a major is run before the verdict, or the `Budget:` line says why (`verdict` refuses it otherwise).
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
 - **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
   has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
@@ -58,9 +57,8 @@ yourself, keeping standards and spec as separate axes.
   main, and the verdict stands on the rest; never write the verdict as satisfied "apart from"
   a red test, and never accept an expected-failures list in its place. An unconditional skip in the diff
   without an issue link is a major.
-- **Out of scope:** an input the system never produces, an interleaving nobody can
-  trigger, a value orders of magnitude outside what the data source emits. Style, naming,
-  formatting and code-review's smell baseline are notes, not findings.
+- **Out of scope:** an input the system never produces, an interleaving nobody can trigger, a value orders of
+  magnitude outside the data source. Style, naming, formatting and code-review's smell baseline are notes.
 - **Work the given priorities first.**
 - **Every pass after the first:** the lead gives you the previous report. Review
   the diff since its head and the files it touches yourself, both axes in your own session
@@ -141,7 +139,8 @@ yourself, keeping standards and spec as separate axes.
   name or record you saw on the instance goes in a local file next to the report (under
   `tmp/loop/`), and the report cites that file by path and says what it shows, without the
   values. When the sandbox can't reach the instance or its log, say so.
-- **Run loop.md § Verifier checklist**, when it has one.
+- **Run loop.md § Verifier checklist**, when it has one, and try the edge inputs (empty, missing, malformed, duplicate,
+  oversized) of any parser or settings loader the change touches: earlier passes' misses cluster there.
 - **Mutation-check the new tests.** Undo each production change the spec adds on its own
   (one condition, branch or value), never the whole diff at once, since a whole-patch revert
   fails the tests for the wrong reason (a flag gone) and hides a change no test covers. Edit
