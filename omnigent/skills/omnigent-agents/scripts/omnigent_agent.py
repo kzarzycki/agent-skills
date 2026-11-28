@@ -3953,32 +3953,32 @@ def tier_model(listed: list[str], tier: str) -> str | None:
     )
 
 
-CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
+def _load_verifier_pass() -> Any:
+    """gatekeeper's verifier_pass.py, the one predicate of a Codex verifier pass (#3003), loaded by path, or `None`
+    when the gatekeeper skill is not installed."""
+    try:
+        folder = installed("gatekeeper")
+        assert folder
+        if str(folder) not in sys.path:
+            sys.path.insert(0, str(folder))  # its folding.py
+        spec = importlib.util.spec_from_file_location(
+            f"{__name__}_verifier_pass", folder / "verifier_pass.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except (Exception, SystemExit):  # noqa: BLE001 - absent or broken: no refusal, as a forge that can't answer
+        return None
 
 
 def earlier_codex_pass(
-    reviews: list[Any], comments: list[Any], head: str
+    reviews: list[Any], comments: list[Any], head: str, logins: Any = ()
 ) -> tuple[str, str] | None:
-    """The (family, pass) of the newest Codex verifier pass already posted on `head`, else None: a review on that
-    commit headed `Verifier (codex/...), pass <n>`, or a cloud_verifier.py comment (`Head: <sha>` in view,
-    `Verifier: codex/..., pass <n>` folded below). Twin of cloud_verifier.py's, which a VM runs without this file."""
-    found = [
-        (int(m[2]), m[1])
-        for r in reviews
-        if isinstance(r, dict)
-        and r.get("commit_id") == head
-        and (m := CODEX_PASS.search(r.get("body") or ""))
-    ] + [
-        (int(m[2]), m[1])
-        for c in comments
-        if isinstance(c, dict)
-        and re.search(rf"^Head: {re.escape(head)}\s*$", c.get("body") or "", re.MULTILINE)
-        and (m := CODEX_PASS.search(c.get("body") or ""))
-    ]
-    if not found:
-        return None
-    number, family = max(found)
-    return family, str(number)
+    """The (family, pass) of the newest Codex verifier pass already on `head`, else None, by verifier_pass.py's
+    predicate (the heading first, a trusted author), the one cloud_verifier.py's guard uses too."""
+    shared = _load_verifier_pass()
+    return shared.earlier_codex_pass(reviews, comments, head, logins) if shared else None
 
 
 def codex_pass_on_head(pr: int | None) -> str | None:
@@ -4004,15 +4004,29 @@ def codex_pass_on_head(pr: int | None) -> str | None:
                 items += part if isinstance(part, list) else []
             return items
 
-        head = json.loads(
+        pull = json.loads(
             subprocess.run(
                 ["gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}"],
                 capture_output=True,
                 text=True,
                 check=True,
             ).stdout
-        )["head"]["sha"]
-        again = earlier_codex_pass(get(f"pulls/{pr}/reviews"), get(f"issues/{pr}/comments"), head)
+        )
+        head = pull["head"]["sha"]
+        logins = {pull["user"]["login"]}
+        try:  # the account running this: no answer only narrows who counts
+            logins.add(
+                json.loads(
+                    subprocess.run(
+                        ["gh", "api", "user"], capture_output=True, text=True, check=True
+                    ).stdout
+                )["login"]
+            )
+        except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError):
+            pass
+        again = earlier_codex_pass(
+            get(f"pulls/{pr}/reviews"), get(f"issues/{pr}/comments"), head, logins
+        )
     except (subprocess.CalledProcessError, OSError, ValueError, KeyError, TypeError):
         return None
     if not again:

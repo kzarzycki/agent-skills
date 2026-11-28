@@ -114,7 +114,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 # importing the gatekeeper skill's folding.py would cache its bytecode in the installed skill folder, an untracked change there
@@ -124,6 +124,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _installed import installed
 
 sys.path.insert(0, str(installed("gatekeeper")))
+import verifier_pass
 from folding import fold
 
 VAR = "CODEX_AUTH_JSON"
@@ -616,30 +617,13 @@ def codex_defaults(model: str | None, effort: str | None) -> tuple[str, str]:
     return model or CODEX_MODEL, effort or CODEX_EFFORT
 
 
-CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
-
-
 def earlier_codex_pass(
-    reviews: list[dict], comments: list[dict], head: str
+    reviews: list[dict], comments: list[dict], head: str, logins: Iterable[str] = ()
 ) -> tuple[str, str] | None:
-    """The (family, pass) of a Codex verifier pass already posted on `head`, else None: a review on that commit headed
-    `Verifier (codex/...), pass <n>`, or a comment of this script's own (`Head: <sha>` in view, `Verifier: codex/...,
-    pass <n>` folded below). A second Codex pass on an unchanged head repeats the first one's reading at the same
-    cost, so the lead pushes a fix, or starts another route, instead (#2870)."""
-    found = []
-    for review in reviews:
-        if review.get("commit_id") == head and (m := CODEX_PASS.search(review.get("body") or "")):
-            found.append((int(m[2]), m[1]))
-    for comment in comments:
-        body = comment.get("body") or ""
-        if re.search(rf"^Head: {re.escape(head)}\s*$", body, re.MULTILINE) and (
-            m := CODEX_PASS.search(body)
-        ):
-            found.append((int(m[2]), m[1]))
-    if not found:
-        return None
-    number, family = max(found)
-    return family, str(number)
+    """The (family, pass) of a Codex verifier pass already posted on `head`, else None, by gatekeeper's one predicate
+    (verifier_pass.py, the same rules as its `passes()`: the heading first, a trusted author) so a review that only
+    quotes a verdict is none (#2870, #3003)."""
+    return verifier_pass.earlier_codex_pass(reviews, comments, head, logins)
 
 
 def pass_history(pr: int) -> tuple[list[dict], list[dict]]:
@@ -656,9 +640,22 @@ def pass_history(pr: int) -> tuple[list[dict], list[dict]]:
     return both[0], both[1]
 
 
+def pass_logins(pr: int) -> set[str]:
+    """The PR's author and the account running this: the logins whose Codex pass counts beside a writer's. One GitHub
+    can't answer is no login, which only narrows what counts."""
+    found = set()
+    for path, owner in ((f"repos/{{owner}}/{{repo}}/pulls/{pr}", "user"), ("user", None)):
+        try:
+            got = json.loads(run("gh", "api", path).stdout)
+            found.add((got[owner] if owner else got)["login"])
+        except (Refused, ValueError, KeyError, TypeError):
+            pass
+    return found
+
+
 def refuse_repeat_codex_pass(pr: int, head: str) -> None:
     """The one place every Codex route (`verify`, `thread`) refuses a second pass on `head`, naming the first."""
-    if again := earlier_codex_pass(*pass_history(pr), head):
+    if again := earlier_codex_pass(*pass_history(pr), head, pass_logins(pr)):
         raise Refused(
             f"PR #{pr} head {head[:12]} already has a Codex verifier pass ({again[0]}, pass {again[1]}): a second pass on"
             " an unchanged head repeats it. Push a fix and verify the new head, or use another route"
