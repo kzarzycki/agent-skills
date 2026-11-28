@@ -188,7 +188,9 @@ def test_carry_text_says_a_clean_base_merge_or_rebase_carries_with_no_setting_29
     """reviewed() and carries() once said carry needs a loop.md opt-in; carried() and catch_up() carry by default."""
     reviewed = function_doc("reviewed")
     assert "opts in" not in reviewed
-    assert "clean merge of the base or a clean rebase" in reviewed and "no setting needed" in reviewed
+    assert (
+        "clean merge of the base or a clean rebase" in reviewed and "no setting needed" in reviewed
+    )
     assert "opts in" not in function_doc("carries")
     policy = flat_text((GATEKEEPER.parent.parent / "policy.md").read_text())
     skill = flat_text(SKILL.read_text())
