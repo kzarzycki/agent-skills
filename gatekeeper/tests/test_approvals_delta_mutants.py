@@ -22,7 +22,7 @@ def delta(findings: str, verdict: str, extra: str = "") -> str:
 
 
 def survivor(mutant: str, severity: str = "major") -> str:
-    return f"### F1 ({severity}) app.py:3: a surviving mutant\n\nIt survives.\nMutant: {mutant}\n"
+    return f"### F1 ({severity}) app.py:3: a surviving mutant\n\nIt survives.\nMutant: {mutant}\nBreaks: Acceptance line 1\nOrigin: new\n"
 
 
 PRIOR = "Verifier: claude, pass 2\n\n## Correctness\n\n### F1 (major) app.py:3: x\n\nMutants: `a > b` -> `a >= b`; drop the guard\n"
