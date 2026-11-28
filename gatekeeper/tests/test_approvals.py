@@ -4762,19 +4762,53 @@ def test_a_diff_setting_that_hides_paths_does_not_let_an_edited_merge_carry(
     ]
 
 
+REFUSED_CASE = (
+    "PR #7: the newest verifier review is on {head}, not on the head {merge}:"
+    " every commit after a verdict needs a verdict of its own"
+)
+
+
+def test_a_text_conversion_driver_does_not_let_an_edited_merge_carry(
+    carrying: Callable[..., dict[str, str]],
+) -> None:
+    """A `textconv` driver that makes two versions of a file read alike must not hide an edit made in the merge."""
+    case = carrying({"other.txt": "main moved\n"}, resolve={"mise.toml": "[tools]\nedited = 1\n"})
+    root = Path.cwd()
+    (root / ".gitattributes").write_text("mise.toml diff=normalized\n")
+    sh("git", "config", "diff.normalized.textconv", "true", cwd=root)
+    assert merge(carried_pull(case), [approved(1, "area:web")], LOOP) == [
+        REFUSED_CASE.format(**case)
+    ]
+
+
+def test_a_gitlink_added_in_the_merge_is_not_hidden_by_ignore_submodules(
+    carrying: Callable[..., dict[str, str]],
+) -> None:
+    """`diff.ignoreSubmodules=all` hides a gitlink a merge adds: the remerge proof reads it anyway."""
+    case = carrying({"other.txt": "main moved\n"}, gitlink="a" * 40)
+    sh("git", "config", "diff.ignoreSubmodules", "all", cwd=Path.cwd())
+    assert merge(carried_pull(case), [approved(1, "area:web")], LOOP) == [
+        REFUSED_CASE.format(**case)
+    ]
+
+
 def test_a_pr_commit_between_two_clean_merges_carries_nothing(
     carrying: Callable[..., dict[str, str]],
 ) -> None:
-    """A clean merge on top hides no PR commit under it: the first-parent walk meets that commit first."""
+    """A clean merge on top hides no PR commit under it: the first-parent walk meets that commit first. Every merge's
+    base side descends from the one before, so only the intervening commit can refuse the walk."""
     first = carrying({"other.txt": "main moved\n"})
-    rewritten = carrying(
-        {"more.txt": "main moved again\n"}, then={"app.py": APP.replace("line 2\n", "line 2!\n")}
+    second = carrying(
+        {"more.txt": "main moved again\n"},
+        onto=first["merge"],
+        main=first["base"],
+        then={"app.py": APP.replace("line 2\n", "line 2!\n")},
     )
-    case = carrying(
-        {"third.txt": "main moved a third time\n"}, onto=rewritten["merge"], main=first["base"]
+    third = carrying(
+        {"third.txt": "main moved a third time\n"}, onto=second["merge"], main=second["base"]
     )
     pr = carried_pull(first)
-    pr.update(headRefOid=case["merge"], baseRefOid=case["base"])
+    pr.update(headRefOid=third["merge"], baseRefOid=third["base"])
     assert merge(pr, [approved(1, "area:web")], LOOP)[0].startswith(
         "PR #7: the newest verifier review is on"
     )
@@ -8262,6 +8296,7 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
         onto: str | None = None,
         main: str = "main",
         then: dict[str, str] | None = None,
+        gitlink: str | None = None,
     ) -> dict[str, str]:
         n = next(cases)
         git("switch", "-qc", f"base{n}", main)
@@ -8287,6 +8322,8 @@ def carrying(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., d
             check=False,
         )
         write({**(resolve or {}), **(extra or {})})
+        if gitlink:
+            git("update-index", "--add", "--cacheinfo", f"160000,{gitlink},deps/lib")
         git("commit", "-qm", f"Merge main {n}")
         if then:
             write(then)

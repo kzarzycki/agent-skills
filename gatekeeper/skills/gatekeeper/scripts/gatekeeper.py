@@ -3870,6 +3870,7 @@ def catch_up(pull: dict[str, Any], old: str) -> str | None:
                     "--no-relative",  # diff.relative would hide what lies outside the current directory
                     "--ignore-submodules=none",  # diff.ignoreSubmodules and .gitmodules would hide a gitlink
                     "--no-ext-diff",
+                    "--no-textconv",  # a textconv driver can make two versions of a file read alike
                     commit,
                 ).strip()
                 for commit, _, _ in walked
