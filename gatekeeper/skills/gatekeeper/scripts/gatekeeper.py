@@ -8028,9 +8028,17 @@ def unreadied(
         verdict = landable(draft, tracker, loop, required, named=True)
         if verdict.draft:
             # CI started on ready, so the wait follows the fetched policy's required checks, not the ones readied() saw
-            found.append({**pull, "waiting": (WAITING, True) if required else None})
-            for line in ci(f"PR #{pull['number']}", pull, required) if required else []:
+            if not required and not pull.get("waiting"):
+                found.append(pull)
+                continue
+            lines = ci(f"PR #{pull['number']}", pull, required) if required else []
+            for line in lines:
                 print(line)  # the wait names the check that holds it, as landable does
+            if required and not lines and not pull.get("waiting"):
+                print(
+                    f"PR #{pull['number']}: CI starts on ready, so its required checks are pending"
+                )
+            found.append({**pull, "waiting": (WAITING, True) if required else None})
             continue
         port("forge").ready(pull["number"], undo=True)
         print(

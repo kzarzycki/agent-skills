@@ -222,6 +222,19 @@ def test_a_draft_land_readied_that_waits_for_a_check_the_lock_added_names_it(
     assert "PR #7: no `ci-tests` on the head commit yet" in lines, lines
 
 
+def test_a_draft_land_readied_that_waits_for_a_listed_check_already_green_says_ci_is_pending(
+    lands: dict[str, Any], required: list[str], no_clock_wait: None, at_the_lock: Any
+) -> None:
+    listed_policy(lands, "")
+    lands["open"](7, {"7.txt": "7\n"})
+    lands["pulls"][7]["isDraft"] = True
+    only_check(lands, 7, "ci-tests", "SUCCESS")
+    at_the_lock("    - ci-tests")
+    code, lines = lands["land"]("7")
+    assert (code, lands["merged"]()) == (approvals.WAITING, []), lines
+    assert "PR #7: CI starts on ready, so its required checks are pending" in lines, lines
+
+
 def test_a_conflicting_draft_land_readied_goes_back_to_draft_when_the_lock_adds_a_listed_check(
     lands: dict[str, Any], required: list[str], no_clock_wait: None, at_the_lock: Any
 ) -> None:
