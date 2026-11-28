@@ -289,8 +289,8 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    of gatekeeper.md's `select` whose `paths` the diff touches, and the product's affected tests
    only when a file is a build input, which includes a file `select` doesn't classify. The
    verifier's own review, repros and mutation runs stay.
-8. **Land** once the last verdict is triaged with no core finding open, or at the cap with no
-   blocker open and your `Cap: #<follow-up>` line in the PR body (SKILL.md, The cap); the merge itself
+8. **Land** once the last verdict is satisfied and triaged with no core finding open, or at the cap under the
+   exception SKILL.md's The cap gives (no blocker, no `Not run:` line, and your `Cap: #<follow-up>` line in the PR body); the merge itself
    waits for the landing rule (SKILL.md):
    - You land your own PRs and never merge `origin/main` into one, stacked or not, unless the gate forces it
      (the next point): a merge of main changes the head, which voids the verifier's verdict and costs another pass.
@@ -338,7 +338,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
      project's instructions still name one, enqueue there as they say until it adopts `land`.
    - Run `uv run <gatekeeper>/scripts/approvals.py land <pr> --wait` (the project's `mise run loop:land <pr>`
      with `--wait`) once no local objection is left: the
-     newest verifier review, satisfied with no core finding open (or at the cap, majors only under a `Cap:` line),
+     newest verifier review, satisfied with no core finding open (or at the cap, only what a `Cap:` line covers: SKILL.md, The cap),
      covers the head, and every review thread is resolved (SKILL.md, Review trail on the PR). No gate step comes
      between the verdict and the merge: no new gate of record, no `check-fast` run again (the head's CI reads the
      worker's record for its tree), no full suite and no cloud session per head for a record (SKILL.md, Merge model). Without a merge queue `land` merges on the
