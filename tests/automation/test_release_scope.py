@@ -148,57 +148,148 @@ def _runs(*runs: dict) -> Callable[[list[str]], str]:
     return lambda _arguments: json.dumps(list(runs))
 
 
-def test_release_check_refuses_without_a_smoke_run_for_the_release_head() -> None:
-    from tools.capability_pack.qualify import require_smoke_run
-
-    other = {"conclusion": "success", "displayTitle": f"smoke {'b' * 40}", "url": "u-other"}
-    failed = {"conclusion": "failure", "displayTitle": f"smoke {HEAD}", "url": "u-failed"}
-    for runs in ((), (other,), (failed,)):
-        with pytest.raises(ConfigurationError, match="no passing"):
-            require_smoke_run(HEAD, SMOKE, _runs(*runs))
-    with pytest.raises(ConfigurationError, match="RELEASE_SMOKE_REPOSITORY"):
-        require_smoke_run(HEAD, {}, _runs())
-    passed = {"conclusion": "success", "displayTitle": f"smoke {HEAD}", "url": "u-ok"}
-    assert require_smoke_run(HEAD, SMOKE, _runs(other, failed, passed)) == "u-ok"
-
-
-def test_release_check_command_is_off_without_the_smoke_repository_and_prints_a_skip(
-    monkeypatch, capsys
-) -> None:
+def test_release_check_passes_with_neither_smoke_variable_set(monkeypatch, capsys) -> None:
     from tools.capability_pack import cli
 
     monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
-    monkeypatch.setattr(cli, "_git_output", lambda *_a, **_k: HEAD)
     for name in SMOKE:
         monkeypatch.delenv(name, raising=False)
-    argv = ["release-check", "engineering", "engineering-v0.0.0"]
-    assert cli.main(argv) == 0
-    assert "smoke run: off (RELEASE_SMOKE_REPOSITORY unset)" in capsys.readouterr().out
-    monkeypatch.setenv("RELEASE_SMOKE_REPOSITORY", "org/private")
-    assert cli.main(argv) == 2
-    assert "RELEASE_SMOKE_WORKFLOW" in capsys.readouterr().err
-    assert cli.main([*argv, "--skip-smoke"]) == 0
-    assert "smoke run: skipped" in capsys.readouterr().out
+    assert cli.main(["release-check", "engineering", "engineering-v0.0.0"]) == 0
+    assert "smoke" not in capsys.readouterr().out
+    assert (
+        cli.main(["release-check", "engineering", "engineering-v0.0.0", "--skip-smoke"]) == 2
+    )  # flag is gone
 
 
-def test_release_check_asks_about_the_head_it_checked_out(monkeypatch, capsys) -> None:
+def test_release_check_does_not_consult_the_smoke_run_even_when_configured(monkeypatch) -> None:
     from tools.capability_pack import cli
 
-    asked: list[str] = []
-    monkeypatch.setenv("RELEASE_SMOKE_REPOSITORY", "org/private")
     monkeypatch.setattr(cli, "validate_release_candidate", lambda *_a: None)
-    monkeypatch.setattr(cli, "_git_output", lambda *_a, **_k: HEAD)
-    monkeypatch.setattr(cli, "require_smoke_run", lambda head: asked.append(head) or "u-ok")
+    monkeypatch.setattr(
+        cli, "run_smoke", lambda *_a, **_k: pytest.fail("release-check must not run the smoke")
+    )
+    for name, value in SMOKE.items():
+        monkeypatch.setenv(name, value)
     assert cli.main(["release-check", "engineering", "engineering-v0.0.0"]) == 0
-    assert asked == [HEAD]
-    assert "smoke run: u-ok" in capsys.readouterr().out
+
+
+def test_smoke_run_command_fails_clearly_when_the_variables_are_unset(monkeypatch, capsys) -> None:
+    from tools.capability_pack import cli
+
+    for name in SMOKE:
+        monkeypatch.delenv(name, raising=False)
+    assert cli.main(["smoke-run", HEAD]) == 2
+    assert "RELEASE_SMOKE_REPOSITORY" in capsys.readouterr().err
+
+
+def _smoke_gh(conclusion: str, calls: list[list[str]]) -> Callable[[list[str]], str]:
+    listings = iter([[], [{"databaseId": 7, "displayTitle": f"smoke {HEAD}"}]])
+
+    def run(arguments: list[str]) -> str:
+        calls.append(arguments)
+        if arguments[:2] == ["run", "list"]:
+            return json.dumps(next(listings))
+        if arguments[:2] == ["run", "view"]:
+            return json.dumps({"conclusion": conclusion, "status": "completed", "url": "u-run"})
+        return ""
+
+    return run
+
+
+def test_run_smoke_dispatches_for_the_commit_and_reports_the_runs_result() -> None:
+    from tools.capability_pack.qualify import run_smoke
+
+    calls: list[list[str]] = []
+    env = {**SMOKE, "RELEASE_SMOKE_PR": "5"}
+    assert run_smoke(HEAD, env, _smoke_gh("success", calls), sleep=lambda _s: None) == (
+        "u-run",
+        "success",
+    )
+    dispatch = next(c for c in calls if c[:2] == ["workflow", "run"])
+    assert f"ref={HEAD}" in dispatch and "pr=5" in dispatch and "org/private" in dispatch
+    assert run_smoke(HEAD, SMOKE, _smoke_gh("failure", []), sleep=lambda _s: None) == (
+        "u-run",
+        "failure",
+    )
+
+
+def test_run_smoke_reports_its_own_dispatch_when_another_run_for_the_commit_exists() -> None:
+    from tools.capability_pack.qualify import run_smoke
+
+    listings = iter(
+        [
+            [],
+            [
+                {"databaseId": 7, "displayTitle": f"s {HEAD}"},
+                {"databaseId": 8, "displayTitle": f"s {HEAD}"},
+            ],
+        ]
+    )
+    viewed: list[str] = []
+
+    def run(arguments: list[str]) -> str:
+        if arguments[:2] == ["workflow", "run"]:
+            return (
+                "Created workflow_dispatch event\nhttps://github.com/org/private/actions/runs/7\n"
+            )
+        if arguments[:2] == ["run", "list"]:
+            return json.dumps(next(listings))
+        if arguments[:2] == ["run", "view"]:
+            viewed.append(arguments[2])
+            return json.dumps({"conclusion": "failure", "status": "completed", "url": "u-7"})
+        return ""
+
+    assert run_smoke(HEAD, SMOKE, run, sleep=lambda _s: None) == ("u-7", "failure")
+    assert viewed == ["7"]
+
+
+def test_run_smoke_refuses_a_result_when_the_watch_broke_before_the_run_finished() -> None:
+    from tools.capability_pack.qualify import run_smoke
+
+    seen: list[list[str]] = []
+
+    def run(arguments: list[str]) -> str:
+        seen.append(arguments)
+        if arguments[:2] == ["workflow", "run"]:
+            return "https://github.com/org/private/actions/runs/7"
+        if arguments[:2] == ["run", "list"]:
+            return "[]"
+        if arguments[:2] == ["run", "watch"]:
+            raise ConfigurationError("gh: HTTP 403")
+        return json.dumps({"status": "in_progress", "url": "u-7"})
+
+    with pytest.raises(ConfigurationError, match="has not finished"):
+        run_smoke(HEAD, SMOKE, run, sleep=lambda _s: None)
+    assert "--exit-status" in next(c for c in seen if c[:2] == ["run", "watch"])
+
+
+def test_smoke_run_command_resolves_an_annotated_tag_to_its_commit(monkeypatch) -> None:
+    from tools.capability_pack import cli
+
+    asked: list[list[str]] = []
+    monkeypatch.setattr(cli, "_git_output", lambda arguments, **_k: asked.append(arguments) or HEAD)
+    monkeypatch.setattr(cli, "run_smoke", lambda head: ("u", "success" if head == HEAD else "x"))
+    assert cli.main(["smoke-run", "chief-of-staff-v0.1.0"]) == 0
+    assert asked == [["rev-parse", "chief-of-staff-v0.1.0^{commit}"]]
+
+
+def test_smoke_run_command_exits_with_the_runs_result(monkeypatch, capsys) -> None:
+    from tools.capability_pack import cli
+
+    monkeypatch.setattr(
+        cli, "run_smoke", lambda head: ("u-run", "success" if head == HEAD else "x")
+    )
+    assert cli.main(["smoke-run", HEAD]) == 0
+    assert "smoke run: success: u-run" in capsys.readouterr().out
+    monkeypatch.setattr(cli, "run_smoke", lambda head: ("u-run", "failure"))
+    assert cli.main(["smoke-run", HEAD]) == 1
 
 
 def test_smoke_run_refuses_a_short_head() -> None:
-    from tools.capability_pack.qualify import require_smoke_run
+    from tools.capability_pack.qualify import run_smoke
 
     with pytest.raises(ConfigurationError, match="full commit sha"):
-        require_smoke_run(HEAD[:7], SMOKE, _runs())
+        run_smoke(HEAD[:7], SMOKE, _runs())
 
 
 def test_smoke_workflow_in_releasing_md_requires_the_verdict_line() -> None:

@@ -8,8 +8,7 @@
 #   runs `cli release-verify`, which fails the PR unless its tree is exactly the fold of its branch point, so the PR is
 #   risk low with no verifier (docs/agents/gatekeeper.md's `bot.release`).
 # - `tag` (the squash commit on main) pushes each package's tag on that commit, in one push, so `release-check` finds
-#   every manifest the commit changes tagged on it. Before an engineering tag it runs the pre-tag smoke run when
-#   RELEASE_SMOKE_REPOSITORY is set (engineering/RELEASING.md).
+#   every manifest the commit changes tagged on it. No smoke run gates a tag: it is on demand (engineering/RELEASING.md).
 # Both push with RELEASE_TOKEN, a token that can write contents and pull requests here: a push or PR made with
 # `github.token` starts no workflow, so neither the release PR's `qualify` nor the tag check (and its consumer-sync PR)
 # would run.
@@ -208,42 +207,6 @@ jobs:
           tags=$(uv run python -m tools.capability_pack.cli release-tags | tr '\n' ' ')
           echo "tags: $tags"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
-      # The pre-tag smoke run engineering/RELEASING.md requires: its repository is a private organization repository
-      # the releaser configures, so it comes from secrets, never from this repository's text.
-      - name: Smoke-run the gatekeeper before an engineering tag
-        if: contains(steps.tags.outputs.tags, 'engineering-v')
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_SMOKE_TOKEN }}
-          RELEASE_SMOKE_REPOSITORY: ${{ secrets.RELEASE_SMOKE_REPOSITORY }}
-          RELEASE_SMOKE_WORKFLOW: ${{ secrets.RELEASE_SMOKE_WORKFLOW }}
-          RELEASE_SMOKE_PR: ${{ secrets.RELEASE_SMOKE_PR }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          # off until a private organization repository hosts the smoke workflow, as release-check is (#1855)
-          if [ -z "$RELEASE_SMOKE_REPOSITORY" ]; then
-            echo "smoke run: off (RELEASE_SMOKE_REPOSITORY unset)"; exit 0
-          fi
-          missing=""
-          for name in RELEASE_SMOKE_TOKEN:GH_TOKEN RELEASE_SMOKE_WORKFLOW RELEASE_SMOKE_PR; do
-            secret=${name%%:*}; variable=${name##*:}
-            [ -n "${!variable:-}" ] || missing="$missing $secret"
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::set the secret(s)$missing: an engineering tag waits on the pre-tag smoke run (engineering/RELEASING.md)"
-            exit 1
-          fi
-          gh workflow run "$RELEASE_SMOKE_WORKFLOW" --repo "$RELEASE_SMOKE_REPOSITORY" -f ref="$SHA" -f pr="$RELEASE_SMOKE_PR"
-          id=""
-          for _ in $(seq 60); do
-            id=$(gh run list --repo "$RELEASE_SMOKE_REPOSITORY" --workflow "$RELEASE_SMOKE_WORKFLOW" --event workflow_dispatch \
-              --limit 20 --json databaseId,displayTitle --jq "map(select(.displayTitle | contains(\"$SHA\")))[0].databaseId // empty")
-            [ -n "$id" ] && break
-            sleep 10
-          done
-          [ -n "$id" ] || { echo "::error::the smoke run for $SHA never started"; exit 1; }
-          gh run watch "$id" --repo "$RELEASE_SMOKE_REPOSITORY" --exit-status > /dev/null
-          echo "smoke run passed for $SHA"
       - name: Tag every released package on the commit, in one push
         if: steps.tags.outputs.tags != ''
         env:
@@ -258,10 +221,9 @@ jobs:
           for tag in $TAGS; do nexts="$nexts $tag-next"; done
           TAGS=${nexts# }
           for tag in $TAGS; do git tag -a "$tag" -m "$tag" "$SHA"; done
-          # every manifest the commit changes is tagged on it now, which each check requires; the step above
-          # was engineering's smoke run
+          # every manifest the commit changes is tagged on it now, which each check requires
           for tag in $TAGS; do
-            uv run python -m tools.capability_pack.cli release-check "${tag%-v*}" "$tag" --skip-smoke
+            uv run python -m tools.capability_pack.cli release-check "${tag%-v*}" "$tag"
           done
           # one push: each tag check starts with every tag of the commit already in place
           git push origin $TAGS
