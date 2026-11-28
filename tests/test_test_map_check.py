@@ -37,7 +37,7 @@ def nightly_core() -> str:
     return str(mapped[0]["env"].get("COVERAGE_CORE", "sysmon"))
 
 
-def run_suite(project: Path, tests: dict[str, str]) -> Path:
+def run_suite(project: Path, tests: dict[str, str], cover: tuple[str, ...] = ("pkg",)) -> Path:
     """Run `tests` under `project` the way the nightly does (one coverage context per test, the map plugin's failed,
     skipped and durations lists) and return the map directory."""
     (project / "pkg").mkdir()
@@ -73,7 +73,7 @@ def run_suite(project: Path, tests: dict[str, str]) -> Path:
             "no:xdist",
             "-o",
             "addopts=",
-            "--cov=pkg",
+            *(f"--cov={c}" for c in cover),
             "--cov-context=test",
             "--cov-report=",
             "tests",
@@ -199,6 +199,7 @@ def test_a_map_whose_source_files_ran_no_line_fails_the_map_step(
     root = run_suite(
         tmp_path,
         {"test_idle.py": "def test_idle():\n    assert True\n"},
+        cover=("pkg", "tests"),  # the nightly measures the test files too
     )
     monkeypatch.chdir(tmp_path)
     assert check.main(["test_map_check.py", str(root)]) == 1
