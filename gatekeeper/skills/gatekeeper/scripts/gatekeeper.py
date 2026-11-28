@@ -1399,10 +1399,63 @@ class Rated(NamedTuple):
     source: str
     because: str
 
-    def line(self, pull: dict[str, Any]) -> str:
-        """The line `check merge` and `land` print: the level, why, and the action they applied."""
-        rated = f"{self.level} ({self.why})" if self.why else self.level
-        return f"PR #{pull['number']}: risk: {rated}; merge: {self.merge}"
+    def line(self, pull: dict[str, Any], loop: str | None = None) -> str:
+        """The line `check merge`, `land` and `record verdict` print: the level, why, and the action they applied.
+        The gate's rule only knows `low`, `high` and `critical`, so a PR whose `risk:*` label or verifier `Risk:` word
+        says more (`risk:medium`) shows that word instead of `low`, and when the label and the verdict disagree the line
+        names both (stated_risk)."""
+        label, said = stated_risk(pull, loop)
+        words = {*label, *([said] if said else [])}
+        level, why = self.level, self.why
+        if self.level == "low" and words:
+            level = max(words, key=risk_rank)
+            if risk_rank(level) > 0:
+                why = " and ".join(stated_parts(label, said)) + "; no gate rule rates it higher"
+        shown = f"{level} ({why})" if why else level
+        note = ""
+        extra = ""
+        if self.level == "low" and len(words) > 1:
+            note = f"; the PR's label and the verdict disagree: {' vs '.join(stated_parts(label, said))}"
+        elif self.level != "low" and (words - {self.level} or len(words) > 1):
+            # the gate's own rating and merge action stand, on the line as before; what the PR says beside it (the
+            # label and the verdict as stated, a low one included) goes on a line of its own, unless it only repeats
+            # the rating
+            kind = "disagree" if len(words) > 1 else "state"
+            extra = (
+                f"\nPR #{pull['number']}: the PR's label and the verdict {kind}:"
+                f" {' vs '.join(stated_parts(label, said))}"
+            )
+        return f"PR #{pull['number']}: risk: {shown}; merge: {self.merge}{note}{extra}"
+
+
+RISK_WORDS = ("low", "medium", "high", "critical")
+
+
+def risk_rank(word: str) -> int:
+    """How high a `risk:*` label's or verdict's word ranks: its place in RISK_WORDS, a word it does not list as medium's."""
+    return RISK_WORDS.index(word) if word in RISK_WORDS else 1
+
+
+def stated_risk(pull: dict[str, Any], loop: str | None = None) -> tuple[list[str], str | None]:
+    """What the PR itself says of its risk, apart from the gate's rating: the words of its `risk:*` labels, and the
+    `Risk:` word of the verifier's newest pass on the head (None when none is read, or none says one)."""
+    label = sorted(n.partition(":")[2].lower() for n in names(pull) if n.startswith("risk:"))
+    try:
+        found = head_passes(pull, loop)
+    except (Refused, OSError, subprocess.CalledProcessError):
+        return label, None
+    said = None
+    if not isinstance(found, str) and found[1]:
+        word = re.match(r"[A-Za-z]+", found[1][-1][1].get("Risk", ""))
+        said = word[0].lower() if word else None
+    return label, said
+
+
+def stated_parts(label: list[str], said: str | None) -> list[str]:
+    """stated_risk's words as the lines name them: each label, then the verdict's `Risk:` line."""
+    return [f"PR label `risk:{each}`" for each in label] + (
+        [f"verifier `Risk: {said}`"] if said else []
+    )
 
 
 def rating(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> Rated:
@@ -5846,7 +5899,9 @@ def closes_nothing(
     if not issues:
         return []
     mine = closed(pull, pull["baseRepository"]["nameWithOwner"], loop)
-    if any(i["number"] in mine and str(i.get("state", "OPEN")).upper() == "OPEN" for i in issues):
+    # a merged PR's issue is closed by that merge: it was open when the PR was judged, so closed now is no finding
+    live = {"OPEN", "CLOSED"} if pull.get("state") == "MERGED" else {"OPEN"}
+    if any(i["number"] in mine and str(i.get("state", "OPEN")).upper() in live for i in issues):
         return []
     if pin_target(pull) is not None:  # a verified release pin bump has no issue to close
         return []
@@ -6224,7 +6279,7 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     rated = rating(pull, issues, loop) if point == "merge" else None
     if rated is not None:
         # on stderr, so the lines a workflow or a lead reads as the gate's answer stay what holds the merge
-        print(rated.line(pull), file=sys.stderr)
+        print(rated.line(pull, loop), file=sys.stderr)
     used = (
         whose(pull, loop)
         if rated is not None and not found and not waiting and rated.merge != "gates"
@@ -8000,7 +8055,7 @@ def landable(
         )
     # after CI, so the owner is never asked about a head CI could still reject
     rated = rating(pull, issues, loop)
-    print(rated.line(pull), file=sys.stderr)
+    print(rated.line(pull, loop), file=sys.stderr)
     if owner := owner_waits(pull, issues, loop):
         for line in owner:
             print(line)
