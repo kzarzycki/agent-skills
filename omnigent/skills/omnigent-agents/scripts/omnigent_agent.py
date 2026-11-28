@@ -3903,6 +3903,191 @@ def unchecked(name: str, why: str) -> str:
     return f"{name}: load and memory not readable ({why}); starting unchecked"
 
 
+# the gate's slot lock files, `gate.<k>.lock`, in this folder under a host's cache (the gatekeeper's slot_file)
+GATE_SLOT_FOLDER = "engineering-loop"
+GATE_SLOT_FILE = re.compile(r"gate\.(\d+)\.lock")
+
+
+def gate_slot_folder(environ: str) -> str:
+    """The gate's slot folder in the cache of a process whose NUL-separated `environ` this is: the gatekeeper's
+    own rule (`XDG_CACHE_HOME`, else `HOME`/.cache); `` when it names neither."""
+    env = dict(w.split("=", 1) for w in environ.split("\0") if "=" in w)
+    cache = env.get("XDG_CACHE_HOME") or (env["HOME"] + "/.cache" if env.get("HOME") else "")
+    return f"{cache}/{GATE_SLOT_FOLDER}" if cache else ""
+
+
+def local_gate_slots() -> tuple[int, int]:
+    """(held, total) of this host's gate slots: each `gate.<k>.lock` of its slot folder is held when an exclusive
+    non-blocking flock on it fails, the gatekeeper's own take_slot probe. No folder is no slot yet: (0, 0)."""
+    import fcntl
+
+    cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    folder, held, total = Path(cache) / GATE_SLOT_FOLDER, 0, 0
+    for path in sorted(folder.glob("gate.*.lock")) if folder.is_dir() else []:
+        if not GATE_SLOT_FILE.fullmatch(path.name):
+            continue
+        total += 1
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            held += 1
+        finally:
+            os.close(fd)
+    return held, total
+
+
+def far_gate_slots(og: Omnigent, host_id: str) -> tuple[int, int] | None:
+    """(held, total) of another host's gate slots, read through its newest live session: the slot folder is listed,
+    and a slot is held when its file names (the gatekeeper writes the holder's pid there) a pid that is still a
+    process there (`/proc/<pid>`). None when any read fails: no live session, no folder path, a failing read."""
+    # ponytail: a held flock is not readable from another host, and no session execs there; the pid in the file
+    # stands in for it, and a reused pid reads as held, the safe side. Upgrade: a host route that lists locks.
+    for s in sorted(
+        live_sessions(og, host_id),
+        key=lambda s: float(s.get("updated_at") or s.get("created_at") or 0),
+        reverse=True,
+    )[:FAR_READS]:
+        sid = str(s["id"])
+        try:
+            folder = gate_slot_folder(og.read_file(sid, "/proc/self/environ"))
+            if not folder:
+                return None
+            try:
+                names = [
+                    n for n in og.read_file(sid, folder).split("\n") if GATE_SLOT_FILE.fullmatch(n)
+                ]
+            except Gone:
+                return 0, 0
+            held = 0
+            for name in names:
+                pid = og.read_file(sid, f"{folder}/{name}").strip()
+                if pid.isdigit():
+                    try:
+                        og.read_file(sid, f"/proc/{pid}/stat")
+                        held += 1
+                    except Gone:
+                        pass
+            return held, len(names)
+        except Fail:
+            continue
+    return None
+
+
+def gate_slots(og: Omnigent, host_id: str) -> tuple[int, int] | None:
+    """(held, total) of host `host_id`'s gate slots, None when unreadable."""
+    return local_gate_slots() if host_id == og.host_id else far_gate_slots(og, host_id)
+
+
+def host_load(og: Omnigent, host_id: str) -> float | None:
+    """The 1-minute load per core of host `host_id` (what ranks the hosts that have room), None when unreadable."""
+    if host_id == og.host_id:
+        return os.getloadavg()[0] / (os.cpu_count() or 1)
+    for s in live_sessions(og, host_id)[:FAR_READS]:
+        try:
+            load = float(og.read_file(str(s["id"]), "/proc/loadavg").split()[0])
+            stat = og.read_file(str(s["id"]), "/proc/stat")
+        except (Fail, ValueError, IndexError):
+            continue
+        return load / (len(re.findall(r"^cpu\d+\s", stat, re.MULTILINE)) or 1)
+    return None
+
+
+def pick_gate_host(
+    og: Omnigent, named: list[str], excluded: list[str] | None = None
+) -> tuple[str | None, list[str]]:
+    """The host a gate goes to among `named` (loop.md's `Placement: hosts:`, `placement_hosts`): the one with a free
+    gate slot and the lowest load per core, judged by the same `host_capacity` (`host_limits`, the host's row) a
+    `start` is. A host in `excluded` (the policy's hosts that keep priority for other work), an offline one, one whose
+    slots or capacity can't be read, and one with no room is skipped, each with its reason. (the chosen host's name,
+    the skip reasons); None when no host qualifies."""
+    why: list[str] = []
+    ranked: list[tuple[tuple[float, float], str]] = []
+    rows = {str(h.get("host_id")): h for h in og.call("GET", "/v1/hosts")["hosts"]}
+    for name in dict.fromkeys(named):
+        try:
+            host = og.host(name)
+        except Fail as e:
+            why.append(f"{name}: {e}")
+            continue
+        label = host_name(og, host)
+        if {name, label, host} & set(excluded or []):
+            why.append(f"{name}: kept for other work by the policy")
+            continue
+        if rows.get(host, {}).get("status") != "online":
+            why.append(f"{name}: offline")
+            continue
+        slots = gate_slots(og, host)
+        if slots is None:
+            why.append(f"{name}: gate slots not readable")
+            continue
+        held, total = slots
+        if total and held >= total:
+            why.append(f"{name}: all {total} gate slots held")
+            continue
+        ok, line = host_capacity(og, host, label)
+        if ok is None:
+            why.append(f"{name}: {line}")
+            continue
+        if not ok:
+            why.append(f"{name}: no room: {line}")
+            continue
+        load = host_load(og, host)
+        if load is None:
+            why.append(f"{name}: load not readable")
+            continue
+        ranked.append(((load, held / total if total else 0.0), label))
+    return (min(ranked)[1] if ranked else None), why
+
+
+GATE_RUN_BRIEF = """\
+Run one command in this workspace and report its result. Change, commit and push nothing: the run is the whole task.
+
+Run it exactly as written, detached as your preamble says, and wait on it in this turn:
+
+{fence}sh
+{command}
+{fence}
+
+Your report, after its `REPORT` line, opens with the line `EXIT: <n>`, the command's own exit code (`EXIT: none` when it never ran, with the reason), then the last 30 lines of its output.
+"""
+
+
+def gate_run(
+    og: Omnigent,
+    host: str,
+    checkout: Path,
+    command: str,
+    timeout: float,
+    launch: Callable[[list[str]], int],
+) -> int:
+    """Run `command` (a gate) on host `host`, in `checkout`'s path there, as a top-level session of its own, and
+    return the command's exit code from its report's `EXIT:` line; a run that gave none is `CLOUD_RUN_FAILED`."""
+    longest = max((len(m) for m in re.findall(r"`+", command)), default=0)
+    brief_text = GATE_RUN_BRIEF.format(command=command, fence="`" * max(3, longest + 1))
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    report = checkout / "tmp" / "loop" / f"gate-run-{stamp}.md"
+    brief = report.with_suffix(".brief.md")
+    brief.parent.mkdir(parents=True, exist_ok=True)
+    brief.write_text(brief_text)
+    code = launch(
+        [
+            "run", "claude", f"gate-run {host}", str(brief), str(report),
+            "--top-level", "--host", host, "--workspace", str(checkout), "--no-keep",
+            "--model", os.environ.get("OMNIGENT_MODEL_CLAUDE_CLOUD_RUN") or CLOUD_RUN_MODEL,
+            "--permission-mode", BYPASS, "--timeout", str(timeout),
+        ]
+    )  # fmt: skip
+    exit_code = cloud_run_exit(report) if code == 0 else None
+    if exit_code is None:
+        print(f"gate-run: {host} gave no result (run exited {code})", file=sys.stderr)
+        return CLOUD_RUN_FAILED
+    return exit_code
+
+
 def taken(e: Fail) -> bool:
     """Whether a create failed with 409: Omnigent refuses a title a sibling already holds."""
     return isinstance(e.__cause__, HTTPError) and e.__cause__.code == 409
@@ -13554,6 +13739,25 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         action="store_true",
         help="judge a claude-cloud start: memory alone, against OMNIGENT_CLOUD_MIN_AVAILABLE_MB",
     )
+    p = sub.add_parser(
+        "gate-host",
+        description="print where a gate goes among loop.md's `Placement: hosts:`: `PICK <host> here|far` for the host"
+        " with a free gate slot and the lowest load, else `STAY <why>` (none readable: the gate stays where it started)",
+    )
+    p.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="HOST",
+        help="a host the policy keeps for other work",
+    )
+    p = sub.add_parser(
+        "gate-run",
+        description="run one gate command on --host, in --checkout's path there; exit with its code",
+    )
+    p.add_argument("--host", required=True)
+    p.add_argument("--checkout", type=Path, default=Path("."))
+    p.add_argument("run", nargs=argparse.REMAINDER, metavar="-- COMMAND")
     sub.add_parser(
         "signature", description="print <harness>/<model>/<effort> of the session this runs in"
     )
@@ -14065,6 +14269,28 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         og = Omnigent(args.server) if args.server else Omnigent()
         if args.cmd in ("send", "relay"):
             og.expires = args.expires
+        if args.cmd == "gate-host":
+            picked, why = pick_gate_host(og, placement_hosts(os.getcwd()), args.exclude)
+            if picked is None:
+                print("STAY " + ("; ".join(why) or "loop.md's Placement line names no host"))
+            else:
+                print(f"PICK {picked} {'here' if picked == host_name(og, og.host_id) else 'far'}")
+            return 0
+        if args.cmd == "gate-run":
+            words = args.run[1:] if args.run[:1] == ["--"] else args.run
+            if not words:
+                usage = Fail("gate-run needs -- COMMAND")
+                usage.code = 2
+                raise usage
+            line = words[0] if len(words) == 1 else shlex.join(words)
+            return gate_run(
+                og,
+                args.host,
+                args.checkout.resolve(),
+                line,
+                args.timeout,
+                lambda argv: command(argv, {}),
+            )
         if args.cmd == "capacity":
             target = og.host(args.host)
             name = host_name(og, target)
