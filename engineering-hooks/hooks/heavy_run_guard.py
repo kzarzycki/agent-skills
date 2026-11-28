@@ -39,7 +39,12 @@ NO_CLOUD = re.compile(r"^Cloud worker:[ \t]*none\b", re.MULTILINE | re.IGNORECAS
 # the same setting in the `## Loop settings` yaml block (gatekeeper.py's loop_setting reads it; this hook runs on every
 # Bash call with the stdlib only, so it reads this one key itself: a test holds the two to the same answer)
 LOOP_BLOCK = re.compile(r"^## Loop settings[ \t]*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
-NO_CLOUD_KEY = re.compile(r"^cloud_worker:[ \t]*[\"']?none\b", re.MULTILINE | re.IGNORECASE)
+FENCE = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
+LEGACY_CLOUD = re.compile(r"^[^\w\n]*Cloud worker:", re.MULTILINE)
+NONE = r"(?:none|\"none\"|'none')"
+KEY = r"(?:cloud_worker|\"cloud_worker\"|'cloud_worker')"
+NONE_BLOCK = re.compile(rf"^{KEY}[ \t]*:(?:[ \t]+{NONE}|[ \t]*\n[ \t]+{NONE})[ \t]*(?:#.*)?$", re.MULTILINE)
+NONE_FLOW = re.compile(rf"^[ \t]*\{{[^{{}}\[\]]*?(?<![\w\"'])({KEY})[ \t]*:[ \t]*{NONE}[ \t]*[,}}]")
 HOST_RUN = "LOOP_HOST_RUN"
 # the Omnigent server claude-cloud-run launches through; unset, the cloud route can't run here
 RUNNER = "RUNNER_SERVER_URL"
@@ -137,8 +142,30 @@ def loop_repo(cwd: Path) -> Path | None:
         text = (root / LOOP_FILE).read_text(errors="replace")
     except OSError:
         return None
-    block = LOOP_BLOCK.search(text)
-    return None if NO_CLOUD.search(text) or (block and NO_CLOUD_KEY.search(block[1])) else root
+    return None if on_hosts(text) else root
+
+
+def on_hosts(text: str) -> bool:
+    """Whether loop.md keeps its workers on hosts, as gatekeeper.py's loop_setting reads `cloud_worker`: from the
+    first `yaml` fence under `## Loop settings` (never the prose around it), else from the `Cloud worker:` line.
+    This hook has no YAML parser, so it answers True only where it is certain the loader reads `none`: the key once,
+    as a block line or a one-line flow mapping, spelt `none`. Any other shape of the block (a second fence, the
+    key beside its legacy line, flow or anchors it can't read) fails closed: the run is cloud-routed, so a heavy run
+    off the host is refused, never allowed on a guess."""
+    section = LOOP_BLOCK.search(text)
+    if section is None:
+        return bool(NO_CLOUD.search(text))
+    fences = FENCE.findall(section[1])
+    if len(fences) != 1:
+        return False  # no block, or more than one: the loader refuses it
+    body = "\n".join(
+        line for line in fences[0].splitlines() if line.strip() and not line.lstrip().startswith("#")
+    )
+    if "cloud_worker" not in body:  # the block leaves the key to its legacy line
+        return bool(NO_CLOUD.search(text))
+    if LEGACY_CLOUD.search(text) or body.count("cloud_worker") != 1:
+        return False  # set twice: the loader refuses
+    return bool(NONE_BLOCK.search(body) or NONE_FLOW.match(body))
 
 
 def drop_heredocs(command: str) -> str:
