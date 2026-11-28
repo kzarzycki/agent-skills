@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.27 - 2026-11-28
+
+- `gatekeeper.py`'s module docstring, and so `gatekeeper.py --help`, is a short summary (72 KB before); each verb has its own `--help`, and the full usage lines and prose it held are in the new `verbs.md` (#2834).
+
 ## 0.1.26 - 2026-11-28
 
 - A generated bump of any pack of this repository counts as a mechanical pack bump: its `apm.yml` may change the `ref:` lines of several `kzarzycki/agent-skills/<pack>` dependencies at once, each to a stable or `-next` tag of its own pack (`omnigent-v0.1.34-next`), and its spec needs no approval (#2926).
