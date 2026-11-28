@@ -35,7 +35,7 @@ def docstring_size(path: Path) -> int:
     """The bytes of `path`'s module docstring; 0 when it has none or does not parse."""
     try:
         doc = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8")), clean=False)
-    except Exception:  # a file that does not parse or decode has no docstring to size
+    except SyntaxError, UnicodeDecodeError:
         return 0
     return len((doc or "").encode())
 
