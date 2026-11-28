@@ -5,16 +5,6 @@ On the host that starts cloud sessions:
 
     python3 scripts/cloud_verifier.py login            # once: a device login into a Codex home kept only for seeding
     python3 scripts/cloud_verifier.py seed [--env ID]...  # before starting a session whose VM will verify
-    python3 scripts/cloud_verifier.py env-sync [--env ID] [--script PATH] [--apply]  # is the environment's setup script the base branch's?
-
-`env-sync` reads the environment's copy of the setup script (`config.init_script`, the same GET `seed` makes) and
-compares it with the file on the base branch (`--base`, else `origin/HEAD`, `origin/main`, `main`; the working file
-only when the checkout has none of them). The file is `--script`, else loop.md's `Cloud setup script:` line, else
-`.claude/claude-cloud-setup.sh` or the older `.claude/cloud-setup.sh`; one the base lacks is refused. Only trailing
-newlines are ignored in the comparison. It prints `in sync` and exits 0, or `environment setup is stale` with the command that
-applies it and exits 1. `--apply` posts the base branch's file as `init_script`, every other config key as it
-was (as `store` does), reads it back and confirms (exit 1 when the read-back differs). Exit 2: no environment,
-login or script. `land` runs the same check after a landing whose diff touches the script (it never fails the landing).
 
 In the VM, from the checkout:
 
@@ -555,7 +545,13 @@ def same_script(a: str, b: str) -> bool:
 
 def env_sync(env: str | None, script: str | None, apply: bool, base: str | None = None) -> int:
     """Compare the environment's `init_script` with the base branch's setup script; 0 in sync (or applied), 1 stale
-    (or an apply that did not read back), the Refused of a missing environment, login or script is exit 2."""
+    (or an apply that did not read back), the Refused of a missing environment, login or script is exit 2.
+
+    The base is `base`, else origin's HEAD, origin/main or main (the working file only in a checkout with none of
+    them). The script is `script`, else loop.md's `Cloud setup script:` line on the base, else the first of
+    SETUP_SCRIPTS the base has; one the base lacks is refused. `apply` posts the base's file as `init_script` with
+    every other config key as it was (as `store` does), reads it back and confirms. `land` runs this after a
+    landing whose diff touches the script and never fails the landing on it. Only trailing newlines are ignored."""
     path, wanted = setup_script(script, base)
     env = env or pinned_environment()
     headers = claude_headers()
