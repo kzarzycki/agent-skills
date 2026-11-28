@@ -107,6 +107,19 @@ def test_verb_help_names_the_cases_the_runtime_tests_show():
     assert "breakglass" in " ".join(run_help("record", "approval").split())
 
 
+def test_every_place_that_states_rerun_s_exit_rule_matches_the_code():
+    top = " ".join(run_help().split())
+    assert (
+        "check rerun` exits 0 once it has printed a state; a missing PR or an unloadable policy exits 1"
+        in top
+    )
+    usage = " ".join((GATEKEEPER.parent.parent / "verbs.md").read_text().split())
+    assert (
+        "exit 0 once it has printed a state (a missing PR or an unloadable policy exits 1)" in usage
+    )
+    assert "rerun: not needed (<why>)" in usage and "rerun: needed|done|no" not in usage
+
+
 def test_check_help_says_what_check_does():
     text = run_help("check")
     assert "proofs" in text and "build" in text and "merge" in text
