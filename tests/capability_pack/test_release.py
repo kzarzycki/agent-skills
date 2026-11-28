@@ -230,6 +230,32 @@ def test_an_adopt_part_becomes_an_adopt_in_projects_section(tmp_path: Path, caps
     assert "### Adopt in projects" in (repo / "alpha" / "CHANGELOG.md").read_text()
 
 
+def test_adopt_indentation_survives_the_fold(tmp_path: Path, capsys) -> None:
+    repo = _adopt_repository(tmp_path, with_adopt=False)
+    (repo / "alpha" / "changelog.d" / "5.md").write_text(
+        "- alpha: new key (#5)\nadopt: Add this to docs/agents/gatekeeper.md.\n"
+        "  ```yaml\n  select:\n    build_inputs:\n      - src/**\n  ```\n"
+    )
+    assert cli.main(["cut-release", "--root", str(repo), "--dry-run"]) == 0
+    assert (
+        "  ```yaml\n  select:\n    build_inputs:\n      - src/**\n  ```" in capsys.readouterr().out
+    )
+
+
+def test_a_plain_bullet_added_to_a_version_with_an_adopt_list_stays_above_it(
+    tmp_path: Path,
+) -> None:
+    repo = _adopt_repository(tmp_path, with_adopt=True)
+    cut_release(repo, today=TODAY)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "cut")  # 0.1.1 is cut but not tagged
+    (repo / "alpha" / "changelog.d" / "6.md").write_text("- Fix a typo (#6)\n")
+    cut_release(repo, today=TODAY)
+    text = (repo / "alpha" / "CHANGELOG.md").read_text()
+    assert text.index("Fix a typo") < text.index("### Adopt in projects")
+    assert text.count("### Adopt in projects") == 1
+
+
 def test_no_adopt_part_means_no_adopt_section(tmp_path: Path, capsys) -> None:
     repo = _adopt_repository(tmp_path, with_adopt=False)
     cut_release(repo, today=TODAY)

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import textwrap
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -132,8 +133,11 @@ def split_adopt(entry: str) -> tuple[str, str | None]:
 def _adopt_section(items: list[str]) -> str:
     lines = []
     for item in items:
-        first, *rest = item.splitlines()
-        lines += [f"- {first}", *(f"  {line.strip()}" if line.strip() else "" for line in rest)]
+        first, _, rest = item.partition("\n")
+        lines.append(f"- {first.strip()}")
+        lines += [
+            f"  {line}" if line.strip() else "" for line in textwrap.dedent(rest).splitlines()
+        ]
     return f"{ADOPT_HEADING}\n\n" + "\n".join(lines)
 
 
@@ -147,13 +151,11 @@ def _fold(
         following = _HEADING.search(changelog, existing.end())
         end = following.start() if following else len(changelog)
         current = changelog[existing.start() : end].rstrip()
-        if adopt and ADOPT_HEADING in current:
-            head, _, tail = current.partition(ADOPT_HEADING)
-            section = (
-                f"{head.rstrip()}\n{bullets}\n\n{ADOPT_HEADING}{tail.rstrip()}\n"
-                + "\n".join(_adopt_section(adopt).splitlines()[2:])
-                + "\n"
-            )
+        heading = re.search(rf"^{re.escape(ADOPT_HEADING)}$", current, re.MULTILINE)
+        if heading:  # plain bullets stay above the adoption list; new items join it
+            head, tail = current[: heading.start()].rstrip(), current[heading.start() :].rstrip()
+            extra = "\n" + "\n".join(_adopt_section(adopt).splitlines()[2:]) if adopt else ""
+            section = f"{head}\n{bullets}\n\n{tail}{extra}\n"
         else:
             section = f"{current}\n{bullets}\n" + (f"\n{_adopt_section(adopt)}\n" if adopt else "")
         start = existing.start()

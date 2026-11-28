@@ -1,6 +1,6 @@
 # Releasing the packages
 
-An entry may end with an `adopt:` part: what a consumer changes, with the file and the exact edit. The cut folds those into an `### Adopt in projects` list in the version's section, and `cut-release --dry-run` prints the folded section without writing. No such list means no consumer needs a lead.
+An entry may end with an `adopt:` part: what a consumer changes, with the file and the exact edit. The cut folds those into an `### Adopt in projects` list in the version's section, and `cut-release --dry-run` prints the folded section without writing. A release whose list is empty needs no per-consumer lead once the consumer-sync path (#2011) is in service.
 
 A release moves each package's entries in `changelog.d/` under a version heading in its `CHANGELOG.md` (see
 [changelog.d/README.md](changelog.d/README.md)), sets its version, and tags it. One release cuts every package
