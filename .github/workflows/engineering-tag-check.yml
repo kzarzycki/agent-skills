@@ -10,6 +10,24 @@ permissions:
   contents: read
 
 jobs:
+  # The release's identity: the tag names a version every manifest it changes carries. The bumps wait on this alone. A
+  # red test elsewhere on the tagged commit (a stale doc copy, a flaky suite) once skipped every bump from 0.34.0 on,
+  # while each consumer's bump PR runs its own gate before it lands anyway.
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
+        with:
+          version: 2026.9.2
+          install: false
+      - run: mise install
+      - run: uv sync --frozen
+      - run: uv run python -m tools.capability_pack.cli release-check engineering "$GITHUB_REF_NAME" --skip-smoke
+  # The whole suite on the tagged commit: a red one is a fix-forward release, as a red nightly is, and holds no bump.
   qualify:
     runs-on: ubuntu-latest
     permissions:
@@ -31,7 +49,6 @@ jobs:
           install: false
       - run: mise install
       - run: uv sync --frozen
-      - run: uv run python -m tools.capability_pack.cli release-check engineering "$GITHUB_REF_NAME" --skip-smoke
       - run: mise run vendor-engineering-check
       - if: steps.tested.outputs.skip != 'true'
         run: mise run test
@@ -39,7 +56,10 @@ jobs:
         run: mise run test-slow
       - run: mise run test-engineering-package
   consumer-sync:
-    needs: qualify
+    needs: release
+    permissions:
+      contents: read
+      statuses: write # the `land` status that hands this repo's own bump to its Mergify queue
     uses: ./.github/workflows/engineering-consumer-sync.yml
     with:
       source_tag: ${{ github.ref_name }}

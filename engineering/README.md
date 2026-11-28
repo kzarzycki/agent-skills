@@ -220,5 +220,29 @@ One manual run that pushes a throwaway tag settles it.
 
 Consumer sync uses the GitHub App credentials in the
 `engineering-updater-publish` environment (`UPDATER_APP_ID`,
-`UPDATER_APP_PRIVATE_KEY`). The App is installed only on this repository, with
-metadata read, contents write and pull requests write.
+`UPDATER_APP_PRIVATE_KEY`). The App needs metadata read, contents write and pull
+requests write on each repository it bumps.
+
+### Bumps in every consumer
+
+The tag check's `release` job, which checks the release's identity, starts the consumer sync. The sync opens one bump PR
+in this repository and in each repository the owner lists in this repository's variable `ENGINEERING_CONSUMERS`.
+The variable is a JSON list of `owner/repo` entries, or `{"repository": "owner/repo", "queue": "auto-merge" | "mergify" | "none"}`; an
+entry without `queue` uses `auto-merge`. Unset, only this repository is bumped. A consumer's name stays in the
+variable, never in this public repository. Each leg works on one repository, with an App token scoped to it. It runs
+`prepare-consumer` and `mise run agent-sync --refresh` there, commits, and replays the result with `--frozen`. Then
+it opens the PR ready on `claude/ready-pack-bump-<tag>`, and closes an older pack-bump PR as superseded. The
+`release` job doesn't run the whole suite: the tag check's `qualify` job runs it, and a red suite holds no bump.
+Each bump still passes its consumer's own gate before it lands.
+
+To take part, a consumer:
+
+1. installs the updater App with the permissions above (the owner does this, and adds the repository to `ENGINEERING_CONSUMERS`);
+2. has a `mise run agent-sync` task that takes `--refresh` and `--frozen`, as the project template's does;
+3. names the bump branch in its `docs/agents/gatekeeper.md` policy, landed before the first bump:
+   `bot.pack-bump` with `branch: claude/ready-pack-bump-` and `paths` for `apm.yml`, `apm.lock.yaml` and its
+   generated agent dirs (`.agents/**`, `.claude/**`, `.codex/**`), so a bump needs no verifier and no spec;
+4. for `auto-merge`, allows auto-merge in its repository settings and requires its gate checks on the default
+   branch, so a green bump merges itself; for `mergify` (this repository's own leg), the PR gets `loop:queued`, and the `land`
+   status a Mergify queue also needs is posted by the workflow here and by the consumer's own `land` run elsewhere; with `none`, the PR
+   waits to be landed.
