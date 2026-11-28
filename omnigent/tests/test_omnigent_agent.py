@@ -12819,6 +12819,15 @@ class FarVerifierHost(FarFiles, FakeOmnigent):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         self.there_at_brief: list[list[str]] = []
+        self.procs.setdefault("mac", {})["/there/repo/.git/config"] = GIT_CONFIG
+
+    def call(self, method: str, path: str, body: object = None) -> dict:
+        if path.startswith("/v1/hosts/") and "/files/" in path:
+            host, rel = path.split("/files/", 1)
+            host = host.removeprefix("/v1/hosts/")
+            if (text := self.procs.get(host, {}).get("/" + unquote(rel).strip("/"))) is not None:
+                return {"content": text}
+        return super().call(method, path, body)
 
     def host(self, name: str) -> str:
         return {"here": "h", "h": "h", "mac": "mac"}[name]
@@ -13924,6 +13933,44 @@ def test_a_named_repository_reaches_the_far_verifiers_head_read(
     )
     assert omnigent_agent.main(named_pr_argv("mac", tmp_path)) == 0
     assert seen == [(7, Path.cwd(), "a/b")]
+
+
+def test_a_remote_verifier_with_a_bare_pr_reads_the_head_from_the_workspace_repo_or_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#3036: a remote verifier with bare ``--pr N`` reads the PR head from the remote workspace's
+    origin repo (never the launcher's cwd repo), refuses before starting when the origin cannot be
+    read (naming ``--pr owner/repo#N``), and keeps ``--pr owner/repo#N`` working."""
+    og = far_verifier(tmp_path, monkeypatch, "")
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:launcher/cwd.git"],
+        cwd=tmp_path,
+        check=True,
+    )
+    gh_log = tmp_path.parent / f"{tmp_path.name}-gh.log"
+    gh_bin = tmp_path.parent / f"{tmp_path.name}-ghbin" / "gh"
+    gh_bin.write_text(f'#!/bin/sh\necho "$*" >> "{gh_log}"\necho {PR7_HEAD}\n')
+    gh_bin.chmod(0o755)
+
+    # Readable remote checkout origin (o/r): gh pr view targets o/r, never launcher/cwd
+    assert omnigent_agent.main([*VERIFY_FAR]) == 0
+    calls = gh_log.read_text().splitlines()
+    assert any("--repo o/r" in line for line in calls) and not any(
+        "launcher/cwd" in line for line in calls
+    )
+
+    # Unreadable remote checkout origin + bare --pr 7: refused before any session or gh call
+    og.procs["mac"].clear()
+    og.sessions.clear()
+    gh_log.unlink()
+    capsys.readouterr()
+    assert omnigent_agent.main([*VERIFY_FAR]) == 1
+    assert "--pr owner/repo#7" in capsys.readouterr().err
+    assert og.sessions == {} and not gh_log.exists()
+
+    # Explicit --pr a/b#7 still works even when the remote checkout's origin is unreadable
+    assert omnigent_agent.main(named_pr_argv("mac", tmp_path)) == 0
+    assert any("--repo a/b" in line for line in gh_log.read_text().splitlines())
 
 
 def test_a_named_repository_reaches_the_verifiers_checkout(
