@@ -88,6 +88,10 @@ risk:
   critical_paths:   # the `critical` level, whatever the labels and the verifier say; was merge_paths
     - src/orders/**
 
+verifier:
+  same_family: low   # the highest risk level at which a verdict from the author's own family may land: never (default), low or high
+  same_family_until: '2026-12-31'   # a quoted YYYY-MM-DD: through that day the limit is high, for an outage the owner approved; then same_family again
+
 levels:   # what each level asks; the values shown are the defaults
   low:
     spec: policy
@@ -165,6 +169,7 @@ timeouts:   # every time limit of a run; the rest are derived from these (`gatek
 | `practice` | `intent`, `spec`, `plan`, `build`, `review`, `land` | the skill that fills that stage (Practice) | the stage's default |
 | `risk`, `plan`, `signoff` | `always` (`true` or `false`), `labels`, `paths`, and in `risk` `verifier` | a rule (Approvals and proof); `plan` has no `paths`, since a plan comes before the change | no rule |
 | `risk` | `critical_paths` | globs matched on the PR's files, as `paths` are: a PR touching one rates `critical` (Approvals and proof); `merge_paths` is its deprecated name, read with a `deprecated:` line, and both set is refused | nothing rates `critical` |
+| `verifier` | `same_family` (`never`, `low` or `high`), `same_family_until` (a quoted ISO date) | the highest risk level at which a verdict from the author's own family may land (#609): a heading naming `same-family`, or whose family is that of the PR body's `Impl:` signature, or none: `check merge` and `land` refuse above it, naming the setting; `same_family_until` lifts it to `high` through that day, for an outage the owner approved, and falls back once past | `never`: a same-family verdict lands at no level |
 | `incubating` | `append_paths` (globs of existing files a feature may only append lines to), `waive` (any of `evidence`, `proof_run`, `verifier`, `full_gate`, `coverage`) | what an eligible `incubating` PR stops owing (Approvals and proof, Incubating) | the mode is off; with the section and no `waive`, all five |
 | `levels` | `low`, `high`, `critical`, each with `spec` (`policy` or `owner`), `merge` (`gates`, `go` or `owner`) and `rerun` (`true` or `false`) | what a change rated at that level needs (Approvals and proof); a key left out keeps its default. `rerun: true` makes `check merge` and `land` wait for an independent rerun of the head's selection (Independent rerun, below) | `low` {policy, gates}; `high` {policy, go}, or under `spec.auto: true` {owner, gates}; `critical` {policy, owner}; `rerun` false at every level |
 | `bot.<login>` | `paths`, and `branch` (a head-branch prefix) to name an updater by its branch instead | a bot whose PR needs no verifier review (Approvals and proof); under `branch`, a commit author with no GitHub account (a cloud worker's) counts as the PR's author, and a PR whose `apm.yml` changes only the `ref:` line of its `kzarzycki/agent-skills/engineering` dependency, to a release (a version, a range of one or the `engineering-v` tag, never a branch or a commit), the rest of the diff matching `paths`, needs no spec approval either (a pack bump) | every PR needs one |
