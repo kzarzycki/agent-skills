@@ -45,10 +45,9 @@ yourself, keeping standards and spec as separate axes.
   say how that input arises in use (`docs/agents/loop.md` § In use). Also report a spec or design
   requirement that is missing or contradicted, and anything `docs/agents/issue-tracker.md` §
   Never on GitHub forbids.
-- **Siblings.** Under a correctness finding, list the sibling inputs you can see: the other
-  cases the same code handles the same way (other states, callers, boundary values), each
-  marked failing with its evidence, fine, or not run. They belong to that finding, not to the
-  verdict's counts, so the fix can cover the class in one round instead of one case a pass.
+- **Siblings.** Under a correctness finding, list the other cases the same code handles the same way (states,
+  callers, boundary values), each marked failing with its evidence, fine, or not run. They belong to that
+  finding, not to the counts, so the fix covers the class in one round.
 - **Read the ledger first** (loop.md § Ledger), and don't report what it lists.
 - **A flake is not a finding** when the test passed on its retry and its `Flaky:` issue
   has the occurrence (SKILL.md, Flaky tests); a missing occurrence is a minor. A PR that
@@ -58,11 +57,12 @@ yourself, keeping standards and spec as separate axes.
   main, and the verdict stands on the rest; never write the verdict as satisfied "apart from"
   a red test, and never accept an expected-failures list in its place. An unconditional skip in the diff
   without an issue link is a major.
-- **Out of scope:** an input the system never produces, an interleaving nobody can
-  trigger, a value orders of magnitude outside what the data source emits. Style, naming,
-  formatting and code-review's smell baseline are notes, not findings.
-- **Work the given priorities first.**
-- **Every pass after the first:** the lead gives you the previous report. Review
+- **Out of scope:** an input the system never produces, an interleaving nobody can trigger, a value orders of
+  magnitude outside the data source. Style, naming, formatting and code-review's smell baseline are notes.
+- **Major** means the finding breaks an Acceptance line, has a repro in documented use, or breaks a bar the spec
+  never states: security (an exploitable hole, an auth or permission bypass, injection), a secret leak, data loss or
+  corruption, a weakened gate; it needs a concrete path (input, steps, impact), else it is a minor.
+- **Every pass after the first** (work the given priorities first): the lead gives you the previous report. Review
   the diff since its head and the files it touches yourself, both axes in your own session
   with no axis subagents (code-review, step 4), not the whole change again. Rerun the acceptance checks and repros the round's diff reaches, plus every repro still
   `NOT FIXED` (SKILL.md, A check runs only if it can fail because of the change, R4); your own new repros
@@ -118,9 +118,8 @@ yourself, keeping standards and spec as separate axes.
   from them rather than `ls`, `find` or a read of unchanged files, since every tool call resends your whole context.
   Its `Budget:` line is a number of tool calls. At it, stop: write the report with what you checked and what you did
   not, and say so on a `Budget:` line of the report, so the lead can start a pass on what is left.
-- **Checks match their lines.** For each Before merge line, read the check it names and say
-  whether it tests what the line says. A check that doesn't is a major, since a passing wrong
-  check proves nothing.
+- **Checks match their lines.** Read each Before merge line's check and say whether it tests what the line says: one
+  that doesn't proves nothing, a major.
 - **Run the checks yourself.** Run the acceptance command the brief's `Acceptance tests:` line
   names on the head (SKILL.md, Acceptance checks), and the e2e tests the worker wrote for this PR,
   which its report names and `git diff --name-only <base>...<head>` shows, each as a long run is
@@ -128,10 +127,9 @@ yourself, keeping standards and spec as separate axes.
   log, which is the worker's own file, and run no full suite and no gate (Gates and repros). Where the worker's
   run left a record whose tree is the head's tree (`gate-record`, Gates and repros), read it and run nothing again;
   spend your runs on whether the right tests ran, whether they are written right and cover the spec, mutation runs and your own repros.
-- **Manual lines.** Probe a `Manual:` line by hand when you rate the change high or the line is
-  risky in itself. Otherwise you may accept it on the worker's evidence, written `Accepted on
-  evidence: <line> — <proof log>`, the log stamped with the head (Proof provenance); `verdict`
-  refuses that line in a report whose `Risk:` is not `low`, naming it.
+- **Manual lines.** Probe a `Manual:` line by hand when you rate the change high or the line is risky. Otherwise accept it
+  on the worker's evidence, `Accepted on evidence: <line> — <proof log>`, the log stamped with the head (Proof
+  provenance); `verdict` refuses it where `Risk:` is not `low`.
 - **Drive the instance.** When one is up for the worktree (loop.md § Proof on a branch says how to tell),
   run the spec's Before merge list on it: the UI in a headless browser (worker.md, Report,
   says how: your own headless browser, never one attached over CDP unless the check needs its logins), the API with its client,
@@ -154,8 +152,8 @@ yourself, keeping standards and spec as separate axes.
   '<tests>' --log <log> <patch>…` (the script queues on the host gate slot itself, in the short lane when the tests pass on
   the head within `short_seconds`, so the command takes no lock of its own), which applies each alone, restores the tree, stops cleanly on a signal and
   logs the head with each patch's exit code, rather than a harness of your own; for a compiled target pass `--built <path>` (repeatable, globs) pointing at what the compiler writes for each target the test installs or loads, never at a signed or zipped package around it, since a package's signature and timestamps change on every build and would count an unbuilt patch as built (for Android, the dex files `classes*.dex` or the intermediate dex folder; for an Apple app bundle, the bundle, since its library changes while the stub main binary does not), so a patch the build never reached is `not built: inconclusive` instead of a false survivor, and have the test command exit with the project's reserved code (`mutate.inconclusive_exit` in the policy, default 75) when its setup fails (a device gone, a build broken), so that run is `inconclusive` instead of a false kill; an inconclusive patch makes the run exit 3, and you rerun it after fixing the setup, since it says nothing about the patch; the worker
-  ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: report it as a
-  major. Before the report, `git status --porcelain` must match what it showed at the start:
+  ran it on its own patches, so its log is a starting point, not the check. A change whose undoing leaves every test green is untested: a minor, unless
+  the spec requires the line it mutates. Before the report, `git status --porcelain` must match what it showed at the start:
   revert any mutation of yours still applied, and report a tree you cannot clean as a finding
   naming its paths, since the lead's next test run and push run in it (`wait` fails a host
   verifier that leaves a tracked change).
@@ -198,10 +196,9 @@ yourself, keeping standards and spec as separate axes.
   necessary, such as a log that shows a new failure, with a `New in the answer: <the log>` line
   naming that log; the verifier script hands no later question to the lead without that line
   (exit 1).
-- **When `SATISFIED:` is `yes`:** no blocker or major is open and every acceptance line ran. Open
-  minors alone never make it `no`; the lead files them (The cap in SKILL.md). Write `no` for an open blocker or
-  major, or an acceptance line you did not run, and name that run on a `Not run:` line: the gate keeps it in the
-  posted verdict, and the lead's `Cap:` line never waives it.
+- **`SATISFIED:` follows the counts:** `yes` for 0 blockers, 0 majors and nothing not run, else `no`; `verdict` reads
+  it so whatever you write. Open minors never make it `no`; the lead files them (The cap in SKILL.md). Name an acceptance line you did not
+  run on a `Not run:` line: the gate keeps it in the posted verdict, and the lead's `Cap:` line never waives it.
 - **An acceptance line you did not run** blocks `SATISFIED: yes`, whatever the reason: a
   Before merge line's check run by the acceptance command, a `Manual:` line probed through
   the path a user takes (on the instance when one is up) or accepted on evidence (Manual
@@ -249,7 +246,10 @@ gate reads):
   line (or a range `<n>-<m>`, anchored at `<m>`) at the reviewed head (it becomes the PR
   review's inline comment, moved to the nearest line of the diff when outside it), then
   the failing input or contradicted requirement and the evidence (the command and its
-  output) up to the next heading outside a code fence. Any other `### ` heading is a
+  output) up to the next heading outside a code fence. A blocker or major also has a `Breaks: Acceptance <line>|repro
+  <command>|standing bar <kind>` line, a standing bar a `Path: <input, steps, impact>` line, and from pass 2 every finding
+  `Origin: prior F<n> not fixed|regression of <commit>|present at <head>|new` (`present at` is a minor unless it breaks an
+  Acceptance line); `verdict` refuses a major without them. Any other `### ` heading is a
   sub-heading and posts nothing. `verdict` refuses a `### ` heading with a `(<severity>)`
   it can't read, and finding headings that don't add up to the `VERDICT:` counts, rather
   than leave a finding off the review.

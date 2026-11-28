@@ -269,10 +269,17 @@ def verdict(
     for i, f in enumerate(review.get("findings", []), 1):
         kind = PRIORITY[f["priority"]]
         counts[kind] += 1
-        rules = f"\nBreaks: {', '.join(f['rules'])}" if f.get("rules") else ""
+        # a P0 or P1 states what it breaks and, from pass 2, where it came from (the gatekeeper's report parser reads them)
+        fields = [
+            f"{key}: {f[name]}"
+            for key, name in (("Breaks", "breaks"), ("Path", "path"), ("Origin", "origin"))
+            if f.get(name)
+        ]
+        rules = f"\nRules: {', '.join(f['rules'])}" if f.get("rules") else ""
         loc = f.get("location", "unknown:0")
         body.append(
             f"### F{i} ({kind}) {loc}: {f['priority']} {f['title']}\n{f.get('body', '')}{rules}"
+            + "".join(f"\n{line}" for line in fields)
         )
     if review.get("acceptance_not_run"):
         # an ordinary run not made goes to the lead's proof run as `<report>.question`, never as an owner action; the
