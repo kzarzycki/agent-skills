@@ -37,6 +37,7 @@ SESSION = (
     "OMNIGENT_PERMISSION_MODE",
     "OMNIGENT_RUNNER_TOKEN",  # cloud_verifier.py reads it; main's own test_env_reads was red on it (#2804)
     "CLAUDE_CODE_REMOTE",
+    "OMNIGENT_AGY_PANE_CMD",  # a shell command omnigent_agent.py runs to read an agy pane; a test that needs it sets it (#3020)
 )
 SESSION_PREFIXES = ("OMNIGENT_MODEL_", "OMNIGENT_EFFORT_")
 
