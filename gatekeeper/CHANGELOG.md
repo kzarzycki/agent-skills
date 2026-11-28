@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.34 - 2026-11-28
+
+- `loop.required_checks` in the policy lists check names that must be green on the head even when the forge requires none: `check merge` and `land` hold the merge on a listed check that is missing or not green, and name it. Where the forge does require checks, the list adds to them; a policy without the key behaves as before (#3023)
+
 ## 0.1.33 - 2026-11-28
 
 - `approvals.py report` and `verdict` refuse a blocker or major with no `Breaks:` line (and no `Path:` line for a standing bar), refuse a delta finding with no `Origin:` line or a `present at` major that breaks no Acceptance line, and read `SATISFIED:` from the counts (#3031).
