@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.20 - 2026-11-28
+
+- verifier.md states when `SATISFIED:` is `yes` (no blocker or major open, every acceptance line run; open minors alone never make it `no`; a run never made goes on a `Not run:` line), and SKILL.md § The cap names the `Cap:` line for the minors-only case; the landing lines in SKILL.md and lead.md point to § The cap for what the line covers (#2925).
+
 ## 0.1.19 - 2026-11-27
 
 - engineering-loop: lead.md has its Cloud lead section back, which #1878 cut by accident: how a `claude-cloud` lead starts a worker, hands the verifier to its manager, waits, keeps its notes in a `## Lead state` PR comment and lands from the VM (#2817, #1601).
