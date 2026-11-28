@@ -1961,19 +1961,19 @@ class Rated(NamedTuple):
                 why = " and ".join(stated_parts(label, said)) + "; no gate rule rates it higher"
         shown = f"{level} ({why})" if why else level
         note = ""
+        extra = ""
         if self.level == "low" and len(words) > 1:
             note = f"; the PR's label and the verdict disagree: {' vs '.join(stated_parts(label, said))}"
-        elif self.level != "low":
-            # the gate's own rating stands and the merge action is unchanged; what the PR says beside it still shows,
-            # unless it only repeats the rating (`risk:high` the why cites) or says low
-            shown_label = [each for each in label if each != "low"]
-            shown_said = said if said and said != "low" else None
-            stated = {*shown_label, *([shown_said] if shown_said else [])}
-            if stated - {self.level} or len(stated) > 1:
-                disagree = bool(shown_label) and shown_said is not None and len(stated) > 1
-                kind = "disagree" if disagree else "state"
-                note = f"; the PR's label and the verdict {kind}: {' vs '.join(stated_parts(shown_label, shown_said))}"
-        return f"PR #{pull['number']}: risk: {shown}; merge: {self.merge}{note}"
+        elif self.level != "low" and (words - {self.level} or len(words) > 1):
+            # the gate's own rating and merge action stand, on the line as before; what the PR says beside it (the
+            # label and the verdict as stated, a low one included) goes on a line of its own, unless it only repeats
+            # the rating
+            kind = "disagree" if len(words) > 1 else "state"
+            extra = (
+                f"\nPR #{pull['number']}: the PR's label and the verdict {kind}:"
+                f" {' vs '.join(stated_parts(label, said))}"
+            )
+        return f"PR #{pull['number']}: risk: {shown}; merge: {self.merge}{note}{extra}"
 
 
 RISK_WORDS = ("low", "medium", "high", "critical")

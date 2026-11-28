@@ -16,7 +16,7 @@ from approvals_harness import (
     judging,
     pull,
 )
-from test_approvals_risk_levels import check_merge, policy
+from test_approvals_risk_levels import check_merge, lands, policy  # noqa: F401
 
 Gate = tuple[dict[str, Any], list[tuple[int, str]]]
 
@@ -30,7 +30,7 @@ def test_a_medium_label_and_a_medium_verdict_print_medium_not_low(
     )  # no `risk: verifier` term: no rule rates the change above low
     state["pull"] = judged_pr(judging("medium — unsure"), labels=("risk:medium",))
     _, _, err = check_merge(capsys)
-    line = next(each for each in err if each.startswith("PR #7: risk:"))
+    line = "\n".join(each for each in err if each.startswith("PR #7:"))
     assert line.startswith("PR #7: risk: medium (") and "risk: low" not in line
     assert "PR label `risk:medium`" in line and "verifier `Risk: medium`" in line
 
@@ -42,7 +42,7 @@ def test_a_label_and_a_verdict_that_disagree_are_both_named(
     policy("spec:\n  auto:\n    - bug\n")
     state["pull"] = judged_pr(judging("high — wide"), labels=("risk:medium",))
     _, _, err = check_merge(capsys)
-    line = next(each for each in err if each.startswith("PR #7: risk:"))
+    line = "\n".join(each for each in err if each.startswith("PR #7:"))
     assert (
         "disagree" in line and "PR label `risk:medium`" in line and "verifier `Risk: high`" in line
     )
@@ -85,7 +85,7 @@ def stated_line(
     policy(settings)
     state["pull"] = judged_pr(judging(verdict), labels=(label,))
     _, _, err = check_merge(capsys)
-    return next(each for each in err if each.startswith("PR #7: risk:"))
+    return "\n".join(each for each in err if each.startswith("PR #7:"))
 
 
 VERIFIER = "risk:\n  verifier: true\n"
@@ -121,3 +121,38 @@ def test_check_merge_on_a_merged_pr_says_nothing_of_a_closed_issue(
     )
     approvals.main(["check", "merge", "7"])
     assert "closes no open issue" not in capsys.readouterr().out
+
+
+def test_a_high_label_and_a_low_verdict_are_both_shown_beside_the_gate_rating(
+    gating: Gate, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The rating line stays as it was; the disagreement is a line of its own."""
+    line = stated_line(gating, capsys, "low — fine", "risk:high", VERIFIER)
+    first, second = line.splitlines()
+    assert first == "PR #7: risk: high (`risk:high` is on PR #7); merge: go"
+    assert (
+        "disagree" in second
+        and "PR label `risk:high`" in second
+        and "verifier `Risk: low`" in second
+    )
+
+
+def test_land_wait_reads_a_pr_that_merged_after_the_listing(
+    lands: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bare `land --wait`: `open_pulls()` lists PR 7 open, then it merges and GitHub closes its `Closes #n` issue
+    before `candidates_of()` reads it by number and judges it (landable, proof_gaps, gated, closes_nothing)."""
+    lands["open"](7, {"7.txt": "7\n"})
+    real = approvals.open_pulls
+
+    def listed() -> list[dict[str, Any]]:
+        found = real()
+        pr = lands["pulls"][7]
+        pr["state"] = "MERGED"
+        for each in pr["closingIssuesReferences"]["nodes"]:
+            each["state"] = "CLOSED"
+        return found
+
+    monkeypatch.setattr(approvals, "open_pulls", listed)
+    code, lines = lands["land"]("--wait")
+    assert not [line for line in lines if "closes no open issue" in line], lines
