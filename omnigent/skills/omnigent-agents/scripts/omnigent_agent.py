@@ -2127,10 +2127,11 @@ class Omnigent:
     )
 
     def send(self, sid: str, text: str) -> None:
-        """Post ``text`` as a user message. Untagged unless ``self.expires`` is set (the send and
+        """Post ``text`` as a user message, opening with the ``[Message from …]`` line (``prefixed``). Untagged unless ``self.expires`` is set (the send and
         relay commands do): then it names the calling session as its sender, and expires
         ``self.expires`` minutes on (0: never), so a message queued behind a busy turn is dropped,
         and its sender told, once that sender is gone, instead of landing out of context."""
+        text = prefixed(text, own_id())
         data: dict = {"role": "user", "content": [{"type": "input_text", "text": text}]}
         if self.expires is not None and (sender := own_id()):
             data["sender_session_id"] = sender
@@ -2708,6 +2709,24 @@ def runner_log(info: dict) -> str:
     return str(logs[-1]) if logs else str(RUNNER_LOGS / f"runner-{root}-*.log")
 
 
+FROM_OPEN = "[Message from "
+FROM_LINE = re.compile(r"\[Message from (?:session [0-9a-f-]+|[^\]\n]{1,64})\](?:\n|$)")
+
+
+def prefixed(text: str, sender: str = "") -> str:
+    """``text`` under the first line the web chat draws as a message row (``[Message from session <id>]``,
+    else ``[Message from Supervisor]``); text that already opens with ``[Message from `` is left alone (#3001)."""
+    if text.startswith(FROM_OPEN):
+        return text
+    return f"{FROM_OPEN}{f'session {sender}' if sender else 'Supervisor'}]\n{text}"
+
+
+def unwrapped(text: str) -> str:
+    """``text`` without its ``[Message from …]`` first line, stripped: what exact comparisons read."""
+    text = text.strip()
+    return text[m.end() :].strip() if (m := FROM_LINE.match(text)) else text
+
+
 def text_of(item: dict) -> str:
     return "".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict))
 
@@ -3016,7 +3035,7 @@ def send_to_confirm(og: Omnigent, sid: str, text: str) -> None:
 
 def queued(info: dict, text: str) -> bool:
     """Whether ``text`` waits in the session's pending inputs: sent, not yet an item."""
-    return any(text_of(p).strip() == text for p in info.get("pending_inputs") or [])
+    return any(unwrapped(text_of(p)) == unwrapped(text) for p in info.get("pending_inputs") or [])
 
 
 def started_late(og: Omnigent, sid: str, text: str) -> bool:
@@ -3141,7 +3160,7 @@ def send(
         return [
             i
             for i in items
-            if i.get("type") == "message" and i.get("role") == "user" and text_of(i).strip() == text
+            if i.get("type") == "message" and i.get("role") == "user" and unwrapped(text_of(i)) == unwrapped(text)
         ]
 
     def pending(info: dict) -> bool:
@@ -3410,7 +3429,7 @@ POSTED = (
     RELAY_FROM.split("{")[0],
     RELAYED.split("{")[0],
     "[System:",
-    "[Message from session ",  # the `sys_session_message` tool (#2824)
+    FROM_OPEN,  # `sys_session_message` (#2824) and every message this script sends (#3001)
     REVIVED,
     NO_REPORT,
 )
@@ -3419,6 +3438,9 @@ BRIEF = re.compile(r"Work on .+(\. Your brief:|: read .+ and do what it says\.)"
 
 def agent_posted(text: str) -> bool:
     text = text.strip()
+    if text.startswith(POSTED) or bool(BRIEF.fullmatch(text.split("\n", 1)[0])):
+        return True
+    text = unwrapped(text)
     return text.startswith(POSTED) or bool(BRIEF.fullmatch(text.split("\n", 1)[0]))
 
 
@@ -8571,7 +8593,7 @@ def agent_progress_at(items: list[dict]) -> float | None:
         for i in dated
         if i.get("type") == "message"
         and i.get("role") == "user"
-        and not text_of(i).strip().startswith(NO_PROGRESS_LINES)
+        and not unwrapped(text_of(i)).startswith(NO_PROGRESS_LINES)
     ]
     return max(wrote + briefs)
 
@@ -8762,8 +8784,8 @@ def in_history(og: Omnigent, sid: str, found: Callable[[dict], bool], since: flo
 
 def instruction(item: dict, resume: str) -> bool:
     """A user message that tells the session its task: not the resume line, nor the revive line."""
-    text = text_of(item).strip()
-    return from_user(item) and text != resume and not text.startswith(REVIVED)
+    text = unwrapped(text_of(item))
+    return from_user(item) and text != unwrapped(resume) and not text.startswith(REVIVED)
 
 
 def last_instruction(og: Omnigent, sid: str, items: list[dict], resume: str) -> float | None:
@@ -8801,7 +8823,7 @@ def instructed(og: Omnigent, sid: str, items: list[dict], resume: str) -> tuple[
         float(i.get("created_at") or 0)
         for i in items
         if from_user(i)
-        and text_of(i).strip() == resume
+        and unwrapped(text_of(i)) == unwrapped(resume)
         and float(i.get("created_at") or 0) >= since
     ]
     return since, max(resent, default=0.0)
@@ -10800,7 +10822,7 @@ def supervise_registry(
                 landed = in_history(
                     og,
                     sid,
-                    lambda i, t=text: from_user(i) and text_of(i).strip() == t,
+                    lambda i, t=text: from_user(i) and unwrapped(text_of(i)) == unwrapped(t),
                     intent["at"],
                 )
             except Exception as e:  # noqa: BLE001 - looked up again next poll
