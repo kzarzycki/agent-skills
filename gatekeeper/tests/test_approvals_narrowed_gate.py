@@ -26,8 +26,6 @@ MISE = """#!/bin/sh
 echo "mise $* base=${GATE_BASE:-unset}" >> "$(dirname "$0")/ran.log"
 """
 
-NO_CI = "## Settings\n\n```yaml\nloop:\n  ci: false\n```\n"
-
 
 @pytest.fixture
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -251,6 +249,23 @@ def test_land_merges_the_batch_with_no_gate_command_run(
     assert repo["ran"]() == []
     [(landed, *_)] = repo["merged"]
     assert [pull["number"] for pull, _ in landed] == [7, 8]
+
+
+def test_a_narrowed_record_against_a_base_is_found_by_status(
+    repo: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo["loop"]("# Loop\n\nAffected tests: SELECTOR\n")
+    base = repo["base"]()
+    assert approvals.main(["local-ci", "--record", "--base", base]) == 0
+    head = repo["head"]()
+    # the files a detached run leaves (detach): its exit and the commands it had to pass
+    _, _, exit_file = approvals.run_files(head)
+    exit_file.write_text("0")
+    with approvals.narrowed_to(base):
+        approvals.ran_command_file(head).write_text(approvals.gate()[0])
+    capsys.readouterr()
+    assert approvals.main(["local-ci", "--status", head]) == 0
+    assert f"narrowed against {base}" in capsys.readouterr().out
 
 
 def test_with_ci_a_record_without_base_stays_full(repo: dict[str, Any]) -> None:

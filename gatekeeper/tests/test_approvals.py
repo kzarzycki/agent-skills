@@ -4743,6 +4743,52 @@ def test_a_policy_naming_a_removed_setting_is_refused_naming_it(
         approvals.settings(add(LOOP, section, setting))
 
 
+def test_a_diff_setting_that_hides_paths_does_not_let_an_edited_merge_carry(
+    carrying: Callable[..., dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`diff.relative` and `diff.ignoreSubmodules` hide part of a plain diff: the remerge proof (catch_up) reads the
+    whole one, so a merge that added a root file still needs its own verdict from a subdirectory."""
+    case = carrying({"other.txt": "main moved\n"}, extra={"extra.txt": "in neither parent\n"})
+    root = Path.cwd()
+    sh("git", "config", "diff.relative", "true", cwd=root)
+    sh("git", "config", "diff.ignoreSubmodules", "all", cwd=root)
+    (root / "sub").mkdir()
+    monkeypatch.chdir(root / "sub")
+    assert merge(carried_pull(case), [approved(1, "area:web")], LOOP) == [
+        (
+            f"PR #7: the newest verifier review is on {case['head']}, not on the head {case['merge']}:"
+            " every commit after a verdict needs a verdict of its own"
+        )
+    ]
+
+
+def test_a_pr_commit_between_two_clean_merges_carries_nothing(
+    carrying: Callable[..., dict[str, str]],
+) -> None:
+    """A clean merge on top hides no PR commit under it: the first-parent walk meets that commit first."""
+    first = carrying({"other.txt": "main moved\n"})
+    rewritten = carrying(
+        {"more.txt": "main moved again\n"}, then={"app.py": APP.replace("line 2\n", "line 2!\n")}
+    )
+    case = carrying(
+        {"third.txt": "main moved a third time\n"}, onto=rewritten["merge"], main=first["base"]
+    )
+    pr = carried_pull(first)
+    pr.update(headRefOid=case["merge"], baseRefOid=case["base"])
+    assert merge(pr, [approved(1, "area:web")], LOOP)[0].startswith(
+        "PR #7: the newest verifier review is on"
+    )
+
+
+def test_a_policy_with_a_removed_setting_stops_affected_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The unreadable-policy fallback of the run's budget never reads past a removed setting."""
+    monkeypatch.setattr(approvals, "project", lambda: (None, add(LOOP, "loop", "ci: false\n")))
+    with pytest.raises(approvals.Refused, match="is gone"):
+        approvals.run_budget()
+
+
 def test_the_engineering_loop_skill_names_no_retired_landing_path() -> None:
     """#654: the loop's skill folder, its docs and its scripts, says nothing of the queue, the carried-verdict section
     or the batch key."""

@@ -53,8 +53,8 @@ agents: why a path is critical, how to judge a finding, the risk criteria in wor
 type and what it does, the base's copy the gatekeeper reads, the migration from loop.md's
 `## Settings` block (still read, with a deprecation line) and issue-tracker.md's own settings
 block are in the `gatekeeper` skill's policy.md. The gatekeeper is that skill's
-`scripts/gatekeeper.py` (`check build|queue|merge`, `record approval|verdict|checks`,
-`land [--wait]`, `report [--json]`, `batch`, `delegate`): exit 0 allowed, 1 refused, 3 waiting.
+`scripts/gatekeeper.py` (`check build|merge`, `record approval|verdict|checks`,
+`land [--wait]`, `report [--json]`, `delegate`): exit 0 allowed, 1 refused, 3 waiting.
 `scripts/approvals.py` in the `gatekeeper` skill is its former name, which runs it with today's verbs
 (`approve`, `verdict`, `local-ci`) for one release line, so every `approvals.py` command below works
 either way. This skill's own `scripts/loop.py` runs the loop's two operations that decide nothing,
@@ -1186,7 +1186,8 @@ Every other file says "the cap". Pass 1 reviews the PR's full diff; each later p
 up to the cap reviews the diff since the previous report and reruns the acceptance checks and repros the round's diff reaches, plus every repro still `NOT FIXED`. No fix
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
-its own. The one exception is the lead's cap
+its own, unless the head has the verdict's tree or only takes the base in with no hand edit
+(Approvals and proof). The one exception to the cap rule is the lead's cap
 decision below: a head at the cap with majors or minors open, none a blocker, lands under a `Cap:` line, provided
 the verdict names no run never made (a `Not run:` line, such as an acceptance line not run): `check merge` refuses that
 verdict with a `Cap:` line too, for majors as for minors.

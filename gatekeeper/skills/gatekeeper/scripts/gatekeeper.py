@@ -789,7 +789,7 @@ def gone(section: Any, name: str, file: str) -> None:
     """Refuse a section or key of GONE, naming it and saying what replaced it."""
     for key, why in GONE.get(name, {}).items():
         if key == "" or (isinstance(section, dict) and key in section):
-            raise Refused(f"{file}'s `{name}{'.' + key if key else ''}` is gone (#654): {why}")
+            raise Gone(f"{file}'s `{name}{'.' + key if key else ''}` is gone (#654): {why}")
 
 
 def ignored(section: dict[str, Any], name: str, file: str) -> dict[str, Any]:
@@ -3809,7 +3809,16 @@ def catch_up(pull: dict[str, Any], old: str) -> str | None:
         walked = base_merges(pull, old)
         if not isinstance(walked, str):
             if all(
-                not git("show", "--remerge-diff", "--format=", "--no-color", commit).strip()
+                not git(
+                    "show",
+                    "--remerge-diff",
+                    "--format=",
+                    "--no-color",
+                    "--no-relative",  # diff.relative would hide what lies outside the current directory
+                    "--ignore-submodules=none",  # diff.ignoreSubmodules and .gitmodules would hide a gitlink
+                    "--no-ext-diff",
+                    commit,
+                ).strip()
                 for commit, _, _ in walked
             ):
                 return f"every commit since is a merge of {base} whose `git show --remerge-diff` is empty: no conflict was resolved by hand"
@@ -5161,6 +5170,10 @@ def public(text: str) -> str:
 
 class Refused(Exception):
     """A reason to stop with exit 1, printed as is."""
+
+
+class Gone(Refused):
+    """A policy names a setting the pack no longer has: no fallback reads past it."""
 
 
 class Drifted(Refused):
@@ -11374,6 +11387,8 @@ def run_budget() -> int:
     so, since `affected-tests` ran before it read any policy and a project without the block must keep running it."""
     try:
         return timeouts(project()[1])["run"]
+    except Gone:
+        raise
     except Refused as refusal:
         fallback = timeouts(None)["run"]
         print(
