@@ -1,4 +1,4 @@
-"""scripts/cloud_verifier.py: a Codex pass with no model or effort named runs Terra at medium effort, and a second Codex
+"""scripts/cloud_verifier.py: a Codex pass with no model or effort named passes none, and a second Codex
 pass on a head that already has one is refused, naming it (#2870). `gh` and `codex` are the checkout fixture's stand-ins."""
 
 from __future__ import annotations
@@ -11,12 +11,12 @@ from test_cloud_verifier import checkout, cv  # noqa: F401 - `checkout` is a fix
 REPORT = "# Report\n\nHead: x\nVERDICT: 0 blocker\nSATISFIED: yes\nRisk: low\n"
 
 
-def test_a_codex_pass_with_no_model_or_effort_runs_terra_at_medium(checkout) -> None:  # noqa: F811
+def test_a_codex_pass_with_no_model_or_effort_passes_none(checkout) -> None:  # noqa: F811
     _, _, brief, _, seen = checkout
     seen["report"] = REPORT
     assert cv.verify(7, brief, None, None) == 0
-    assert seen["cmd"][-5:] == ["-m", "gpt-6.1-terra", "-c", "model_reasoning_effort=medium", "-"]
-    assert seen["brief"].startswith("AGENT_SIGNATURE=codex/terra-6.1/med\n")
+    assert "-m" not in seen["cmd"] and not any("model_reasoning_effort" in a for a in seen["cmd"])
+    assert seen["brief"].startswith("AGENT_SIGNATURE=codex/?/?\n")
 
 
 def test_a_start_that_names_sol_and_an_effort_keeps_them(checkout) -> None:  # noqa: F811
@@ -82,3 +82,21 @@ def test_a_thread_pass_on_an_unchanged_head_is_refused_before_a_thread_is_made(
     with pytest.raises(cv.Refused, match=r"codex/terra-6.1/med, pass 1"):
         cv.thread_verify(7, brief, None, None, None, "env")
     assert head  # a later head is another pass: see earlier_codex_pass's test
+
+
+def test_a_codex_pass_takes_the_model_and_effort_agents_yml_names(
+    checkout,  # noqa: F811
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _, _, brief, _, seen = checkout
+    seen["report"] = REPORT
+    home = tmp_path / "agents-home"
+    (home / ".agents").mkdir(parents=True)
+    (home / ".agents" / "agents.yml").write_text("verifier:\n  model: m-x\n  effort: low\n")
+    monkeypatch.setenv("HOME", str(home))
+    assert cv.command(["verify", "--pr", "7", "--brief", str(brief)]) == 0
+    assert seen["cmd"][-5:] == ["-m", "m-x", "-c", "model_reasoning_effort=low", "-"]
+    # a flag outranks the file
+    assert cv.command(["verify", "--pr", "7", "--brief", str(brief), "--model", "m-y"]) == 0
+    assert seen["cmd"][seen["cmd"].index("-m") + 1] == "m-y"

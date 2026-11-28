@@ -92,7 +92,6 @@ OWNER_ONLY = (
     "owner-own-list",
 )
 JOBS = ("lead", "worker", "mechanical", "verifier", "scheduled")
-VERIFIER_ROUTES = ("codex", "gemini", "claude")  # the launcher's `--verifier-route` words
 
 F, S = "first", "second"
 
@@ -173,29 +172,6 @@ def _keys() -> dict[str, Key]:
         ),
         Key("hygiene.repos", "strs", [], "Repos the nightly scan covers", (F, S)),
         Key("pin.tag_prefix", "str", None, "Release-tag prefix; None: no pin updater", (S,)),
-        Key(
-            "verifier.route",
-            "str",
-            None,
-            "Default verifier route of a verifier start; None: the pack's own order (codex first)",
-            (),
-            choices=VERIFIER_ROUTES,
-        ),
-        Key(
-            "verifier.model",
-            "str",
-            None,
-            "Model that route runs; None: the agent's own default",
-            (),
-        ),
-        Key(
-            "verifier.fallback",
-            "strs",
-            [],
-            "Routes to try, in order, when the default refuses; empty: the pack's own order",
-            (),
-            choices=VERIFIER_ROUTES,
-        ),
     ]
     return {x.name: x for x in k}
 

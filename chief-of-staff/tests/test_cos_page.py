@@ -289,8 +289,11 @@ def test_the_real_triage_takes_the_page_prompt(monkeypatch: pytest.MonkeyPatch) 
     import subprocess
 
     seen = []
+    real = subprocess.run
 
     def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+        if cmd[0] != "claude":  # the checkout lookup agents.yml's read makes
+            return real(cmd, **kw)
         seen.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, '{"route": "owner", "why": "Pick a name"}', "")
 

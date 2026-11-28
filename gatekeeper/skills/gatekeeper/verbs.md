@@ -109,10 +109,7 @@ reviews, a review counting only when its body starts `Verifier (<family>), pass 
 PR's author, the account running this or an account that can write to the repo posted it, since anyone can review a
 public repo: every one on the newest
 pass's commit says `SATISFIED: yes` with 0 blocker and 0 major, and that commit is the head itself, or the head carries that commit's verdict (`verdict on <old> carried`): it holds the same tree whatever its commits, or every commit since only takes the base in with no hand edit (clean merges of main, or a clean rebase), since any other
-commit after a verdict needs one of its own; at the cap or later, a verdict with no blocker, no run missing and open majors or minors lands once the PR body records the lead's decision (`Cap: #<follow-up>`), which replaces the satisfied verdict (the merge policy still decides whether the PR needs a go); on a high-risk change (below), that pass came from the default tier, not
-one whose heading names `mid` or `small` (a `Verifier model:` tier, the verifier role), since a lower tier's review is enough
-only for a change it rates low (a fallback verifier's family, `agy`, `gemini` or `same-family`, is no tier), and on a PR
-that only bumps the pack's pin, the pin target's tier rule judges that pass instead (pin_target); no unresolved
+commit after a verdict needs one of its own; at the cap or later, a verdict with no blocker, no run missing and open majors or minors lands once the PR body records the lead's decision (`Cap: #<follow-up>`), which replaces the satisfied verdict (the merge policy still decides whether the PR needs a go); no unresolved
 review thread; no review whose latest state is `CHANGES_REQUESTED`; and a newest `## Demo` comment, where a trusted
 author posted one, that embeds its videos and screenshots as user-attachments (`demo.sh`), which `check build` checks too. Then it waits (exit 3, one line per wait; the approvals workflow maps it to a `pending`
 status) for the newest run of each check the base branch requires, as `land` reads them, to be green on the head,

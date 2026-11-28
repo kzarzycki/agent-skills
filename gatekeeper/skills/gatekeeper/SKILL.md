@@ -124,9 +124,7 @@ PR merge and holds none.
 shape (anything else in it is prose the review carries):
 
 - near the top, `Verifier: <family>, pass <n>`, such as `Verifier: codex/terra-6.1/med, pass
-  5`. A lower tier (`mid` or `small`) is a word of its own after the family, `Verifier:
-  codex/terra-6.1/med mid, pass 1`: `check merge` refuses a high-risk change whose newest
-  verdict names one, and reads a line without one as the default tier. Text after the pass
+  5`.  Text after the pass
   number (`(merge of main)`) goes into the review's first line;
 - per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, its body
   up to the next heading outside a code fence. Any other `### ` heading is a sub-heading;

@@ -605,17 +605,6 @@ def report_path(brief: str) -> Path | None:
     return Path(found[1]) if found else None
 
 
-# A Codex verifier pass with no model or effort named runs on these, never on Codex's own defaults (a Sol model, an
-# unset effort), which resend ~100k tokens of context on every tool call at the larger model's rate (#2870). A start
-# asks for Sol (risk:high, design-heavy work) with `--model`, and for another effort with `--effort`.
-CODEX_MODEL, CODEX_EFFORT = "gpt-6.1-terra", "medium"
-
-
-def codex_defaults(model: str | None, effort: str | None) -> tuple[str, str]:
-    """The model and effort a Codex verifier pass runs on: the start's own, else Terra at medium effort."""
-    return model or CODEX_MODEL, effort or CODEX_EFFORT
-
-
 CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
 
 
@@ -682,7 +671,7 @@ def json_arrays(text: str) -> list[dict]:
 
 def signature(model: str | None, effort: str | None, harness: str = "codex") -> str:
     """`codex/<model>/<effort>` (`cc/...` for Claude) as orchestrating-agents' launcher writes it atop a brief
-    (`gpt-6.1-terra` is `terra-6.1`, `claude-sonnet-5-5` is `sonnet-5.5`, `medium` is `med`, `?` for the CLI's own
+    (`<vendor>-6.1-<name>` is `<name>-6.1`, `<vendor>-<name>-5-5` is `<name>-5.5`, `medium` is `med`, `?` for the CLI's own
     default), so the report's `Verifier:` line names what ran."""
     short = re.sub(r"^(gpt|claude)-", "", model or "")
     if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", short):
@@ -1065,8 +1054,6 @@ def verify(
     requested: float | None = None,
 ) -> int:
     """One pass (`review`) that writes its `verifier` event: an exception leaves the event `failed`, the default."""
-    if harness == "codex":
-        model, effort = codex_defaults(model, effort)
     event = PassEvent()
     try:
         return review(pr, brief_file, model, effort, harness, requested, event)
@@ -1505,7 +1492,6 @@ def thread_verify(
     pending_head: str | None = None,
 ) -> int:
     """One thread pass (`thread_review`) that writes its `verifier` event: an exit without a report ends it `failed`."""
-    model, effort = codex_defaults(model, effort)
     event = PassEvent()
     try:
         return thread_review(pr, brief_file, model, effort, thread, env, pending_head, event)
@@ -1649,6 +1635,39 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout, sys.stderr = out, err
 
 
+def configured(args: argparse.Namespace) -> None:
+    """Fill the model and effort a Codex pass was not given from agents.yml's `verifier` entry, by the resolver every
+    start uses (omnigent-agents' omnigent_agent.py: the project's file over the setup's, `by_risk` by the PR's rating).
+    None found, or no omnigent-agents installed: the host's Codex config decides, as with no file."""
+    if (args.command == "verify" and args.harness != "codex") or (args.model and args.effort):
+        return
+    try:
+        path = installed("omnigent-agents") / "omnigent_agent.py"
+        spec = importlib.util.spec_from_file_location("omnigent_agent", path)
+        agent = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        spec.loader.exec_module(agent)  # type: ignore[union-attr]
+        here = os.getcwd()
+        got = agent.resolve(
+            agent.agent_config(here),
+            "verifier",
+            lambda: agent.job_attributes("verifier", "", here, True, args.pr),
+            {"model": args.model, "effort": args.effort},
+        )
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - the config is an aid: a pass never fails on it
+        print(
+            f"cloud_verifier: agents.yml not read ({e}): the host's Codex config decides",
+            file=sys.stderr,
+        )
+        return
+    args.model, args.effort = got["model"][0], got["effort"][0]
+    if args.model or args.effort:
+        print(
+            f"model: {args.model or 'the harness default'} (from {got['model'][1]}), effort:"
+            f" {args.effort or 'the harness default'} (from {got['effort'][1]})",
+            file=sys.stderr,
+        )
+
+
 def command(argv: list[str] | None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1691,10 +1710,10 @@ def command(argv: list[str] | None) -> int:
         help="the verifier's CLI: codex for a Claude-written PR, claude for a Codex-written one, gemini when Codex has"
         " no quota (exit 5: no agy login here, use a host)",
     )
-    v.add_argument("--model", help=f"the model; Codex runs {CODEX_MODEL} when unset")
+    v.add_argument("--model", help="the model id; the harness's own config decides when unset")
     v.add_argument(
         "--effort",
-        help="Codex's reasoning effort, medium when unset; refused with --harness claude",
+        help="Codex's reasoning effort, the harness's own config when unset; refused with --harness claude",
     )
     v.add_argument(
         "--requested",
@@ -1739,6 +1758,7 @@ def command(argv: list[str] | None) -> int:
             )
             print(said, end="")
             return code
+        configured(args)
         if args.command == "thread":
             return thread_verify(
                 args.pr, args.brief, args.model, args.effort, args.thread, args.env, args.head

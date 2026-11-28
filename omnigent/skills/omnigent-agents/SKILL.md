@@ -72,19 +72,43 @@ transcript. A `run` may reuse the report path: a report already there counts onl
 rewritten after the launch. `start` refuses one, since the `wait` after it has no launch
 time to compare.
 
-**Model.** A child runs on `--model`, else `OMNIGENT_MODEL_<AGENT>` (`OMNIGENT_MODEL_CODEX`,
-`OMNIGENT_MODEL_CLAUDE`, `OMNIGENT_MODEL_CLAUDE_CLOUD`), else `sonnet` for `claude-cloud`, whose
-server refuses an ACP session that names no model, else its harness's default (Codex:
-`~/.codex/config.toml`), a verifier included. `start` refuses a model the agent's harness doesn't list on the host the child runs on
-(`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so `sonnet` and
-`claude-sonnet-5-5` both pass), naming the ids it does, refuses a Codex model (`gpt-<generation>-<tier>`) when the list has a newer generation, naming it (`--allow-older-model` for a deliberate pin), and one it can't check because the list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so):
-Omnigent launches an unlisted id on the harness default with no error. Pass `--model` on every start: the owner's model, the project's, else one fit for the job (engineering-loop SKILL.md, Models). A
-tier the project names resolves against the family's lineup (engineering-loop SKILL.md, Models): Codex lists
-its models in `~/.codex/models_cache.json`, each `slug` naming its generation and its `description` its role; a Claude Code
-lead's own instructions name its family's newest models, and `sys_list_models` lists none for Claude. A
-launch that fails on capacity (`server_overloaded`, a rate limit) is retried later with
-backoff on the same model, never on another, which would leave the work on a model nobody
-chose.
+**Model and effort.** Every start takes its model and effort from configuration, never from code: the flags, then two
+YAML files of one format, the project's `.agents/agents.yml` laid over the setup's `~/.agents/agents.yml` (the person's
+setup repo links it into every host), then the harness's own config (Codex's `~/.codex/config.toml`, Claude Code's
+settings), which decides when nothing sets a key: `start` then passes no model or effort. Both files are plain YAML, read
+with the standard library; no environment variable is read. A key at any level may be `model` (an id), `effort`, or both,
+and the deepest level that sets one wins:
+
+```yaml
+effort: <level>                    # every agent
+lead:
+  model: <id>
+  by_size: {XS: {model: <id>, effort: <level>}, S: {model: <id>}}
+worker:
+  model: <id>
+  by_risk: {low: {model: <id>, effort: <level>}}
+verifier:
+  route: codex                     # --verifier-route's default; fallback: [claude] lists the other routes
+  model: <id>
+  by_risk: {low: {model: <id>}}
+helper:                            # the supervisor's router and claude-cloud-run
+  model: <id>
+  effort: <level>
+```
+
+The role is the `--role` file's name (`lead`, `worker`, `verifier`), else `lead` for `--top-level`; a start with no role reads the
+top level only. `by_size` matches the largest `size:<S>` label on the issues the brief names (`#N` or an issue URL, read with
+`gh`); `by_risk` matches a worker's highest `risk:<level>` label on them, and a verifier's `check merge` rating of its
+`--pr`, so a PR the gate rates high never gets the low entry. A job that matches no entry takes its role's own keys, then the
+top level's. The project file is merged over the setup file key by key before the walk. Each start prints
+`model: <id> (from flag|project|setup|harness), effort: ...` on stderr, beside a verifier's route line; the brief's
+`AGENT_SIGNATURE` still names the model and effort the server recorded. `start` refuses a model the agent's harness doesn't
+list on the host the child runs on (`GET /v1/hosts/<host>/harnesses/<harness>/model-options`: each row's `id` and `model`, so
+`sonnet` and `claude-sonnet-5-5` both pass), naming the ids it does, refuses a Codex model (`gpt-<generation>-<tier>`) when
+the list has a newer generation, naming it (`--allow-older-model` for a deliberate pin), and one it can't check because the
+list doesn't load (an ACP harness has no host list: `start` passes the id on, saying so): Omnigent launches an unlisted id on
+the harness default with no error. A launch that fails on capacity (`server_overloaded`, a rate limit) is retried later
+with backoff on the same model, never on another, which would leave the work on a model nobody chose.
 
 **Permission mode.** A Claude child starts in `--permission-mode <mode>`, else
 `OMNIGENT_PERMISSION_MODE`, else the `--permission-mode` its Claude starter was launched with
@@ -106,8 +130,7 @@ the record can't be read). Start every child through `start` or `run`, never a r
 `sys_session_create` with a mode of its own, since only these pick the mode and report it.
 
 **Effort.** `--effort <level>` sets the child's reasoning effort, as its harness names the levels
-(Claude, native or cloud: `low` to `max`). Without it the level comes from `OMNIGENT_EFFORT_<AGENT>`
-(`OMNIGENT_EFFORT_CLAUDE`, `OMNIGENT_EFFORT_CODEX`), else the harness default runs. Omnigent records
+(Claude, native or cloud: `low` to `max`). Without it the level comes from agents.yml (Model and effort), else the harness default runs. Omnigent records
 it as the session's `reasoning_effort` and turns it into the harness's own setting at launch, and the
 brief's `AGENT_SIGNATURE` names the level the server recorded. A harness drops an effort it can't
 apply, with no error, so `start` refuses one rather than sign an effort the child doesn't run: any
@@ -140,14 +163,6 @@ not checked. A chief of staff the owner starts in the UI gets no flag. To give i
 `autoCompactWindow` in its project's `.claude/settings.json`: it outranks the user's
 `autoCompactWindow`, though not the environment variable.
 
-**Lead model.** `start --top-level` of a Claude lead reads the project's `Lead model: <tier> for
-<condition>` line (under the engineering loop, in loop.md) once, on the lead's host, with the
-`Lead autocompact:` line. When the issues the brief names (`#N` or an issue URL; their labels come
-from `gh`) match the condition (`size:<S> or smaller`, or a bare label), the lead starts on the
-tier's alias: `frontier` Fable, `top` Opus, `mid` Sonnet, `small` Haiku. `--model` and
-`OMNIGENT_MODEL_CLAUDE` outrank it; a brief naming no issue, a size-less issue, a Codex lead or no
-line starts as configured. A tier or condition it can't parse fails the start before a session exists.
-
 **Other agents.** `claude` and `codex` are aliases for the native agents; any other registered
 agent's name or id starts that agent, found among the server's agents, then the caller's own
 (`scope=user`). `claude` and `codex` take the server's native agent, though the UI may register a
@@ -160,8 +175,7 @@ lacks: the record policies, skills and terminals, the config instructions and mo
 differ, or a server agent shares the name (only a user agent has a config to compare), the name
 fails, listing their ids: pass the id. A native harness (`*-native`) runs in a pane on this host, so it reads its brief
 from a file as the aliases do; any other may run its tools on another machine, so its brief goes
-inline in the first message. `OMNIGENT_MODEL_<AGENT>` applies to the aliases only (`--model`
-works for any), and so does permission mode, except Antigravity: it asks for approval of every
+inline in the first message. Permission mode applies to the aliases only, except Antigravity: it asks for approval of every
 command, and its only other mode skips them all, so `start` refuses it a `--role` unless
 `--permission-mode bypassPermissions` (or the variable) opts into that, which it launches with
 `--dangerously-skip-permissions`. Antigravity's effort is the user's configuration: agy names it
@@ -183,7 +197,7 @@ environment resolves. `start --cloud-env <name>` runs one cloud start in the env
 `claude-cloud` and a worktree as the routes: that checkout is where cloud sessions launch from,
 and a local agent working there switches its branch under every later start. A worktree is not that
 checkout, so a local agent there is accepted. For a workspace on another host `start` finds the checkout root through the host's listing and reads the same two files (`.claude/settings.local.json`, `.git`) through a live session there, and refuses a pinned main checkout the same way; a file the listing shows but the read can't give (a 404 from an older host, no live session, not JSON, a failed listing) prints one stderr line and the start goes on. In a worktree, though, `claude --cloud` takes the main checkout's pin when that checkout has one, so a worktree pinned to another environment would silently run that one's setup script and variables: `start`, `run` and `launch-dir` refuse such a worktree before any session exists, naming both pins and the two ways out (repin the main checkout, or launch from a clone, `launch-dir --clone`). A launch dir needs no checked-out files: nothing on the cloud path reads them (the bridge checks for a git repo, the CLI bundles it and reads the pin and the folder trust). `launch-dir <remote> <branch> [<env-id>] <path>` makes one with the pin (an id given, else the one Cloud environments resolves) and a `tmp/loop/`, a few dozen MB instead of a full checkout: run inside a checkout of the same repository (a remote with the same host, in any case, and the same path, in the same case) it is a `git worktree add --no-checkout` of that checkout (on a branch of its own, `launch/<folder>`), which inherits the checkout's folder trust (Claude Code keys a worktree's trust on the main worktree git lists first, which for a `--separate-git-dir` checkout is the git dir, not the checkout), since Claude Code trusts by path and a separate clone, even inside a trusted folder, is untrusted; anywhere else, or with `--clone`, it is a blobless `--no-checkout` clone with HEAD on the branch. It prints whether the new folder is trusted. `--trust` also writes the folder-trust entry in the user's Claude config, which is the user's call and never done otherwise. `start` for a `claude-cloud` agent refuses an untrusted launch dir before any session exists, naming the folder and the two ways out (re-run `launch-dir` from a trusted checkout, or `launch-dir --trust` as the user's decision), since the bridge fails with "has not trusted" only after the session is created. `pin_environment` accepts such a clone with its own pin, and one without when an environment resolves; else it refuses, naming the helper. `start --pr <n>` on a `claude-cloud` agent points the launch dir's HEAD at the PR's branch (fetching it) without checking files out, and leaves a directory with a working tree alone. It fetches the PR's own ref (`refs/pull/<n>/head`, so a fork's branch works), reads the PR from the launch dir's repository, and runs git where the launch dir is: a `start` for a workspace on another host leaves its HEAD to that host's own `start`.
-`claude-cloud-run [--checkout DIR] [--pr N] [--timeout S] -- <command...>` is a lead's own heavy run in one call (engineering-loop's SKILL.md, Where work runs): it runs one shell command in a Claude cloud session on the checkout's HEAD (default: this directory) and exits with the command's own code, printing the report path. One word after `--` is a shell command as written; several are joined as argv. Before any session exists it refuses (exit 125) a checkout with tracked changes, or a HEAD its branch's remote doesn't hold, naming `git push`, since the session clones from the remote. A detached HEAD (a verifier's worktree) runs on the remote branch that contains it: PR N's head branch with `--pr N`, else the single remote branch holding HEAD, read as full ref names under `refs/remotes/<forge remote>/` (`git for-each-ref --contains HEAD`) after refreshing them with a pruning fetch; it is refused only when no branch or more than one holds it. It takes the forge's remote from the branch's upstream (`git rev-parse --abbrev-ref @{u}`), else `forge_remote` in `docs/agents/gatekeeper.md`'s `loop` section, else `origin`, the rule the gatekeeper reads too, and refuses a `--reference` or `--shared` clone (`objects/info/alternates`) before any session exists. It keeps one launch dir per checkout and branch, `claude-cloud-run-<branch>` beside the worktree it serves: `launch-dir` makes it the first time (the environment resolved as `launch-dir` resolves it), and later runs fetch the branch and point its HEAD there, as `start --pr` does. It writes the brief itself (check out the exact commit, run the command detached, report an `EXIT: <n>` line, the summary line and every failure) and runs `run <the Cloud worker line's agent, else claude-cloud> ... --workspace <launch dir> --no-keep --model haiku --permission-mode bypassPermissions` (`$OMNIGENT_MODEL_CLAUDE_CLOUD_RUN` names another model), taking the exit code from the report's `EXIT:` line. On a host that does not offer `acp:claude-cloud` (its `configured_harnesses` on `GET /v1/hosts`, else on the caller's own session record) it starts the session where the project's cloud sessions run instead: the host and workspace of the newest `claude-cloud` session in its Omnigent project (`GET /v1/sessions?project=<name>`) on another online host whose workspace there holds `.git` and `.claude/settings.local.json`, read from the server, so no host or path is configured. That is `run ... --host <that host> --workspace <its workspace>`: `run --host` without `--top-level` is for a cloud agent only, which starts with no parent (a child takes its parent's runner) under the child preamble, and its report is written here, under the checkout's `tmp/loop/`. With no such session it starts here, as before. When the cloud route fails (the launch refused, setup failing, out of quota, no report, no `EXIT:` line) it exits 125, its own code and never the command's, and prints the reason and the host fallback, `LOOP_HOST_RUN=<reason> <command>`. The engineering pack's hook (`hooks/heavy_run_guard.py`) refuses a heavy run on a host with this call for that exact command, where `RUNNER_SERVER_URL` names an Omnigent server (without one it allows the run with a one-line notice); a child started on a host (any harness but the cloud one, never a top-level lead) gets one preamble line telling it to prefix its heavy runs with `LOOP_HOST_RUN=placed`, since its placement already chose the host.
+`claude-cloud-run [--checkout DIR] [--pr N] [--timeout S] -- <command...>` is a lead's own heavy run in one call (engineering-loop's SKILL.md, Where work runs): it runs one shell command in a Claude cloud session on the checkout's HEAD (default: this directory) and exits with the command's own code, printing the report path. One word after `--` is a shell command as written; several are joined as argv. Before any session exists it refuses (exit 125) a checkout with tracked changes, or a HEAD its branch's remote doesn't hold, naming `git push`, since the session clones from the remote. A detached HEAD (a verifier's worktree) runs on the remote branch that contains it: PR N's head branch with `--pr N`, else the single remote branch holding HEAD, read as full ref names under `refs/remotes/<forge remote>/` (`git for-each-ref --contains HEAD`) after refreshing them with a pruning fetch; it is refused only when no branch or more than one holds it. It takes the forge's remote from the branch's upstream (`git rev-parse --abbrev-ref @{u}`), else `forge_remote` in `docs/agents/gatekeeper.md`'s `loop` section, else `origin`, the rule the gatekeeper reads too, and refuses a `--reference` or `--shared` clone (`objects/info/alternates`) before any session exists. It keeps one launch dir per checkout and branch, `claude-cloud-run-<branch>` beside the worktree it serves: `launch-dir` makes it the first time (the environment resolved as `launch-dir` resolves it), and later runs fetch the branch and point its HEAD there, as `start --pr` does. It writes the brief itself (check out the exact commit, run the command detached, report an `EXIT: <n>` line, the summary line and every failure) and runs `run <the Cloud worker line's agent, else claude-cloud> ... --workspace <launch dir> --no-keep --permission-mode bypassPermissions`, with the `--model` and `--effort` agents.yml's `helper` names, taking the exit code from the report's `EXIT:` line. On a host that does not offer `acp:claude-cloud` (its `configured_harnesses` on `GET /v1/hosts`, else on the caller's own session record) it starts the session where the project's cloud sessions run instead: the host and workspace of the newest `claude-cloud` session in its Omnigent project (`GET /v1/sessions?project=<name>`) on another online host whose workspace there holds `.git` and `.claude/settings.local.json`, read from the server, so no host or path is configured. That is `run ... --host <that host> --workspace <its workspace>`: `run --host` without `--top-level` is for a cloud agent only, which starts with no parent (a child takes its parent's runner) under the child preamble, and its report is written here, under the checkout's `tmp/loop/`. With no such session it starts here, as before. When the cloud route fails (the launch refused, setup failing, out of quota, no report, no `EXIT:` line) it exits 125, its own code and never the command's, and prints the reason and the host fallback, `LOOP_HOST_RUN=<reason> <command>`. The engineering pack's hook (`hooks/heavy_run_guard.py`) refuses a heavy run on a host with this call for that exact command, where `RUNNER_SERVER_URL` names an Omnigent server (without one it allows the run with a one-line notice); a child started on a host (any harness but the cloud one, never a top-level lead) gets one preamble line telling it to prefix its heavy runs with `LOOP_HOST_RUN=placed`, since its placement already chose the host.
 `wait` (and so `run`) with `--pr <n>` fetches
 the comment on PR n that the turn's last message links (`gh api`) and writes its body to the
 report path, so whatever reads the report reads a file as for any child. The worker pushes
@@ -886,8 +900,7 @@ offline while idle raises nothing.
 
 The small model only routes, since its input holds a lead's own words: one `claude -p --model
 <model> --tools "" --setting-sources "" --strict-mcp-config --no-session-persistence
---system-prompt <routing prompt>` call, the model `$OMNIGENT_SMALL_MODEL`, else
-`claude-haiku-5-5`, the event (cut to 4,000 characters) on stdin, 200 output tokens
+--system-prompt <routing prompt>` call, the model and effort agents.yml's `helper` names (none: `claude`'s own), the event (cut to 4,000 characters) on stdin, 200 output tokens
 (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`), 20 s. Its answer is one JSON line, `{"route":
 "none"|"act"|"owner", "why": …}`; anything else, a missing `claude`, a non-zero exit or the
 timeout routes act, never the nudge, which only the model's own `act` on a quiet end sends. The standing decisions it weighs are `--decisions <file>`'s section under a
@@ -990,7 +1003,7 @@ into the service, so a restart reposts none.
 A job starts with a bare environment (launchd's `PATH` is `/usr/bin:/bin:/usr/sbin:/sbin`)
 and without the session's `RUNNER_SERVER_URL`, so the service carries over, from the install's
 environment, only what the script reads: `RUNNER_SERVER_URL`, `OMNIGENT_USER_ID`, its
-`OMNIGENT_*` settings (`OMNIGENT_SUPERVISE_*`, `OMNIGENT_MODEL_*`, `OMNIGENT_STUCK_SECONDS`
+`OMNIGENT_*` settings (`OMNIGENT_SUPERVISE_*`, `OMNIGENT_STUCK_SECONDS`
 and the like, listed as `SERVICE_VARIABLES` and `SERVICE_PREFIXES` in the script) and `PATH`,
 which finds `omnigent`, whose interpreter refreshes the token, less its entries under a temp
 directory. The rest of a session's environment is its runner's state (ids, tokens, pids, log

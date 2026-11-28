@@ -34,7 +34,7 @@ question for the owner, not a guess:
 |---|---|---|
 | mise tasks (what each does is its `description`: `mise tasks ls`) | when the loop runs them: `test:changed` while iterating, and on each pushed head `approvals.py affected-tests` where loop.md has an `Affected tests:` line (Adopting the loop), else `test:changed`; `check`, the full suite, only in the nightly (Merge model); `loop:approvals <build\|merge> [pr]` before building and before merging, `loop:land <pr>` to merge, `setup:dev` on a fresh checkout | Build, Gates, Land |
 | `docs/agents/gatekeeper.md` | Policy (the block `approvals.py` reads, below), which nothing else reads | Spec, Gates, Land |
-| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker model: <tier> for <condition>` and `Verifier model: <tier> for <condition>` (Models), `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Lead model: <tier> for <condition>` (the tier a top-level Claude lead starts on when the issues its brief names match the condition: Models), `Gate cost: <cores> cores, <GB> GB` (what one run of the heaviest gate costs, with optional `, reserve <GB> GB`, from which the host's gate slot count follows: Rules, One heavy gate per host slot), `Affected tests: <command>` (the command that selects and runs the tests a change affects, plus the project's cheap whole-repo lint and type checks, against the base it reads from the `Gate base:` variable, else `GATE_BASE`, and from no local state it doesn't select everything without: Adopting the loop; `approvals.py affected-tests` sets it to `git merge-base origin/<base> HEAD`, or to its `--base`; a merge queue's batch check runs it too, against the base tip the batch merges onto: Merge model; a project without a selector omits the line and its worker runs `test:changed`), `Test report: <path>` (where the `Affected tests:` command writes its JUnit XML report, relative to the checkout's root, so `rerun-tests` can tell a rerun that collected zero tests from a flake that passed: R5), `Gate: full` (the opt-out for a merge queue's batch check: it runs the full check rather than the selection), `Gate base: <variable>` (the one its `check` and `Affected tests:` read as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` (with `, env <name>` for its cloud environment) where a project's cloud workers differ from the default `claude-cloud` with the policy's gate, or `Cloud worker: none` and its reason where its heavy runs stay on hosts (Cloud worker), with `Cloud verifier: worker session` beside it where the verifier runs in the worker's VM, `Verifier hosts: <name>, <name>` (the Omnigent hosts a verifier may run on: lead.md step 7), `Verifier session: reuse | fresh` (default `fresh`, a new verifier session each pass; `reuse` keeps one across passes: Independent verification), `Acceptance tests: <command>` (the command that runs one spec's checks) and `Acceptance budget: <spec minutes>, <nightly minutes>` (both: Acceptance checks), which agents read. | every step but Gates |
+| `docs/agents/loop.md` | Owner; Proof on a branch (bring an instance up, tell it is up, read its log, a step to rerun after a schema or build change); Acceptance references, in order; Approvals (the owner's reasons for the settings, short); Risk criteria (optional, the project's own, in words, which the verifier reads); In use (how to judge a finding); Worktree (create and tear down); Ledger (its path); Verifier checklist. Optional lines `Orchestration backend: <name>` (a pin), `OMP worker profile: <name>`, `Worker tools: <list>` and `Verifier tools: <list>` (the tools and MCP servers a role needs beyond the lean set, or `full`: orchestrating-agents' Omnigent backend, Lean children), `Lead autocompact: <size>` (the window a top-level Claude lead compacts at: the same file, Lead window), `Gate cost: <cores> cores, <GB> GB` (what one run of the heaviest gate costs, with optional `, reserve <GB> GB`, from which the host's gate slot count follows: Rules, One heavy gate per host slot), `Affected tests: <command>` (the command that selects and runs the tests a change affects, plus the project's cheap whole-repo lint and type checks, against the base it reads from the `Gate base:` variable, else `GATE_BASE`, and from no local state it doesn't select everything without: Adopting the loop; `approvals.py affected-tests` sets it to `git merge-base origin/<base> HEAD`, or to its `--base`; a merge queue's batch check runs it too, against the base tip the batch merges onto: Merge model; a project without a selector omits the line and its worker runs `test:changed`), `Test report: <path>` (where the `Affected tests:` command writes its JUnit XML report, relative to the checkout's root, so `rerun-tests` can tell a rerun that collected zero tests from a flake that passed: R5), `Gate: full` (the opt-out for a merge queue's batch check: it runs the full check rather than the selection), `Gate base: <variable>` (the one its `check` and `Affected tests:` read as the commit to select changed tests from, when not `GATE_BASE`; a project whose `check` reads either names it in `local_ci_env` too, so `local-ci` never records a part run: worker.md, Gates and push) and `Cloud worker: <agent>, gate <task>` (with `, env <name>` for its cloud environment) where a project's cloud workers differ from the default `claude-cloud` with the policy's gate, or `Cloud worker: none` and its reason where its heavy runs stay on hosts (Cloud worker), with `Cloud verifier: worker session` beside it where the verifier runs in the worker's VM, `Verifier hosts: <name>, <name>` (the Omnigent hosts a verifier may run on: lead.md step 7), `Verifier session: reuse | fresh` (default `fresh`, a new verifier session each pass; `reuse` keeps one across passes: Independent verification), `Acceptance tests: <command>` (the command that runs one spec's checks) and `Acceptance budget: <spec minutes>, <nightly minutes>` (both: Acceptance checks), which agents read. | every step but Gates |
 | `docs/agents/issue-tracker.md` | the line `Tracker: GitHub (engineering-loop's github.md)`; Settings (the block `approvals.py`, `labels.py` and `board.py` read, below); Never on GitHub | Intent, Spec, Land |
 | `docs/agents/coding-standards.md` | Domain facts | Build, Verify |
 
@@ -489,8 +489,7 @@ gatekeeper.md's policy (Settings) holds:
   or `go` where that level's `spec` is `owner` and its `merge` is `gates`, since the owner
   never saw that rating. `high: {merge: gates}` lands high risk on the gates in a low-stakes
   repo, and the rating still shows as `risk:high`; `low: {merge: go}` holds every merge for
-  a go. The verifier's tier rule stays tied to the rating: a `high` or `critical` change
-  needs a default-tier verdict whatever its `merge` says. `check merge` and `land` print the
+  a go. `check merge` and `land` print the
   level and the action they applied on stderr (`PR #7: risk: high (it matches a risk rule
   (path `.github/**`)); merge: go`).
 - `plan` asks for the owner's approval of a matching plan.
@@ -838,9 +837,9 @@ or the owner's private network.
   the pass: the lead sends it the brief `loop.py brief` prints, with `send --pr --wait`, asking it to save the
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
-  from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
-  the host's Codex is configured with as `--model` and `--effort` (or the `Verifier model:` tier's model);
-  without them the CLI's own default runs. It also passes `--requested <unix seconds>`, the time the lead asked for
+  from it as for a host verifier. The VM has no Codex configuration: `cloud_verifier.py` reads the checkout's and the VM's
+  `agents.yml` verifier entry itself (`by_risk` by the PR's rating), and `--model` and `--effort` outrank it; with
+  neither, the CLI's own default runs. It also passes `--requested <unix seconds>`, the time the lead asked for
   the pass (`date +%s` when it sends the brief), so the comment's `Seconds:` footer and the run's JSON line can
   show how long the pass waited to start. Exit 3 means the verifier stopped on a question, posted as that
   comment: answer it and send the pass again. Exit 4 means the pass left the checkout changed, whatever else it did (the
@@ -1086,30 +1085,11 @@ or the owner's private network.
   rather than append. A process failure or a costly manual step becomes a deterministic
   tool (a script, one call, no judgement). A routine that finds nothing to do succeeds
   silently.
-- **Models.** Every start names a model fit for the job, never the harness default. The owner's named model wins; else loop.md's `Worker model:
-  <tier> for <condition>` line names a tier for a worker whose issue matches the condition
-  (on the issue's labels), so the choice sits in one file the owner can change; else the lead
-  picks by design complexity times risk, for a worker and a verifier alike: `small` for mechanical work (a rename, a generated file, a docs fix); `mid` for the usual range and when unsure; `top` for high complexity or high risk; `frontier` only for very high complexity or very high risk, since "high" is common and `frontier` costs several times `top`. Effort high or below. A `Lead model: <tier> for <condition>` line does the same for a
-  Claude lead: `start --top-level` reads it on the lead's host and starts the lead on the tier
-  when the issues its brief names match the condition (`size:<S> or smaller`, size order XS < S < M < L < XL,
-  or a bare label; a brief naming no issue, or issues with no size label, never matches),
-  and `--model` outranks it. A line it can't parse fails the start. A `Verifier model:` line does the same for a verifier whose PR
-  matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
-  on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
-  verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
-  `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
-  its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
-  reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
-  stays the other one from the author's (Independent verification). The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
-  Codex's Astra, Sol, Terra, Luna; each family names its own), so one line holds for every family
-  and outlives a release. Resolve the tier
-  at launch from the newest generation of the family's tier models only: its model of that
-  tier, else its closest higher tier (its highest when none is higher), never an older
-  generation's model, which the family has already superseded (`omnigent_agent.py start` refuses a Codex model when the host lists a newer generation). A lead that can't read the
-  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A Codex verifier start that names
-  no model or effort runs Terra at medium effort, never Codex's own defaults, which cost several times as much per
-  pass; a start asks for Sol or another effort itself. A second Codex pass on a head that already has one is refused
-  at start, naming it (#2870). A launch that fails on
+- **Models.** Every agent's model and effort come from configuration, never from code or this file: the flags, then the
+  project's `.agents/agents.yml` laid over the setup's `~/.agents/agents.yml`, then the harness's own config (the backend's
+  Model and effort section: the format, the `by_size` and `by_risk` entries, and the sources a start prints). The owner edits
+  those files when prices, quotas or releases change which model fits a job; a PR `check merge` rates high never gets a
+  `by_risk.low` entry. A second Codex pass on a head that already has one is refused at start, naming it (#2870). A launch that fails on
   capacity takes the next placement option (Where work runs); with none left it is retried
   later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's

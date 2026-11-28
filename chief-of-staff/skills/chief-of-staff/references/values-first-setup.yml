@@ -29,7 +29,3 @@ decisions:
   file: log/decisions.md
 hygiene:
   repos: [owner-a/repo-a, owner-a/repo-b]
-verifier:
-  route: gemini
-  model: model-v
-  fallback: [codex, claude]
