@@ -194,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
+    spec_minutes, nightly_minutes = budget(root)  # read first: an invalid block stops the run before any check does
     started = time.monotonic()
     passed = failed = skips = 0
     empty = []
@@ -224,7 +225,6 @@ def main(argv: list[str] | None = None) -> int:
         f"TOTAL {passed + failed + skips} checks, {passed} passed, {skips} skipped, {failed} failed"
         f" ({seconds:.1f}s)"
     )
-    spec_minutes, nightly_minutes = budget(root)
     minutes = nightly_minutes if args.all else spec_minutes
     if seconds > minutes * 60:
         kind = "nightly" if args.all else "spec"

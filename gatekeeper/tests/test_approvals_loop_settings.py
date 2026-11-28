@@ -156,6 +156,23 @@ def test_a_budget_off_its_schema_stops_the_acceptance_runner_naming_the_key(repo
     assert result.returncode != 0 and "acceptance.budget.spec" in result.stderr
 
 
+def test_a_budget_off_its_schema_runs_no_check_at_all(repo: Path) -> None:
+    path = repo / "docs" / "agents" / "loop.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(loop("acceptance:\n  budget:\n    spec: soon\n    nightly: 90\n"))
+    marker = repo / "ran"
+    check(repo, "acceptance/7/check.sh", f"#!/bin/sh\ntouch {marker}\nexit 0\n")
+    result = subprocess.run(
+        [sys.executable, str(ACCEPTANCE), "7"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0 and "PASS" not in result.stdout
+    assert not marker.exists()
+
+
 def test_cloud_worker_in_the_block_is_none_or_an_agent_with_its_gate_and_env() -> None:
     assert approvals.loop_setting(loop("cloud_worker: none\n"), "cloud_worker") == "none"
     held = approvals.loop_setting(
