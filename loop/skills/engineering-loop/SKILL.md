@@ -127,7 +127,7 @@ harness hook. A commit runs the `lint:` tasks on the staged files (a cloud sessi
 reversible and a draft can't merge: `loop:approvals build` runs when the branch is cut, and
 `loop:approvals merge` on ready PRs in CI.
 
-A PR stays a draft until no core finding is open, bar the cap's majors (Review trail on the PR), so CI skips its
+A PR stays a draft until Review trail on the PR's ready condition holds (a satisfied verdict with no core finding open, or the cap's exception), so CI skips its
 jobs on draft PRs (`if: ${{ !github.event.pull_request.draft }}` on each job) and lists
 `ready_for_review` in its `pull_request` types, so marking a PR ready starts them.
 Merge-queue (`merge_group`) runs have no draft.
@@ -554,7 +554,7 @@ rule that held the spec at a level on `{spec: owner, merge: gates}` (the default
 `spec.auto: true`), or a level whose `merge` is lighter than that rating's, such as
 `critical: {merge: gates}` beside the default `high`. Where the level asks `gates`,
 the merge approval is the gates themselves: every verifier review on the newest pass's
-commit satisfied with no blocker or major open (at the cap, majors under the lead's `Cap:` line: The cap), that commit covering the head that lands,
+commit satisfied with no blocker or major open (at the cap, what the lead's `Cap:` line covers: The cap), that commit covering the head that lands,
 every review thread resolved, and no review requesting changes; no CI check on the head is
 part of it (Merge model). A pass counts whichever model family wrote it (Independent verification).
 
@@ -1072,7 +1072,7 @@ or the owner's private network.
   override any resolution, and alone dismisses a teammate's `CHANGES_REQUESTED`; an agent
   dismisses one only when the owner asks for that review in the session, quoting the ask
   in the dismissal. A human review follows the same pattern. The PR is marked ready once no core finding (blocker or major)
-  is open, or at the cap only majors under the lead's `Cap:` line (The cap), and squashed on merge. The PR keeps a public trail of what was found, fixed and
+  is open and the verdict is satisfied, or at the cap under the exception The cap's `Cap:` rule gives, and squashed on merge. The PR keeps a public trail of what was found, fixed and
   iterated, and the project's CI skips draft PRs, so it doesn't run on half-done work:
   the worker's `Affected tests:` selection (`approvals.py affected-tests`, else `mise run test:changed`) on each pushed head is the check while a PR is a draft, and no gate of record runs on a head but the worker's one on its final head (Merge model).
 - **Remove, don't append.** Remove a thing as if it never existed. Edit and compress
@@ -1115,8 +1115,8 @@ or the owner's private network.
   links to the spec, the PR and the instance, what is blocked, what the owner must do (or
   "nothing"), and each open question restated. Past about 150K tokens of context, at a
   natural break, offer the owner a ready compact command with the summary it should keep.
-- **Landing.** Land starts once the last verdict is triaged with no core finding open (or, at
-  the cap, only majors open under the lead's `Cap:` line: The cap) and
+- **Landing.** Land starts once the last verdict is satisfied and triaged with no core finding open (or, at
+  the cap, the exception The cap's `Cap:` rule gives) and
   the ledger is updated; it writes the PR's evidence and runs `approvals.py land <pr> --wait`,
   which marks it ready and lands it with every other landable PR in one batch, with no gate step (Merge model). The PR merges only when the newest
   verdict covers the head that lands, a merge queue's batch check is green where the base has a queue, and, where the
@@ -1184,7 +1184,9 @@ up to the cap reviews the diff since the previous report and reruns the acceptan
 lands without review: every head that lands has a satisfied verdict on that exact head,
 so any commit after the last verdict, a merge of main included, gets a verifier pass of
 its own. The one exception is the lead's cap
-decision below: a head at the cap with majors open, none a blocker, lands under a `Cap:` line.
+decision below: a head at the cap with majors or minors open, none a blocker, lands under a `Cap:` line, provided
+the verdict names no run never made (a `Not run:` line, such as an acceptance line not run): `check merge` refuses that
+verdict with a `Cap:` line too, for majors as for minors.
 
 - **The last pass under the cap leaves a blocker or major open:** the lead decides, since
   more passes alone would keep the fix regressing. It picks one of three:
@@ -1199,5 +1201,10 @@ decision below: a head at the cap with majors open, none a blocker, lands under 
 
   The cap adds no risk: the PR's own rating decides whether its merge waits for a go.
 - **The last pass under the cap leaves only minor or edge findings open:** ledger them and
-  file their issue (Triage), leave the code untouched, and land on the satisfied verdict.
+  file their issue (Triage), leave the code untouched, and land on the verdict. A verifier may
+  write `SATISFIED: no` with minors open (verifier.md says it should not), so record the
+  `Cap: #<follow-up>` line in the PR body, naming the issue the minors were filed in: with it
+  `check merge` accepts minors open on a pass at the cap or later, as it does majors, and a
+  blocker still refuses, as does a verdict with a `Not run:` line (a run never made). Below the cap an
+  unsatisfied verdict still sends the PR back for another pass; a satisfied one with minors lands at any pass.
   There is no owner stop.

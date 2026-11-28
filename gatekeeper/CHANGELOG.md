@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.24 - 2026-11-28
+
+- `approvals.py land --json` prints, after its usual output, one JSON line per PR it judged: `pr`, `head`, `state` (`merged`, `queued`, `waiting`, `needs-owner`, `refused`), `cause` and `url`, so a caller that routes on the exit code can tell a queued PR from a merged one, a red base from a PR's fault, and a running check from a wait on a person. Exit codes and the output without `--json` are unchanged (#2829).
+
 ## 0.1.23 - 2026-11-27
 
 - `land` under `land.queue: mergify` tries a hand-over call GitHub answers with a 5xx again (after 2, 10 and 30 seconds); one that still fails ends `land` (and `land --wait`) with exit 1 and one line naming the error, so exit 0 means queued or merged (#2405).
