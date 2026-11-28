@@ -3160,7 +3160,9 @@ def send(
         return [
             i
             for i in items
-            if i.get("type") == "message" and i.get("role") == "user" and unwrapped(text_of(i)) == unwrapped(text)
+            if i.get("type") == "message"
+            and i.get("role") == "user"
+            and unwrapped(text_of(i)) == unwrapped(text)
         ]
 
     def pending(info: dict) -> bool:

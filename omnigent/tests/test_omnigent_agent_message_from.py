@@ -18,7 +18,7 @@ class Wire(Omnigent):
         self.items_: list[dict] = []
         self.posted: list[str] = []
 
-    def call(self, method, path, body=None, **kw):  # noqa: ANN001
+    def call(self, method, path, body=None, **kw):
         if method == "POST" and path.endswith("/events"):
             text = body["data"]["content"][0]["text"]
             self.posted.append(text)
