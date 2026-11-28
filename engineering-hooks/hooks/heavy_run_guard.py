@@ -43,7 +43,9 @@ FENCE = re.compile(r"^```yaml[ \t]*\n(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL
 LEGACY_CLOUD = re.compile(r"^[^\w\n]*Cloud worker:", re.MULTILINE)
 NONE = r"(?:none|\"none\"|'none')"
 KEY = r"(?:cloud_worker|\"cloud_worker\"|'cloud_worker')"
-NONE_BLOCK = re.compile(rf"^{KEY}[ \t]*:(?:[ \t]+{NONE}|[ \t]*\n[ \t]+{NONE})[ \t]*(?:#.*)?$", re.MULTILINE)
+NONE_BLOCK = re.compile(
+    rf"^{KEY}[ \t]*:(?:[ \t]+{NONE}|[ \t]*\n[ \t]+{NONE})[ \t]*(?:#.*)?$", re.MULTILINE
+)
 NONE_FLOW = re.compile(rf"^[ \t]*\{{[^{{}}\[\]]*?(?<![\w\"'])({KEY})[ \t]*:[ \t]*{NONE}[ \t]*[,}}]")
 HOST_RUN = "LOOP_HOST_RUN"
 # the Omnigent server claude-cloud-run launches through; unset, the cloud route can't run here
@@ -159,7 +161,9 @@ def on_hosts(text: str) -> bool:
     if len(fences) != 1:
         return False  # no block, or more than one: the loader refuses it
     body = "\n".join(
-        line for line in fences[0].splitlines() if line.strip() and not line.lstrip().startswith("#")
+        line
+        for line in fences[0].splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
     )
     if "cloud_worker" not in body:  # the block leaves the key to its legacy line
         return bool(NO_CLOUD.search(text))

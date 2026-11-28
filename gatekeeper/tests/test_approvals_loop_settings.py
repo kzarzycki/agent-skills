@@ -434,7 +434,12 @@ def test_an_old_gate_base_line_with_trailing_punctuation_still_clears_its_variab
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """As on main, `Gate base: CUSTOM_BASE,` and a sentence after it names the variable a plain gate clears."""
-    held_loop(tmp_path, monkeypatch, "# Loop\n\nGate base: CUSTOM_BASE, the selection's base.\n", "CUSTOM_BASE")
+    held_loop(
+        tmp_path,
+        monkeypatch,
+        "# Loop\n\nGate base: CUSTOM_BASE, the selection's base.\n",
+        "CUSTOM_BASE",
+    )
     assert "CUSTOM_BASE" not in approvals.gate_env({"sets": {}})
 
 

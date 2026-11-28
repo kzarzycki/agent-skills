@@ -194,7 +194,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
-    spec_minutes, nightly_minutes = budget(root)  # read first: an invalid block stops the run before any check does
+    spec_minutes, nightly_minutes = budget(
+        root
+    )  # read first: an invalid block stops the run before any check does
     started = time.monotonic()
     passed = failed = skips = 0
     empty = []

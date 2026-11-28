@@ -701,7 +701,9 @@ def typed(section: dict[str, Any], schema: Any, name: str, file: str = "loop.md"
                     f"{file}'s {where} must be true, false or a list of {', '.join(kind)}, not {value!r}"
                 )
         elif kind is Number:  # a whole or a decimal number, never a bool (an int to Python)
-            if type(value) not in (int, float) or not math.isfinite(value):  # .inf and .nan are YAML floats
+            if type(value) not in (int, float) or not math.isfinite(
+                value
+            ):  # .inf and .nan are YAML floats
                 raise Refused(f"{file}'s {where} must be a number, not {value!r}")
         # bool is an int to Python, so a type is matched exactly
         elif type(value) is not kind or (
@@ -12487,7 +12489,9 @@ def gate_env(step: dict[str, Any]) -> dict[str, str]:
         text = held.read_text() if held.exists() else ""
     # a block the loader refuses is not swallowed, which would leave a foreign base set: the gate stops on it
     named = loop_block(text).get("gate_base")
-    if named is None:  # the old line, read as it always was: the name, without the punctuation after it
+    if (
+        named is None
+    ):  # the old line, read as it always was: the name, without the punctuation after it
         line = re.search(r"^Gate base:[ \t]*`?([A-Za-z_]\w*)\b", text, re.MULTILINE)
         named = line.group(1) if line else None
     cleared |= {named} if named else set()
