@@ -106,6 +106,17 @@ def test_an_unmarked_verdict_lands_when_the_author_family_is_unknown(
     assert with_setting("same_family: never\n", "claude/sonnet/?", "low", monkeypatch) == []
 
 
+def test_an_agent_author_of_unknown_harness_holds_every_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#609 F2: an `Impl:` line whose harness is `?` names an agent, so no verdict is shown independent of it; only a
+    PR with no `Impl:` line (a person's) lets an unmarked verdict of a known family land."""
+    body = "## Evidence\n\nlog line\n\nImpl: ?/sonnet-5.5/? · Session: https://x/c/1\n"
+    for family in ("claude/sonnet/?", "codex/terra-6.1/med"):
+        found = with_setting("same_family: never\n", family, "low", monkeypatch, body)
+        assert any("verifier.same_family: never" in line for line in found)
+
+
 def test_a_verdict_naming_no_family_is_held(monkeypatch: pytest.MonkeyPatch) -> None:
     found = with_setting(
         "same_family: never\n", ("claude, same-family", "unknown"), "low", monkeypatch

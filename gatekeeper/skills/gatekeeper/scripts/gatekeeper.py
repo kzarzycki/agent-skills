@@ -3161,22 +3161,24 @@ def valid_date(text: str) -> bool:
 def kindred(family: str, author: str | None) -> bool:
     """Whether a verdict's heading family is the author's own: it names `same-family`, its harness word (kin) is the
     author's (the PR body's last `Impl:` signature, `cc/sonnet-5.5/?` being `claude`), or it names no family
-    (`unknown`, `?` or nothing), which can't be told apart from the author's. A verdict is independent only when it
-    names a family that is not the author's, or when the author's is unknown and it is not marked."""
+    (`unknown`, `?` or nothing), which can't be told apart from the author's; and any verdict where the author is an
+    agent of unknown harness (`Impl: ?/...`). A verdict is independent only when it names a family that is not the
+    author's, or when the PR names no agent author (a person's) and it is not marked."""
     if SAME_FAMILY.search(family):
         return True
     word = kin(family)
-    return word in ("", "?", "unknown") or word == author
+    return word in ("", "?", "unknown") or author == "?" or word == author
 
 
 def author_family(pull: dict[str, Any]) -> str | None:
-    """The harness word (kin) of the PR body's last `Impl:` signature, None for a body with none or a `?` one."""
+    """The harness word (kin) of the PR body's last `Impl:` signature; `?` for an agent's signature whose harness is
+    unknown, which no verdict is shown independent of; None for a body with no `Impl:` line, a person's PR."""
     found = IMPL.findall(QUOTED.sub("", pull.get("body") or ""))
     if not found:
         return None
     signature = found[-1].split(":", 1)[1].split("·")[0].strip().split()
     word = kin(signature[0]) if signature else ""
-    return None if word in ("", "?", "unknown") else word
+    return "?" if word in ("", "?", "unknown") else word
 
 
 def same_family(
