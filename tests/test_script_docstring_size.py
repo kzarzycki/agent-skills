@@ -191,7 +191,13 @@ def test_carry_text_says_a_clean_base_merge_or_rebase_carries_with_no_setting_29
     assert (
         "clean merge of the base or a clean rebase" in reviewed and "no setting needed" in reviewed
     )
-    assert "opts in" not in function_doc("carries")
+    assert (
+        "either way" not in reviewed
+    )  # a refused carry prints nothing: the head needs a verdict of its own
+    assert "prints the proof's line when it carries and nothing when it doesn't" in reviewed
+    carries = function_doc("carries")
+    assert "opts in" not in carries and "why it carries nothing" not in carries
+    assert "a refusal prints nothing" in carries
     policy = flat_text((GATEKEEPER.parent.parent / "policy.md").read_text())
     skill = flat_text(SKILL.read_text())
     for text in (policy, skill):
@@ -205,9 +211,11 @@ def test_flake_text_names_only_the_failed_tests_the_change_did_not_select_again_
     doc = function_doc("rerun_tests")
     assert "did not reselect" in doc and "flake candidates" in doc
     assert "A failed test that passes there is a flake" not in doc
+    assert "only when the whole selection exits green" in doc and "red again" in doc
     r5 = flat_text(SKILL.read_text()).split("**R5.", 1)[1].split("- **R6", 1)[0]
     assert "A failed test that passes there is a flake" not in r5
     assert "only a failed test the change did not select again" in r5.lower()
+    assert "only when the whole selection runs green" in r5 and "is red again" in r5
 
 
 def test_gate_record_says_it_finds_a_step_by_its_inputs_and_prints_a_missing_tree_alone():
