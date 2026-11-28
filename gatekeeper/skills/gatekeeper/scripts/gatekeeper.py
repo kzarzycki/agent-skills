@@ -1091,6 +1091,11 @@ def loop_block(text: str) -> dict[str, Any]:
     file = "loop.md"
     if SETTINGS.search(section(text, LOOP_HEADING)) is None:
         raise Refused(f"{file} has a ## {LOOP_HEADING} heading but no ```yaml block under it")
+    if len(blocks := SETTINGS.findall(section(text, LOOP_HEADING))) > 1:
+        extra = blocks[1].strip().splitlines()[0] if blocks[1].strip() else "an empty block"
+        raise Refused(
+            f"{file}'s ## {LOOP_HEADING} holds a second ```yaml block (it starts `{extra}`): keep one, as only the first is read"
+        )
     data = block(text, file, LOOP_HEADING)
     strict(data, LOOP_SCHEMA, "", file)
     typed(data, LOOP_SCHEMA, "", file)

@@ -432,3 +432,13 @@ def test_a_block_the_loader_refuses_never_leaves_the_gate_base_variable_set(
     )
     with pytest.raises(approvals.Refused, match="afected_tests"):
         approvals.gate_env({"sets": {}})
+
+
+def test_a_second_yaml_block_under_loop_settings_is_refused_naming_it() -> None:
+    text = (
+        "# Loop\n\n## Loop settings\n\n```yaml\ngate: full\n```\n\nMore.\n\n"
+        "```yaml\nafected_tests: mise run x\n```\n"
+    )
+    approvals.loop_block.cache_clear()
+    with pytest.raises(approvals.Refused, match="second.*afected_tests"):
+        approvals.loop_setting(text, "gate")
