@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import textwrap
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,20 +116,56 @@ def next_version(current: str, released: str | None, magnitude: str) -> str:
     return current if _semver(current) > _semver(proposed) else proposed
 
 
-def _fold(changelog: str, version: str, bullets: str, date: str) -> tuple[str, str]:
+_ADOPT = re.compile(r"^adopt:[ \t]*", re.MULTILINE)
+ADOPT_HEADING = "### Adopt in projects"
+
+
+def split_adopt(entry: str) -> tuple[str, str | None]:
+    """An entry's changelog bullet and its optional adopt item: the text from a line starting `adopt:` to the
+    end of the file is what a consumer changes (the file and the exact edit), kept out of the bullet (#1631)."""
+    match = _ADOPT.search(entry)
+    if not match:
+        return entry.strip(), None
+    item = entry[match.end() :].strip()
+    return entry[: match.start()].strip(), item or None
+
+
+def _adopt_section(items: list[str]) -> str:
+    lines = []
+    for item in items:
+        first, _, rest = item.partition("\n")
+        lines.append(f"- {first.strip()}")
+        lines += [
+            f"  {line}" if line.strip() else "" for line in textwrap.dedent(rest).splitlines()
+        ]
+    return f"{ADOPT_HEADING}\n\n" + "\n".join(lines)
+
+
+def _fold(
+    changelog: str, version: str, bullets: str, date: str, adopt: list[str] | None = None
+) -> tuple[str, str]:
     """The new CHANGELOG text and the version's section in it: the entries go under `## <version> - <date>` after
     `## Unreleased`, or extend an existing `## <version>` heading."""
     existing = re.search(rf"^## {re.escape(version)}(?: - .*)?$", changelog, re.MULTILINE)
     if existing:
         following = _HEADING.search(changelog, existing.end())
         end = following.start() if following else len(changelog)
-        section = f"{changelog[existing.start() : end].rstrip()}\n{bullets}\n"
+        current = changelog[existing.start() : end].rstrip()
+        heading = re.search(rf"^{re.escape(ADOPT_HEADING)}$", current, re.MULTILINE)
+        if heading:  # plain bullets stay above the adoption list; new items join it
+            head, tail = current[: heading.start()].rstrip(), current[heading.start() :].rstrip()
+            extra = "\n" + "\n".join(_adopt_section(adopt).splitlines()[2:]) if adopt else ""
+            section = f"{head}\n{bullets}\n\n{tail}{extra}\n"
+        else:
+            section = f"{current}\n{bullets}\n" + (f"\n{_adopt_section(adopt)}\n" if adopt else "")
         start = existing.start()
     else:
         unreleased = re.search(r"^## Unreleased$", changelog, re.MULTILINE)
         following = _HEADING.search(changelog, unreleased.end() if unreleased else 0)
         start = end = following.start() if following else len(changelog)
-        section = f"## {version} - {date}\n\n{bullets}\n"
+        section = f"## {version} - {date}\n\n{bullets}\n" + (
+            f"\n{_adopt_section(adopt)}\n" if adopt else ""
+        )
     before = changelog[:start].rstrip("\n")
     after = changelog[end:].lstrip("\n")
     return f"{before}\n\n{section}" + (f"\n{after}" if after else ""), section
@@ -164,9 +201,11 @@ def cut_package(package: Path, version: str, date: str, *, dry_run: bool = False
     entries = _entries(package)
     if not entries:
         return None
-    bullets = "\n".join(path.read_text().strip() for path in entries)
+    parts = [split_adopt(path.read_text()) for path in entries]
+    bullets = "\n".join(bullet for bullet, _ in parts)
+    adopt = [item for _, item in parts if item]
     changelog = package / "CHANGELOG.md"
-    text, section = _fold(changelog.read_text(), version, bullets, date)
+    text, section = _fold(changelog.read_text(), version, bullets, date, adopt)
     if not dry_run:
         write_version(package, version)
         changelog.write_text(text)
