@@ -5,7 +5,7 @@
 # ///
 """The gatekeeper (engineering-loop): decides from proof on the forge and the team's policy whether a change may take
 its next step (be built, merge), records that proof, and lands PRs. It reads docs/agents/ from origin/<base>, the ref land merges on
-(so a PR can't loosen its own gate); the checkout's copy only with no origin ref or with GATEKEEPER_POLICY_FROM_WORKING_TREE set, and for queue-config and timeouts. It reaches the tracker, the forge and the evidence only through their ports (github_adapter.py by default).
+(so a PR can't loosen its own gate); the checkout's copy only with no origin ref or with GATEKEEPER_POLICY_FROM_WORKING_TREE set, and for queue-config, timeouts and check setup's Mergify drift check. It reaches the tracker, the forge and the evidence only through their ports (github_adapter.py by default).
 
 Run `uv run scripts/gatekeeper.py <verb> --help` for one verb; the verbs, in one line each:
 
@@ -14434,7 +14434,7 @@ def main(argv: list[str]) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser(
         "check",
-        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun`: exit 0 once it has printed a state).",
+        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun`: exit 0 once it has printed a state, 1 for a missing PR or an unloadable policy).",
         description="Check the proofs a point needs. Points: build (the issue's spec approval, labels and claim; --issue <n> before the PR exists), merge (the PR's verdict, evidence, keyword and landing rules), ready (the PR body's evidence only), session (the Impl: line's session link), setup (a pack upgrade's gate), stalled (open PRs land would take that its queue does not hold and that are eligible to land, or verified and idle past loop.stalled_after_hours with no go or gate record, where verified is a satisfied verdict on the head, or an unsatisfied one once the cap is reached) and rerun (prints `rerun: needed`, `rerun: done` or `rerun: not needed (<why>)`, and exits 0 once it has printed a state; a missing PR or an unloadable policy exits 1). For the other points it prints one line per missing proof: exit 0 when none, 1 when a proof is missing, 3 when it only waits.",
     )
     checking.add_argument(
@@ -14457,8 +14457,8 @@ def main(argv: list[str]) -> int:
     ).add_subparsers(dest="kind", required=True)
     approving = records.add_parser(
         "approval",
-        help="Record a person's approval of a spec, plan or merge (`--by owner|delegate`).",
-        description="Record an approval of a spec, plan or merge. An agent never approves on its own judgment: --by owner on the owner's word, --by delegate under `loop.delegate`. Merge approvals name the head with --head; --withdraw takes one back. `breakglass` is the owner's alone (--by owner, --head and --reason, or --withdraw; see breakglass.md).",
+        help="Record a person's approval of a spec, plan, merge or breakglass (`--by owner|delegate`; breakglass: owner only).",
+        description="Record an approval of a spec, plan or merge. An agent never approves on its own judgment: --by owner on the owner's word, --by delegate under `loop.delegate`. Merge approvals name the head with --head; --withdraw takes one back. `breakglass` is the owner's alone: --by owner and --head, plus --reason unless --withdraw (see breakglass.md).",
     )
     approving.add_argument("point", choices=(*POINTS, "merge", BREAKGLASS))
     approving.add_argument("number", type=int)
@@ -14586,8 +14586,8 @@ def main(argv: list[str]) -> int:
     queueing.add_argument("base", nargs="?", default="origin/main")
     rerunning = commands.add_parser(
         "rerun-tests",
-        help="Rerun a red run's failed tests once (R5); a pass is a flake.",
-        description="Rerun the failed tests of a red run plus what the fix reaches, once; when the fix reselects no failed test, rerun the red run's whole selection in its order. A pass is a flake only on the whole selection. Exit 75 when the rerun ran no test.",
+        help="Rerun a red run once (R5): the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order; on a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id).",
+        description="Rerun a red run once: the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order. On a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id). Exit 75 when the rerun ran no test.",
     )
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
@@ -14613,8 +14613,8 @@ def main(argv: list[str]) -> int:
     sharding.add_argument("--shard", type=int)
     recording_read = commands.add_parser(
         "gate-record",
-        help="Read origin's pass record of the gate on a head's tree.",
-        description="The verifier's read of origin's pass record of the gate (or of the given command) on a head's tree, or of a step on another tree whose configured inputs match: exit 0, else 1 naming what to run.",
+        help="Read origin's pass record of the gate on a head's tree, or of a step on another tree whose configured inputs match: exit 1 names what to run (a head with no tree or a policy refusal prints that problem alone).",
+        description="The verifier's read of origin's pass record of the gate (or of the given command) on a head's tree, or of a step on another tree whose configured inputs match: exit 0, else 1 naming what to run (a head with no tree or a policy refusal prints that problem alone).",
     )
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
