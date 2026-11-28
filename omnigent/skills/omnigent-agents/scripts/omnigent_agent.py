@@ -2434,7 +2434,63 @@ def project_line(
             text = (Path(root) / LOOP_FILE).read_text() if root else ""
         except FileNotFoundError:
             return ""
-    found = re.search(rf"^{re.escape(key)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
+    return loop_value(text, key)
+
+
+LOOP_BLOCK = re.compile(r"^## Loop settings[ \t]*$", re.MULTILINE)
+# the line each key of loop.md's `## Loop settings` block replaces, by the label project_line is asked for
+LOOP_KEYS = {
+    "Placement": "placement",
+    "Lead model": "models.lead",
+    "Lead autocompact": "lead_autocompact",
+    "Worker tools": "tools.worker",
+    "Verifier tools": "tools.verifier",
+}
+_LOOP_READERS: dict[Any, Any] = {}
+
+
+def loop_reader() -> Any:
+    """The gatekeeper module whose `loop_setting` reads loop.md's `## Loop settings` block, the one parser of it (this
+    script holds none): found as `_load_gatekeeper` finds it, once per run. A `Fail` where this skill is installed
+    without the gatekeeper package or PyYAML, since a block read as no line would apply every default unnoticed."""
+    key = _load_gatekeeper
+    if key not in _LOOP_READERS:
+        _LOOP_READERS[key] = key()
+    if _LOOP_READERS[key] is None:
+        raise Fail(
+            f"{LOOP_FILE} has a `## Loop settings` block, which the gatekeeper package's loader reads: install that package (and PyYAML)"
+            " beside this one"
+        )
+    return _LOOP_READERS[key]
+
+
+def loop_setting(text: str, key: str) -> Any:
+    """The value of loop.md's `key` (the gatekeeper's loop_setting) in `text`, which holds a `## Loop settings` block;
+    a refusal of the block is a `Fail` naming the key."""
+    gk = loop_reader()
+    try:
+        return gk.loop_setting(text, key)
+    except gk.Refused as e:
+        raise Fail(f"{LOOP_FILE}: {e}") from e
+
+
+def loop_value(text: str, label: str) -> str:
+    """The value of the line `<label>: <value>` in loop.md's `text`, else empty. Where `text` has a `## Loop settings`
+    block, the block's value for that label, written as its line was (`hosts: a, b`, `a, b`), since the block is the
+    one place its keys are read; a key it does not set reads from its old line, the loader's rule."""
+    if label in LOOP_KEYS and LOOP_BLOCK.search(text):
+        value = loop_setting(text, LOOP_KEYS[label])
+        if isinstance(value, dict):
+            return "hosts: " + ", ".join(value["hosts"])
+        if isinstance(value, list):
+            # a list names additions to the lean set, as the old comma list does (an item `full` names a tool or server
+            # called `full`); only the scalar `full` means every tool, so a list of that one item is joined with a
+            # trailing comma, the old line `full,`, which lean_args reads as a name, not as the scalar
+            return ", ".join(value) + ("," if value == ["full"] else "")
+        return value or ""
+    if label == "Verifier hosts" and LOOP_BLOCK.search(text):
+        return ""  # placement's, read as `Placement`
+    found = re.search(rf"^{re.escape(label)}:[ \t]*(\S.*?)[ \t]*$", text, re.MULTILINE)
     return found.group(1) if found else ""
 
 
@@ -4156,8 +4212,13 @@ class CloudWorker(NamedTuple):
 
 def cloud_worker(loop: str) -> CloudWorker | None:
     """The cloud worker a project's loop.md text names, None for host workers. No line means ``claude-cloud`` with
-    the policy's gate; ``Cloud worker: none`` (a reason may follow) means host workers; a line keeps the meaning
+    the policy's gate; ``Cloud worker: none`` (a reason may follow) means host workers; in a ``## Loop settings`` block it is ``cloud_worker`` (``none``, or a section of ``agent``, ``gate`` and ``env``), read by the gatekeeper's loader; a line keeps the meaning
     it had, ``<agent>, gate <task>``, and may add ``env <name>``. A clause it doesn't know is left alone."""
+    if LOOP_BLOCK.search(loop):
+        held = loop_setting(loop, "cloud_worker")
+        if held is None:
+            return CloudWorker("claude-cloud", "", "")
+        return None if held == "none" else CloudWorker(held["agent"], held["gate"], held["env"])
     found = re.search(r"^Cloud worker:[ \t]*(.*?)[ \t]*$", loop, re.MULTILINE)
     if not found:
         return CloudWorker("claude-cloud", "", "")

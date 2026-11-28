@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run -q --script
 # /// script
 # requires-python = ">=3.9"
-# dependencies = []
+# dependencies = ["PyYAML==6.0.3"]
 # ///
 """Acceptance checks (engineering-loop): run one spec's checks from a folder of executables.
 
@@ -41,6 +41,7 @@ so "no checks" is never read as "passed"; a usage error also exits 2.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import re
 import subprocess
@@ -51,8 +52,6 @@ from pathlib import Path
 FOLDER = "acceptance"
 LOOP_MD = Path("docs") / "agents" / "loop.md"
 DEFAULT_BUDGET = (10.0, 90.0)  # minutes: one spec's run, the --all run
-BUDGET_LINE = re.compile(r"^\W*Acceptance budget:\s*(.*?)\W*$", re.MULTILINE)
-BUDGET_VALUE = re.compile(r"^(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)$")
 
 
 def repo_root() -> Path:
@@ -69,23 +68,35 @@ def repo_root() -> Path:
     return Path(out) if out else Path.cwd()
 
 
+def gatekeeper() -> object:
+    """gatekeeper.py beside this script, loaded by path: its `loop_setting` is the one reader of loop.md's values."""
+    spec = importlib.util.spec_from_file_location(
+        "acceptance_gatekeeper", Path(__file__).resolve().with_name("gatekeeper.py")
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look themselves up there
+    spec.loader.exec_module(module)
+    return module
+
+
 def budget(root: Path) -> tuple[float, float]:
-    """The (spec, nightly) minutes loop.md sets with `Acceptance budget:`, else the defaults."""
+    """The (spec, nightly) minutes loop.md sets with `acceptance.budget` in its `## Loop settings` block, or with the
+    line `Acceptance budget:`, else the defaults. A malformed line is reported and the defaults apply; a block off its
+    schema stops the run, naming the key."""
     path = root / LOOP_MD
     if not path.is_file():
         return DEFAULT_BUDGET
-    found = BUDGET_LINE.search(path.read_text(errors="replace"))
-    if not found:
+    text = path.read_text(errors="replace")
+    gk = gatekeeper()
+    try:
+        found = gk.loop_setting(text, "acceptance.budget")  # type: ignore[attr-defined]
+    except gk.Refused as e:  # type: ignore[attr-defined]
+        if gk.LOOP_HEAD.search(text):  # type: ignore[attr-defined]
+            sys.exit(f"acceptance: {LOOP_MD}: {e}")
+        print(f"acceptance: {LOOP_MD}: {e}; using 10, 90", file=sys.stderr)
         return DEFAULT_BUDGET
-    value = BUDGET_VALUE.match(found.group(1).strip("` "))
-    if not value:
-        print(
-            f"acceptance: {LOOP_MD}: `Acceptance budget: {found.group(1)}` is not "
-            "`<spec minutes>, <nightly minutes>`; using 10, 90",
-            file=sys.stderr,
-        )
-        return DEFAULT_BUDGET
-    return float(value.group(1)), float(value.group(2))
+    return DEFAULT_BUDGET if found is None else found
 
 
 def checks(folder: Path) -> list[Path]:
@@ -183,6 +194,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 2
 
+    spec_minutes, nightly_minutes = budget(
+        root
+    )  # read first: an invalid block stops the run before any check does
     started = time.monotonic()
     passed = failed = skips = 0
     empty = []
@@ -213,7 +227,6 @@ def main(argv: list[str] | None = None) -> int:
         f"TOTAL {passed + failed + skips} checks, {passed} passed, {skips} skipped, {failed} failed"
         f" ({seconds:.1f}s)"
     )
-    spec_minutes, nightly_minutes = budget(root)
     minutes = nightly_minutes if args.all else spec_minutes
     if seconds > minutes * 60:
         kind = "nightly" if args.all else "spec"

@@ -210,6 +210,78 @@ board:
 | `renames` | an old label name: its new one (issues.md, Labels) | the loop's own renames only |
 | `board` | a loop column: the board's column (github.md, Board) | each column keeps its own name |
 
+## Loop settings
+
+loop.md's `## Loop settings` holds every value a script reads (`approvals.py`, `acceptance.py`, `loop.py`,
+`omnigent_agent.py`, the heavy-run hook) as one fenced `yaml` block, read by one loader (gatekeeper.py's `loop_setting`,
+which parses it as the policy block is parsed: the same YAML reader, the same refusals), so a script reads no line of its
+own. The prose sections of loop.md stay prose: an agent reads them, and so it reads `Standing decisions:`,
+`OMP worker profile:` and `Cloud verifier:`, which no script reads. The heading is not `## Settings`, the
+deprecated place for the policy, so a loop.md may hold both and gatekeeper.md's policy is read as before.
+
+```yaml
+affected_tests: mise run check-affected
+test_report: .qualify/junit.xml
+gate: full
+gate_base: LOOP_BASE
+gate_cost:
+  cores: 4
+  gb: 8
+  reserve_gb: 2
+wall_clock_variable: SELECT_SECONDS
+acceptance:
+  tests: mise run acceptance --
+  budget:
+    spec: 10
+    nightly: 90
+cloud_worker:
+  agent: claude-cloud
+  gate: test
+  env: agent-skills-dev
+placement:
+  hosts: [box, mac]
+models:
+  lead: mid for size:S or smaller
+  worker: mid for size:S or smaller
+  verifier: mid for not risk:high
+lead_autocompact: 200k
+tools:
+  worker: [WebFetch, github]
+  verifier: full
+verifier_session: reuse
+orchestration_backend: omnigent
+```
+
+Every key is optional, and without it its default applies. A key the block does not name is refused, naming it (with the
+key it probably meant): a misspelt key is never read as no setting. So is a value of the wrong type.
+
+| Key | Value | Default, and who reads it |
+|---|---|---|
+| `affected_tests` | the command that selects and runs the tests a change affects, plus the project's cheap lint and type checks (the old `Affected tests:`) | none: the worker runs `test:changed`; `approvals.py affected-tests`, the queue's batch check, `rerun-tests` |
+| `test_report` | where that command writes its JUnit XML report, relative to the checkout's root (`Test report:`) | none; `rerun-tests` |
+| `gate` | `full`: the opt-out of narrowing, a batch check runs the full check (`Gate: full`) | narrowed where `affected_tests` is set |
+| `gate_base` | the variable the selection reads its base from, a name (`Gate base:`) | `GATE_BASE`; `approvals.py`'s gate environment |
+| `gate_cost` | `cores`, `gb` (both above 0) and optional `reserve_gb`, numbers: what one run of the heaviest gate costs (`Gate cost: 4 cores, 8 GB, reserve 2 GB`) | none: a third of the cores; `heavy` slots |
+| `wall_clock_variable` | the variable the wall-clock limit is set in, in seconds (`Wall-clock variable:`) | none; `timeouts --check` |
+| `acceptance.tests` | the command that runs one spec's checks (`Acceptance tests:`) | `acceptance.py`; `loop.py brief` |
+| `acceptance.budget` | `spec` and `nightly`, minutes (`Acceptance budget: 10, 90`) | 10 and 90; `acceptance.py` |
+| `cloud_worker` | `none` (workers stay on hosts), or `agent`, `gate` and `env`, each optional (`Cloud worker: <agent>, gate <task>, env <name>`) | `claude-cloud` with the policy's gate; `omnigent_agent.py`, the heavy-run hook |
+| `placement` | one value: `same machine`, `CI`, or `hosts:` with a list of host names (`Placement:`, and the older `Verifier hosts:`) | `same machine`; `omnigent_agent.py`. One value for every role; a value per role is a later change (#2831) |
+| `models` | `lead`, `worker`, `verifier`, each `<tier> for <condition>` (`Lead model:`, `Worker model:`, `Verifier model:`) | the harness's choice; `omnigent_agent.py` reads `lead`, an agent reads the other two |
+| `lead_autocompact` | a size from 100k to 1M (`200k`) (`Lead autocompact:`) | none; `omnigent_agent.py` |
+| `tools` | `worker` and `verifier`: `full`, or the tools and MCP servers a role needs beyond the lean set (`Worker tools:`, `Verifier tools:`) | the lean set; `omnigent_agent.py` |
+| `verifier_session` | `reuse` or `fresh` (`Verifier session:`) | `fresh`; an agent reads it (lead.md) |
+| `orchestration_backend` | `native`, `omnigent` or `herdr-link` (`Orchestration backend:`) | `native`; an agent reads it (orchestrating-agents) |
+
+In `tools` only the scalar `full` means every tool; a list names additions to the lean set (an item `full` names a tool or server called `full`), so `[full]` is lean plus that name, unlike the old single-word line `Worker tools: full`, which means every tool.
+
+Where a loop.md has no block, the lines above keep their meaning, each read as it always was, so an existing loop.md
+changes nothing. Where it has a block, a key may still be set as its old line when the block does not name it, but a key
+set in both is refused, naming the key. `approvals.py loop-migrate [<loop.md>] [--write]` writes the block from the old
+lines: it prints the file with each script-read line replaced by one `## Loop settings` block before the first
+`## ` heading (prose, and the lines no script reads, stay; a `Cloud worker: none` reason becomes a comment), or
+rewrites the file with `--write`. It reads the result back and refuses, naming the key, unless every value reads the same.
+
 ## A PR head's lint
 
 A project's `docs/agents/gatekeeper.md` (its `gate` comment, a "runs nothing" line about a PR head) states what a PR head runs. Where it says a PR head runs no check, or only what a gate record skips, rewrite it to the rule of engineering-loop's R1: every PR push runs lint and format checks on its changed files, with no tests and no build, in a separate always-on `lint` job that is a required check, and only the tests run once per tree, in the queue. A gate record skips lint only when it shows lint ran on that tree. `queue-only-ci.yml` is the job's shape, and the cost is about 1 minute of Actions time a push (#2687).

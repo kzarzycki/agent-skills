@@ -60,6 +60,7 @@ def stand_in(monkeypatch: pytest.MonkeyPatch, base: str, head: str, body: str) -
         passes=lambda found: [],
         merge_base=lambda ref, sha: base,
         named=lambda text: [],
+        loop_setting=loop.gatekeeper.loop_setting,
         section=lambda text, name: "",
         levels=lambda policy: {},
         no_ci=lambda policy: False,

@@ -132,7 +132,7 @@ def brief(
     newest verdict review's) and its report path, from pass 2 the previous report and its head, then the PR's labels, its title and body verbatim (fenced, so a verifier with no GitHub access reads them),
     then the priorities
     file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. For each spec it
-    prints `- Acceptance tests: <command> <issue>`, the command loop.md's `Acceptance tests:` line names, else the
+    prints `- Acceptance tests: <command> <issue>`, the command loop.md's `acceptance.tests` (its old `Acceptance tests:` line) names, else the
     fallback `uv run <this folder>/acceptance.py`, so the verifier runs the one the worker ran. A proof log whose first line isn't the head is refused, since the
     verifier counts a stale proof as missing and spends the pass on it. With `far` (a verifier on another host, `far` an
     absolute path there holding a clone of the repo) its paths are that host's: it fetches the head and makes its own
@@ -186,11 +186,8 @@ def brief(
         f"- Spec: {', '.join(f'#{n}' for n in issues) or 'none linked'}",
     ]
     # the command the worker ran for each spec's checks, so the verifier runs the same one (SKILL.md, Acceptance checks)
-    own = re.search(r"^Acceptance tests:[ \t]*(\S.*?)[ \t]*$", loop or "", re.MULTILINE)
-    command = (
-        own[1].strip("`").strip()
-        if own and own[1].strip("`").strip()
-        else f"uv run {runner if far else os.path.relpath(runner)}"
+    command = gatekeeper.loop_setting(loop or "", "acceptance.tests") or (
+        f"uv run {runner if far else os.path.relpath(runner)}"
     )
     lines += [f"- Acceptance tests: {command} {n}" for n in issues]
     if far:
