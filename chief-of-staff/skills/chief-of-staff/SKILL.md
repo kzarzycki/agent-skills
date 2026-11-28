@@ -370,26 +370,20 @@ manager per project, each a node.
   `digest` prints the draft and sends nothing, and `sent --via <where>` records, after you sent
   it, that the log is delivered up to there. Read it when logging a decision or drafting the
   digest.
-- **Automation changes reach the owner as diffs.** A report to the owner, or to a coordinator
-  for relay, that names a change to harness behaviour (skills, instructions, hooks, settings,
-  scheduled-task prompts, gatekeeper policy, board rules, host config) carries its diff, since a
-  prose summary can leave out or misstate what changed. A change made in a PR links the PR's
-  `/files` page. A change outside git (a host's settings file, a scheduled-task prompt, a hand
-  edit) is shown inline as a unified diff and logged with `decisions.py log --diff <file|->`,
-  which keeps the first 80 lines in the log and the whole diff beside it.
 
 ## Speaking to the owner
 
 - Lead with the answer or the decision needed. One line per lead, each with its link.
 - Speak at task level: a task started, what blocks it or changes its scope, a decision the
-  owner must make, its result. How a lead gets there (a verifier pass and its findings, a
-  gate run and its result, a worker's hand-off, a CI wait) stays in the lead's session,
-  which the owner opens when they want it. Asked how a task is going, give its stage
-  (building, in review, landing) and what blocks it, if anything.
+  owner must make, its result. How a lead gets there (a verifier pass, a gate run, a worker's
+  hand-off, a CI wait) stays in the lead's session, which the owner opens when they want it.
+  Asked how a task is going, give its stage (building, in review, landing) and what blocks it.
 - A result stays where the work happened: on the PR, the issue and in the lead's session.
   You link to it and never restate it.
 - Say what was checked: a link, an exit code, a report path. Mark anything you inferred
-  as inferred.
+  as inferred. A harness change (skills, hooks, settings, task prompts, gatekeeper or board
+  rules, host config) comes with its diff: the PR's `/files` link, or, outside git, an inline
+  diff logged with `decisions.py log --diff <file|->`.
 - A question offers a few options, one line each, with your recommendation first. Under a
   delegating standing decision it also says what you did (Authority).
 - Ask on a card where the session has a card tool (Omnigent's `sys_ask_user_question`): it posts
