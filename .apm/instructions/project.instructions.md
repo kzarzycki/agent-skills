@@ -24,3 +24,12 @@ A marketplace of Claude Code plugins. Each local plugin is a top-level directory
 - A skill whose scripts need a tool declares it in its `SKILL.md` frontmatter as `metadata.requires`, a quoted, space-separated list of `tool>=version` or bare `tool` entries (`requires: "gh>=2.99.0"`), where `tool` is both the command and its mise tool name. It names every tool the scripts run beyond git and the POSIX base, not only the one a version gate checks. It is data for a host installer, which provides each tool, and its doctor, which reports one a host lacks. No harness lists it to the model, so a requirement costs nothing until the skill is read. `tests/test_skill_requires.py` checks the format.
 - Skills teach **methods** (how a tool behaves, a pattern that holds anywhere); **policies** (when to ask, branch/worktree layout, gates, effort rules) belong to the consuming project's own instructions. A skill may say "put the project's rule here", never state the rule. The exception is `engineering-loop`: its policies (when to ask, gates, landing) are the method it ships, so it states them; the project's values (owner, gate command, worktree layout, approvals) still live in the project's `docs/agents/` files.
 - Telemetry in the pack is opt-in per deployment: a skill or script that reports usage, spend or errors off the machine stays off until the deployment's own values turn it on, since a team installing the pack never agreed to be measured by it.
+
+## Design rules
+
+- **Choices that change often live in config, not in skills.** Models, effort, routes, hosts and budgets depend on today's prices, quotas and releases, and they differ per repo and per person.
+  - Choices are set in YAML config files. They're never parsed out of `.md` prose and never read from environment variables.
+  - There are two levels: the setup's defaults, then the project's overrides. Within each, a value can be set at any level, and the deepest one wins. Flags beat both. With nothing set, the harness's own config decides.
+  - Config names concrete ids. Code doesn't map tier words to models.
+  - Code keeps only the mechanism: one resolver, printing where each value came from, and refusing an invalid or stale value.
+  - No literal model id in skill code. A test enforces it.
