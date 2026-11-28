@@ -112,3 +112,30 @@ def test_the_supervisor_treats_its_own_prefixed_lines_as_its_own() -> None:
     revive = omnigent_agent.prefixed(omnigent_agent.REVIVED, "m1")
     item = {"type": "message", "role": "user", "content": [{"text": revive}]}
     assert not omnigent_agent.instruction(item, "resume")
+
+
+def wire_item(text: str) -> dict:
+    return {
+        "type": "message",
+        "role": "user",
+        "created_at": 5.0,
+        "content": [{"type": "input_text", "text": text}],
+    }
+
+
+def test_a_managers_park_relay_is_still_a_park_after_the_prefix(wire: Wire) -> None:
+    wire.send(SID, "[relayed by manager]\nPark: paused")
+    assert wire.posted[0].startswith("[Message from session m1]\n[relayed by manager]")
+    assert omnigent_agent.told_park(wire_item(wire.posted[0]))
+    assert not omnigent_agent.told_park(wire_item("[Message from session m1]\nsay Park: now"))
+
+
+def test_restart_recovery_finds_a_sent_supervisor_batch_in_history_and_pending(wire: Wire) -> None:
+    wire.send(SID, "Supervisor [act] b-123: 1 event")
+    found = lambda i: omnigent_agent.names_batch(i, "b-123")
+    assert omnigent_agent.in_history(wire, SID, found, 0.0)  # in the message history
+    held = wire_item(wire.posted[0])
+    wire.items_.clear()
+    assert not omnigent_agent.in_history(wire, SID, found, 0.0)
+    wire.info = lambda sid: {"pending_inputs": [held]}  # type: ignore[method-assign]
+    assert omnigent_agent.in_history(wire, SID, found, 0.0)  # taken, still pending

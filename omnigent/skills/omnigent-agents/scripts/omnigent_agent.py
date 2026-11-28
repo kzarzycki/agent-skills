@@ -8738,7 +8738,7 @@ def from_user(item: dict) -> bool:
 
 def told_park(item: dict) -> bool:
     """A user message that parks the lead: ``PARK`` opens it, after the manager's relay line."""
-    return from_user(item) and bool(PARK_TOLD.match(text_of(item).lstrip()))
+    return from_user(item) and bool(PARK_TOLD.match(unwrapped(text_of(item))))
 
 
 def parked_before(og: Omnigent, sid: str, items: list[dict], ending: dict | None) -> bool:
@@ -8782,6 +8782,11 @@ def in_history(og: Omnigent, sid: str, found: Callable[[dict], bool], since: flo
         if not data or not page.get("has_more") or oldest < since:
             return False
         after = str(page.get("last_id") or data[-1].get("id"))
+
+
+def names_batch(item: dict, bid: str) -> bool:
+    """Whether a user message is a supervisor post for batch ``bid``: the id is on its first line, once unwrapped."""
+    return from_user(item) and bid in unwrapped(text_of(item)).split("\n", 1)[0]
 
 
 def instruction(item: dict, resume: str) -> bool:
@@ -11105,7 +11110,7 @@ def supervise_registry(
                 found = bool(notify) and in_history(
                     og,
                     notify,
-                    lambda i: from_user(i) and out["id"] in text_of(i).split("\n", 1)[0],
+                    lambda i, b=out["id"]: names_batch(i, b),
                     out["at"],
                 )
             except Exception as e:  # noqa: BLE001 - looked up again next poll
