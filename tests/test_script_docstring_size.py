@@ -130,3 +130,81 @@ def test_check_help_says_what_check_does():
     )  # not under the exit-1 rule
     assert "eligible to land" in flat and "no go or gate record" in flat  # stalled's two cases
     assert "an unsatisfied one once the cap is reached" in flat  # verified at the cap
+
+
+def flat_text(text):
+    return " ".join(text.split())
+
+
+def test_the_three_policy_source_lists_name_the_same_cases():
+    """Every read of the checkout's policy is named wherever the sources are listed (#2952)."""
+    skill = flat_text((GATEKEEPER.parent.parent / "SKILL.md").read_text())
+    usage = flat_text((GATEKEEPER.parent.parent / "verbs.md").read_text())
+    for text in (flat_text(run_help()), skill, usage):
+        text = text.replace("`", "")
+        assert "no origin ref" in text
+        assert "GATEKEEPER_POLICY_FROM_WORKING_TREE set" in text
+        assert "queue-config" in text and "timeouts" in text
+        assert "check setup's Mergify drift check" in text
+    # a warning for a differing copy belongs where the base's copy is read, not to the explicit checkout readers
+    assert "where the base's copy is read" in usage
+
+
+def test_the_check_listing_gives_rerun_s_exit_rule():
+    top = flat_text(run_help())
+    assert (
+        "waiting: exit 3; `rerun`: exit 0 once it has printed a state, 1 for a missing PR or an unloadable policy"
+        in top
+    )
+    assert "exit 0 after reading the PR" not in top
+
+
+def test_rerun_tests_says_when_the_whole_selection_runs_in_listing_description_and_usage():
+    listing = flat_text(run_help())
+    description = flat_text(run_help("rerun-tests"))
+    usage = flat_text((GATEKEEPER.parent.parent / "verbs.md").read_text())
+    for text in (listing, description, usage):
+        assert "when the change since the red reselects every failed test" in text
+        assert "else the red run's whole selection in its order" in text
+        assert (
+            "on a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id)"
+            in text.lower()
+        )
+    assert "A pass is a flake only" not in description
+
+
+def test_gate_record_says_it_finds_a_step_by_its_inputs_and_prints_a_missing_tree_alone():
+    listing = flat_text(run_help())
+    description = flat_text(run_help("gate-record"))
+    usage = flat_text((GATEKEEPER.parent.parent / "verbs.md").read_text())
+    for text in (listing, description, usage):
+        assert "another tree whose configured inputs match" in text
+        assert "a head with no tree or a policy refusal prints that problem alone" in text
+
+
+def test_approval_help_says_breakglass_takes_a_head_even_when_withdrawn():
+    listing = flat_text(run_help("record"))
+    assert "breakglass" in listing and "owner only" in listing
+    description = flat_text(run_help("record", "approval"))
+    assert (
+        "is the owner's alone: --by owner and --head, plus --reason unless --withdraw (see breakglass.md)"
+        in description
+    )
+    usage = flat_text((GATEKEEPER.parent.parent / "verbs.md").read_text())
+    assert (
+        "approve breakglass <pr> --by owner --head <sha> (--reason <why>" in usage
+        and "| --withdraw)" in usage
+    )
+
+
+def test_the_review_paragraph_states_the_carry_and_cap_bounds():
+    usage = flat_text((GATEKEEPER.parent.parent / "verbs.md").read_text())
+    assert (
+        "it holds the same tree whatever its commits, or every commit since only takes the base in"
+        in usage
+    )
+    assert "clean merges of main, or a clean rebase" in usage
+    assert (
+        "no blocker, no run missing and open majors or minors lands once the PR body records"
+        in usage
+    )

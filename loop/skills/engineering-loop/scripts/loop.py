@@ -133,9 +133,7 @@ def brief(
     then the priorities
     file as is and loop.md's `## Verifier brief`, read from loop.md where the policy is gatekeeper.md's. For each spec it
     prints `- Acceptance tests: <command> <issue>`, the command loop.md's `acceptance.tests` (its old `Acceptance tests:` line) names, else the
-    fallback `uv run <this folder>/acceptance.py`, so the verifier runs the one the worker ran. In a repo with no CI
-    (`loop.ci: false`) where a level asks a rerun (gatekeeper.md's `levels.<level>.rerun`), a `- Rerun:` line tells the
-    verifier to start the fresh session that reruns the head's selection and to name its record (gatekeeper's rerun_gap). A proof log whose first line isn't the head is refused, since the
+    fallback `uv run <this folder>/acceptance.py`, so the verifier runs the one the worker ran. A proof log whose first line isn't the head is refused, since the
     verifier counts a stale proof as missing and spends the pass on it. With `far` (a verifier on another host, `far` an
     absolute path there holding a clone of the repo) its paths are that host's: it fetches the head and makes its own
     detached worktree under `far`'s `tmp/loop/` first, the role is read there, and the report, the previous report and
@@ -144,7 +142,6 @@ def brief(
     pull = gatekeeper.pull_request(pr)
     with gatekeeper.policy_from(pull["baseRefName"]):
         _, loop = gatekeeper.project()
-    policy = loop
     if isinstance(loop, gatekeeper.Policy):
         where = gatekeeper.toplevel() / gatekeeper.LOOP
         loop = gatekeeper.read(where) if where.exists() else None
@@ -193,19 +190,6 @@ def brief(
         f"uv run {runner if far else os.path.relpath(runner)}"
     )
     lines += [f"- Acceptance tests: {command} {n}" for n in issues]
-    # a repo with no CI has no CI run to rerun a high-risk head's selection: the verifier starts it (levels' `rerun`)
-    rerun = [level for level, asks in gatekeeper.levels(policy).items() if asks.get("rerun")]
-    if gatekeeper.no_ci(policy) and rerun:
-        script = Path(gatekeeper.__file__).resolve().with_name("approvals.py")
-        if far:
-            script = tree / script.relative_to(gatekeeper.toplevel())
-        lines.append(
-            f"- Rerun: this repo has no CI, and gatekeeper.md's `levels` asks an independent rerun for a {' or '.join(rerun)}"
-            f" head; where the head rates so (your own `Risk: high` makes it high), start a fresh cloud session that runs"
-            f" `uv run {script if far else os.path.relpath(script)} local-ci --record --rerun` on a clean checkout of"
-            f" {head} and returns the commit of the record branch it pushed, then write `Rerun: <that commit>` in your"
-            " report, since `check merge` refuses that head without it"
-        )
     if far:
         lines.append(
             f"- Worktree: first, in {far}, run `git fetch origin pull/{pr}/head` and"

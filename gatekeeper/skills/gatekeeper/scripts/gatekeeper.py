@@ -5,7 +5,7 @@
 # ///
 """The gatekeeper (engineering-loop): decides from proof on the forge and the team's policy whether a change may take
 its next step (be built, merge), records that proof, and lands PRs. It reads docs/agents/ from origin/<base>, the ref land merges on
-(so a PR can't loosen its own gate); the checkout's copy only with no origin ref or with GATEKEEPER_POLICY_FROM_WORKING_TREE set, and for queue-config and timeouts. It reaches the tracker, the forge and the evidence only through their ports (github_adapter.py by default).
+(so a PR can't loosen its own gate); the checkout's copy only with no origin ref or with GATEKEEPER_POLICY_FROM_WORKING_TREE set, and for queue-config, timeouts and check setup's Mergify drift check. It reaches the tracker, the forge and the evidence only through their ports (github_adapter.py by default).
 
 Run `uv run scripts/gatekeeper.py <verb> --help` for one verb; the verbs, in one line each:
 
@@ -410,7 +410,6 @@ MERGE_ACTIONS = ("gates", "go", "owner")
 SCHEMA: dict[str, dict[str, Any]] = {
     "loop": {
         "cap": int,
-        "ci": bool,
         "opt_out": bool,
         "local_ci_env": list,
         "gate": str,
@@ -480,7 +479,6 @@ SCHEMA: dict[str, dict[str, Any]] = {
             "queue",
         ),
     ),
-    "carry_over_main": Table({"except": list}),
     # the narrowed gate's first cut (classify): the project's build inputs, and the checks a non-product path still gets
     "select": Table(
         build_inputs=list,
@@ -738,6 +736,7 @@ def settings(loop: str | None) -> dict[str, Any]:
     data: dict[str, Any] = {}
     parsed = block(loop, file, "Policy" if isinstance(loop, Policy) else "Settings")
     for name, section in sections(parsed, file).items():
+        gone(section, name, file)
         if name == "bot":
             for login, bot in section.items():
                 where = f"bot.{login}"
@@ -754,8 +753,6 @@ def settings(loop: str | None) -> dict[str, Any]:
                 )
         elif name == "loop":
             data.update(typed(ignored(section, name, file), SCHEMA["loop"], name, file))
-            if "ci" in section:
-                deprecated("ci")
         elif name in SCHEMA:
             data[name] = typed(ignored(section, name, file), SCHEMA[name], name, file)
             if data[name].get("batch_wait_seconds", 0) < 0:
@@ -781,8 +778,6 @@ def settings(loop: str | None) -> dict[str, Any]:
                         f"{file}'s `timeouts.{key}` is {given!r}: write it as days, hours, minutes and seconds"
                         " in that order, such as `90s`, `60m` or `4h15m`"
                     )
-            if name == "carry_over_main":
-                deprecated(name)
             if name == "risk" and "merge_paths" in section:
                 # two sources of one list would drift, so the old name is read only alone
                 if "critical_paths" in section:
@@ -805,9 +800,30 @@ DEPRECATED: set[str] = set()
 # keys a policy may still set that no longer do anything, since land runs no gate (#1872): each is said once on
 # stderr and dropped, so a consumer's older policy file still parses
 IGNORED = {
-    "loop": ("batch_queue",),
     "land": ("gate_on", "cloud_gate_timeout_seconds", "host_gate"),
 }
+
+
+# settings and sections a policy may no longer set (#654): refused, each naming the key and saying it is gone, since a
+# policy that still names one expects a path (a project's own queue, a verdict carried by a glob list, a repo with no
+# CI) the pack no longer has
+GONE = {
+    "loop": {
+        "ci": "land merges every landable PR as one batch and runs no gate of its own: remove it",
+        "batch_queue": "land merges every landable PR as one batch: remove it",
+    },
+    "carry_over_main": {
+        "": "a merge of the base into a PR head carries its verdict only when it adds nothing (same tree, or a clean merge"
+        " of the base): remove the section"
+    },
+}
+
+
+def gone(section: Any, name: str, file: str) -> None:
+    """Refuse a section or key of GONE, naming it and saying what replaced it."""
+    for key, why in GONE.get(name, {}).items():
+        if key == "" or (isinstance(section, dict) and key in section):
+            raise Gone(f"{file}'s `{name}{'.' + key if key else ''}` is gone (#654): {why}")
 
 
 def ignored(section: dict[str, Any], name: str, file: str) -> dict[str, Any]:
@@ -1800,10 +1816,63 @@ class Rated(NamedTuple):
     source: str
     because: str
 
-    def line(self, pull: dict[str, Any]) -> str:
-        """The line `check merge` and `land` print: the level, why, and the action they applied."""
-        rated = f"{self.level} ({self.why})" if self.why else self.level
-        return f"PR #{pull['number']}: risk: {rated}; merge: {self.merge}"
+    def line(self, pull: dict[str, Any], loop: str | None = None) -> str:
+        """The line `check merge`, `land` and `record verdict` print: the level, why, and the action they applied.
+        The gate's rule only knows `low`, `high` and `critical`, so a PR whose `risk:*` label or verifier `Risk:` word
+        says more (`risk:medium`) shows that word instead of `low`, and when the label and the verdict disagree the line
+        names both (stated_risk)."""
+        label, said = stated_risk(pull, loop)
+        words = {*label, *([said] if said else [])}
+        level, why = self.level, self.why
+        if self.level == "low" and words:
+            level = max(words, key=risk_rank)
+            if risk_rank(level) > 0:
+                why = " and ".join(stated_parts(label, said)) + "; no gate rule rates it higher"
+        shown = f"{level} ({why})" if why else level
+        note = ""
+        extra = ""
+        if self.level == "low" and len(words) > 1:
+            note = f"; the PR's label and the verdict disagree: {' vs '.join(stated_parts(label, said))}"
+        elif self.level != "low" and (words - {self.level} or len(words) > 1):
+            # the gate's own rating and merge action stand, on the line as before; what the PR says beside it (the
+            # label and the verdict as stated, a low one included) goes on a line of its own, unless it only repeats
+            # the rating
+            kind = "disagree" if len(words) > 1 else "state"
+            extra = (
+                f"\nPR #{pull['number']}: the PR's label and the verdict {kind}:"
+                f" {' vs '.join(stated_parts(label, said))}"
+            )
+        return f"PR #{pull['number']}: risk: {shown}; merge: {self.merge}{note}{extra}"
+
+
+RISK_WORDS = ("low", "medium", "high", "critical")
+
+
+def risk_rank(word: str) -> int:
+    """How high a `risk:*` label's or verdict's word ranks: its place in RISK_WORDS, a word it does not list as medium's."""
+    return RISK_WORDS.index(word) if word in RISK_WORDS else 1
+
+
+def stated_risk(pull: dict[str, Any], loop: str | None = None) -> tuple[list[str], str | None]:
+    """What the PR itself says of its risk, apart from the gate's rating: the words of its `risk:*` labels, and the
+    `Risk:` word of the verifier's newest pass on the head (None when none is read, or none says one)."""
+    label = sorted(n.partition(":")[2].lower() for n in names(pull) if n.startswith("risk:"))
+    try:
+        found = head_passes(pull, loop)
+    except (Refused, OSError, subprocess.CalledProcessError):
+        return label, None
+    said = None
+    if not isinstance(found, str) and found[1]:
+        word = re.match(r"[A-Za-z]+", found[1][-1][1].get("Risk", ""))
+        said = word[0].lower() if word else None
+    return label, said
+
+
+def stated_parts(label: list[str], said: str | None) -> list[str]:
+    """stated_risk's words as the lines name them: each label, then the verdict's `Risk:` line."""
+    return [f"PR label `risk:{each}`" for each in label] + (
+        [f"verifier `Risk: {said}`"] if said else []
+    )
 
 
 def rating(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> Rated:
@@ -3822,10 +3891,6 @@ def waits(
     return (ran(pull) if checks is None else checks) + owner_waits(pull, issues, loop, pushed)
 
 
-def no_ci(loop: str | None) -> bool:
-    return settings(loop).get("ci") is False
-
-
 def opted_out(loop: str | None) -> bool:
     return settings(loop).get("opt_out", False)
 
@@ -4113,8 +4178,8 @@ def outside(pull: dict[str, Any], loop: str | None) -> str | None:
 def ran(pull: dict[str, Any]) -> list[str]:
     """One line per check the merge waits for on the head: ci()'s lines for the checks the base branch requires but the
     loop's own statuses (OWN), since GitHub merges nothing without them. A base that requires none waits for nothing:
-    no aggregate `check`, and under `ci: false` no local-ci pass, since the verifier's record is the merge's proof and
-    no gate runs between it and the merge (#1872)."""
+    no aggregate `check`, and no local-ci pass, since the verifier's record is the merge's proof and no gate runs
+    between it and the merge (#1872)."""
     # the approvals status is check merge's own output: waiting for it never ends
     required = required_checks(pull["baseRefName"]) - OWN
     return ci(f"PR #{pull['number']}", pull, required) if required else []
@@ -4142,15 +4207,9 @@ def trusted(pull: dict[str, Any], note: dict[str, Any], author: bool = True) -> 
     return login == viewer() or writer(login)
 
 
-def merged(
-    first: str, second: str, guard: list[str] | None = None, base: str = "the base"
-) -> tuple[str, str] | str:
+def merged(first: str, second: str) -> tuple[str, str] | str:
     """The tree `git merge-tree --write-tree` makes of commits `first` and `second`, so a merge with that tree resolved
-    no conflict and added nothing, and their merge base; a string names why not. With `guard`, the globs of gatekeeper.md's
-    `carry_over_main.except`, the proofs on `first` carry over to that merge only when `second`'s changes since the
-    merge base (`base`'s) touch no file `first`'s changes touch, neither side's changes touch a file a glob matches
-    (fnmatch on the full path, as a rule's `paths`), and the two have one merge base. `first` is the PR's head, so a
-    why names its side as the PR's. Fail-closed: a git error is a why, never a carry."""
+    no conflict and added nothing; a string names why not. Fail-closed: a git error is a why, never a carry."""
     try:
         clean = subprocess.run(
             ["git", "merge-tree", "--write-tree", first, second],
@@ -4160,91 +4219,24 @@ def merged(
         )
         if clean.returncode or not clean.stdout.split():
             return f"{first} and {second} conflict"
-        tree = clean.stdout.split()[0]
-        if guard is None:
-            return tree, ""
-        bases = git("merge-base", "--all", first, second).split()
-        if len(bases) != 1:
-            return f"{first} and {second} have {len(bases)} merge bases"
-        # plumbing: porcelain `git diff` follows config (diff.relative, a submodule's `ignore = all`) that hides paths
-        changed = [
-            set(
-                filter(
-                    None,
-                    git(
-                        "diff-tree",
-                        "-r",
-                        "--name-only",
-                        "--no-renames",
-                        "--ignore-submodules=none",
-                        "-z",
-                        bases[0],
-                        side,
-                    ).split("\0"),
-                )
-            )
-            for side in (first, second)
-        ]
-        if both := sorted(changed[0] & changed[1]):
-            return f"{both[0]} changed on both sides since {bases[0]}"
-        # the PR's own config change was gated only on the PR's code, never on what the base added since
-        for side, paths in ((f"{base}'s", changed[1]), ("the PR's", changed[0])):
-            if hit := sorted(
-                path for path in paths if any(fnmatch.fnmatch(path, glob) for glob in guard)
-            ):
-                return f"{side} changes since {bases[0]} touch {hit[0]}, a `carry_over_main.except` path"
-        return tree, bases[0]
+        return clean.stdout.split()[0], ""
     except (subprocess.CalledProcessError, OSError) as exc:
         return f"git failed reading the merge of {first} and {second}: {exc}"
-
-
-def carry_line(what: str, head: str, second: str, since: str, base: str) -> str:
-    """The line check merge and land print when `what` carries the proofs of `head` (carried, merged)."""
-    return (
-        f"{what} carries the proofs of {head}: it is the clean merge (git merge-tree) of {head} and {base}'s"
-        f" {second}, whose changes since {since} touch none of the PR's files, and neither side touches a"
-        " `carry_over_main.except` path"
-    )
 
 
 def carried(
     pull: dict[str, Any], loop: str | None, verified: str
 ) -> tuple[str, list[str]] | str | None:
-    """`verified` with one carry_line() per merge, oldest first, when the PR's head carries the verdict on
-    `verified`, the newest verdict's commit, where gatekeeper.md has `carry_over_main`: from the head, each commit on its
-    first-parent line down to `verified` is a merge whose second parent is on the base (an ancestor of its tip), whose
-    tree is git merge-tree's of its parents, and where merged() finds the base's changes disjoint from the PR's and
-    neither side's touching an except glob. So a PR commit after `verified` (new, edited or rebased) carries nothing.
-    A head with `verified`'s tree (same_tree) carries it with or without the setting, by one same_tree_line(). A
-    string names why it carries nothing; None without the setting and with another tree."""
+    """`verified`, the newest verdict's commit, with the line saying why, when the PR's head carries its verdict: the
+    head holds `verified`'s tree (same_tree), or only takes the base in since (catch_up). None otherwise."""
     if tree := same_tree(pull["headRefOid"], verified):
         return verified, [same_tree_line(verified, tree)]
-    guard = settings(loop).get("carry_over_main")
-    if (
-        guard is None
-    ):  # a project's own `except` globs (deprecated) keep deciding where it sets them
-        proof = catch_up(pull, verified)
-        return (
-            (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"])
-            if proof
-            else None
-        )
-    walked = base_merges(pull, verified)
-    if isinstance(walked, str):
-        return walked
-    base, lines = pull["baseRefName"], []
-    for commit, first, second in walked:
-        found = merged(first, second, guard["except"], base)
-        if isinstance(found, str):
-            return found
-        try:
-            tree = git("rev-parse", f"{commit}^{{tree}}").strip()
-        except (subprocess.CalledProcessError, OSError) as exc:
-            return f"git failed reading {commit}: {exc}"
-        if found[0] != tree:
-            return f"{commit}'s tree is not git merge-tree's of its parents: the merge resolved or added something"
-        lines.insert(0, carry_line(commit, first, second, found[1], base))
-    return verified, lines
+    proof = catch_up(pull, verified)
+    return (
+        (verified, [f"verdict on {verified} carried to {pull['headRefOid']}: {proof}"])
+        if proof
+        else None
+    )
 
 
 def same_tree(head: str, old: str) -> str | None:
@@ -4271,7 +4263,17 @@ def catch_up(pull: dict[str, Any], old: str) -> str | None:
         walked = base_merges(pull, old)
         if not isinstance(walked, str):
             if all(
-                not git("show", "--remerge-diff", "--format=", "--no-color", commit).strip()
+                not git(
+                    "show",
+                    "--remerge-diff",
+                    "--format=",
+                    "--no-color",
+                    "--no-relative",  # diff.relative would hide what lies outside the current directory
+                    "--ignore-submodules=none",  # diff.ignoreSubmodules and .gitmodules would hide a gitlink
+                    "--no-ext-diff",
+                    "--no-textconv",  # a textconv driver can make two versions of a file read alike
+                    commit,
+                ).strip()
                 for commit, _, _ in walked
             ):
                 return f"every commit since is a merge of {base} whose `git show --remerge-diff` is empty: no conflict was resolved by hand"
@@ -4527,8 +4529,6 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     the head decides alone, so a go withdrawn there stays withdrawn. A string names why the older go carries nothing;
     None: no go to carry."""
     head = pull["headRefOid"]
-    # a project with its own rule keeps it for the go too
-    guard = settings(loop).get("carry_over_main")
     by = go_on(pull, head, loop)
     if by is not None:
         return (by, head) if by else None
@@ -4540,7 +4540,7 @@ def carried_go(pull: dict[str, Any], loop: str | None) -> tuple[str, str] | str 
     if not earlier or not (by := go_on(pull, earlier[-1], loop)):
         return None
     old = earlier[-1]
-    if same_tree(head, old) or (guard is None and catch_up(pull, old)):
+    if same_tree(head, old) or catch_up(pull, old):
         return by, old
     why = unchanged(pull, old.lower())
     return f"the go on {old} carries nothing to {head}: {why}" if why else (by, old)
@@ -4668,11 +4668,7 @@ def whose(pull: dict[str, Any], loop: str | None) -> list[str]:
     line = f"{head} is the delegate's{DELEGATED}" if by == DELEGATE else f"{head} is the owner's"
     if old != pull["headRefOid"] and (tree := same_tree(pull["headRefOid"], old)):
         line += f", carried to {pull['headRefOid']}: same tree {tree}"
-    elif (
-        old != pull["headRefOid"]
-        and "carry_over_main" not in settings(loop)
-        and (proof := catch_up(pull, old))
-    ):
+    elif old != pull["headRefOid"] and (proof := catch_up(pull, old)):
         line += f", carried to {pull['headRefOid']}: {proof}"
     elif old != pull["headRefOid"]:
         line += (
@@ -5307,7 +5303,7 @@ def breakglass_cover(pull: dict[str, Any], loop: str | None, lines: list[str]) -
     every line a required check red or missing, none, and a line saying so; with a record that is no approval, the
     lines and what is wrong with it; with no record or status, or a pending check among the lines, the lines as they
     were. Every other proof stays required: this replaces the green gate and nothing else."""
-    if not lines or no_ci(loop):
+    if not lines:
         return Covered(lines, [])
     names: dict[str, str] = {}
     for line in lines:
@@ -5629,6 +5625,10 @@ def public(text: str) -> str:
 
 class Refused(Exception):
     """A reason to stop with exit 1, printed as is."""
+
+
+class Gone(Refused):
+    """A policy names a setting the pack no longer has: no fallback reads past it."""
 
 
 class Drifted(Refused):
@@ -6247,7 +6247,9 @@ def closes_nothing(
     if not issues:
         return []
     mine = closed(pull, pull["baseRepository"]["nameWithOwner"], loop)
-    if any(i["number"] in mine and str(i.get("state", "OPEN")).upper() == "OPEN" for i in issues):
+    # a merged PR's issue is closed by that merge: it was open when the PR was judged, so closed now is no finding
+    live = {"OPEN", "CLOSED"} if pull.get("state") == "MERGED" else {"OPEN"}
+    if any(i["number"] in mine and str(i.get("state", "OPEN")).upper() in live for i in issues):
         return []
     if pin_target(pull) is not None:  # a verified release pin bump has no issue to close
         return []
@@ -6391,14 +6393,14 @@ RERUN_STEP = re.compile(r"\blocal-ci\b[^\n;&|]*--rerun\b")
 def rerun_workflow_gap(
     root: Path, loop: str | None, level: str, ref: str | None = None
 ) -> str | None:
-    """A line, or None: `levels.<level>.rerun` is on, the repo has CI (`loop.ci` is not false), and no workflow under
+    """A line, or None: `levels.<level>.rerun` is on, and no workflow under
     .github/workflows runs `local-ci --record --rerun`, in a step or through a mise task a step runs, so the rerun
     record `rerun_gap` waits on can never come: a setup problem, not a wait. ponytail: a text scan of the workflows and
     of mise's tasks, as setup_problems reads them (#2473's open question); where mise's TOML can't be read (Python
     before 3.11) the tasks are not scanned, so a rerun run only through a task reads as present, never as missing.
     With `ref` the files are read from that ref, as the policy is (policy_tree), so a clone with no working tree sees
     the base's workflows; a ref git can't list reads as present too, since nothing then shows one missing."""
-    if no_ci(loop) or not levels(loop)[level].get("rerun"):
+    if not levels(loop)[level].get("rerun"):
         return None
     flows = sorted((root / ".github" / "workflows").glob("*.y*ml")) if ref is None else []
     if ref is not None:
@@ -6625,7 +6627,7 @@ def checked(point: str, pull: dict[str, Any]) -> int:
     rated = rating(pull, issues, loop) if point == "merge" else None
     if rated is not None:
         # on stderr, so the lines a workflow or a lead reads as the gate's answer stay what holds the merge
-        print(rated.line(pull), file=sys.stderr)
+        print(rated.line(pull, loop), file=sys.stderr)
     used = (
         whose(pull, loop)
         if rated is not None and not found and not waiting and rated.merge != "gates"
@@ -8399,7 +8401,7 @@ def landable(
         )
     # after CI, so the owner is never asked about a head CI could still reject
     rated = rating(pull, issues, loop)
-    print(rated.line(pull), file=sys.stderr)
+    print(rated.line(pull, loop), file=sys.stderr)
     if owner := owner_waits(pull, issues, loop):
         for line in owner:
             print(line)
@@ -10952,36 +10954,10 @@ def parse_report(
 
 
 def report_check(report: Path) -> int:
-    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying;
-    a warning on stderr where it would leave a high-risk head without the rerun it needs (unnamed_rerun)."""
-    closing = parse_report(report)[3]
-    if warning := unnamed_rerun(report, closing):
-        print(warning, file=sys.stderr)
+    """Check a verifier report the way `verdict` reads it, posting nothing, so the verifier fixes it before replying."""
+    parse_report(report)
     print(f"{report} reads as a verdict")
     return 0
-
-
-def unnamed_rerun(report: Path, closing: list[str]) -> str | None:
-    """A warning, or None: the report rates the change high (any `Risk:` word but `low`), the policy asks a rerun at
-    `high` and has no CI to make it (`loop.ci: false`, where the verifier starts the rerun), and the report names no
-    `Rerun:` record, so `check merge` would refuse the head. A warning, not a refusal: a label or path may already
-    rate the change high whatever the verifier says, and the gate itself refuses the merge. Outside a checkout, or
-    with a policy that can't be read, None."""
-    if re.match(r"Risk:[ \t]*low\b", closing[2], re.IGNORECASE) or any(
-        line.startswith(f"{RERUN_LINE}:") for line in closing
-    ):
-        return None
-    try:
-        loop = project()[1]
-    except (Refused, OSError, subprocess.CalledProcessError):
-        return None
-    if not no_ci(loop) or not levels(loop)["high"].get("rerun"):
-        return None
-    return (
-        f"warning: {report} rates the change high and names no `{RERUN_LINE}: <commit>`, and this repo has no CI to"
-        " rerun its selection: `check merge` will refuse the head until a verifier pass on it names the record a fresh"
-        " session's `local-ci --record --rerun` pushed"
-    )
 
 
 def report_facts(report: Path) -> dict[str, Any]:
@@ -11038,8 +11014,6 @@ def verdict(pr: int, report: Path) -> int:
     line of the diff when its line is outside it, in the review's body when its file is."""
     heading, head, found, closing, qualifier = parse_report(report)
     denied(report.read_text())  # before any read of GitHub, not only at the post
-    if warning := unnamed_rerun(report, closing):
-        print(warning, file=sys.stderr)
     diff = diff_lines(pull_request(pr)["baseRefOid"], head)
     comments, outside = [], []
     for name, severity, path, line, title, body in found:
@@ -11498,12 +11472,9 @@ LOCAL_VAR = "AFFECTED_TESTS_LOCAL"
 
 
 def ci_runs_whole_suite(base: str, head: str | None = None) -> str | None:
-    """The first `select.whole_suite` file of the change since `base`, when the project's CI is the merge proof
-    (`loop.ci` is not false), else None (#2621): the narrowed gate keys its record `select.checks: ... ci` then, and the
+    """The first `select.whole_suite` file of the change since `base`, (#2621): the narrowed gate keys its record `select.checks: ... ci` then, and the
     run (non_product_run) runs no test unless `--local` is given: the merge queue or the required check runs the
     whole suite, sharded."""
-    if no_ci(project()[1]):
-        return None
     cut = selected(base, head)
     if cut is None:
         return None
@@ -11866,6 +11837,8 @@ def run_budget() -> int:
     so, since `affected-tests` ran before it read any policy and a project without the block must keep running it."""
     try:
         return timeouts(project()[1])["run"]
+    except Gone:
+        raise
     except Refused as refusal:
         fallback = timeouts(None)["run"]
         print(
@@ -14453,10 +14426,10 @@ def local_ci(
     but no head proof, nor a pass for a PR, since the gate as a whole has none. With a PR the gate is the policy of the
     base it merges onto (policy_from); without one, the default branch's. With a PR it prints one line naming the
     head it posted on; `want` (`--head <sha>`) is the head the caller just pushed (settled_head). Without a PR or
-    `proof`, in narrowed mode (narrowing) under `ci: false` or with `given` (`--base <rev>`), the gate is the narrowed
+    `proof`, in narrowed mode (narrowing) with `given` (`--base <rev>`), the gate is the narrowed
     one against `given`, else the merge base (selection_base, narrowed_gate). With `rerun` (`--record --rerun`, an
     independent rerun of the head's selection, which levels' `rerun` asks and rerun_gap reads), narrowed in narrowed
-    mode whatever `ci` says, no pass is reused (FRESH), here or on origin, and the command runs with RERUN_VAR set in
+    mode, no pass is reused (FRESH), here or on origin, and the command runs with RERUN_VAR set in
     front of it, so its record is keyed apart from the worker's and says in its `Env:` line that it is a rerun."""
     if rerun:
         os.environ[RERUN_VAR] = "1"
@@ -14466,7 +14439,7 @@ def local_ci(
         and proof is None
         and NARROW_BASE.get() is None
         and narrowing() is not None
-        and (given is not None or rerun or no_ci(project()[1]))
+        and (given is not None or rerun)
     ):
         if (base := selection_base(given)) is not None:
             with narrowed_to(base):
@@ -14531,16 +14504,6 @@ def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     loop = project()[1]
     # the PR is read only for a policy with an `incubating` section: no other project pays the read
     passed = tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
-    # narrowed mode's gate of record on a `ci: false` head; a full pass on it is taken first
-    if (
-        NARROW_BASE.get() is None
-        and no_ci(loop)
-        and not reusable(head, passed)
-        and (base := merge_base_of(pull_status(pr)["baseRefName"], head)) is not None
-    ):
-        with narrowed_to(base, head):
-            if narrowed_gate(passed) is not None:
-                return pr_local_ci(pr, run, want)
     if record := reusable(head, passed, why=why):
         source = f"{reused(record)}\n"
         gate_event(gate_branch(), "ok", lambda: gate_url(record))
@@ -14762,7 +14725,7 @@ def main(argv: list[str]) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser(
         "check",
-        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun`: exit 0 once it has printed a state).",
+        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun`: exit 0 once it has printed a state, 1 for a missing PR or an unloadable policy).",
         description="Check the proofs a point needs. Points: build (the issue's spec approval, labels and claim; --issue <n> before the PR exists), merge (the PR's verdict, evidence, keyword and landing rules), ready (the PR body's evidence only), session (the Impl: line's session link), setup (a pack upgrade's gate), stalled (open PRs land would take that its queue does not hold and that are eligible to land, or verified and idle past loop.stalled_after_hours with no go or gate record, where verified is a satisfied verdict on the head, or an unsatisfied one once the cap is reached) and rerun (prints `rerun: needed`, `rerun: done` or `rerun: not needed (<why>)`, and exits 0 once it has printed a state; a missing PR or an unloadable policy exits 1). For the other points it prints one line per missing proof: exit 0 when none, 1 when a proof is missing, 3 when it only waits.",
     )
     checking.add_argument(
@@ -14785,8 +14748,8 @@ def main(argv: list[str]) -> int:
     ).add_subparsers(dest="kind", required=True)
     approving = records.add_parser(
         "approval",
-        help="Record a person's approval of a spec, plan or merge (`--by owner|delegate`).",
-        description="Record an approval of a spec, plan or merge. An agent never approves on its own judgment: --by owner on the owner's word, --by delegate under `loop.delegate`. Merge approvals name the head with --head; --withdraw takes one back. `breakglass` is the owner's alone (--by owner, --head and --reason, or --withdraw; see breakglass.md).",
+        help="Record a person's approval of a spec, plan, merge or breakglass (`--by owner|delegate`; breakglass: owner only).",
+        description="Record an approval of a spec, plan or merge. An agent never approves on its own judgment: --by owner on the owner's word, --by delegate under `loop.delegate`. Merge approvals name the head with --head; --withdraw takes one back. `breakglass` is the owner's alone: --by owner and --head, plus --reason unless --withdraw (see breakglass.md).",
     )
     approving.add_argument("point", choices=(*POINTS, "merge", BREAKGLASS))
     approving.add_argument("number", type=int)
@@ -14922,8 +14885,8 @@ def main(argv: list[str]) -> int:
     queueing.add_argument("base", nargs="?", default="origin/main")
     rerunning = commands.add_parser(
         "rerun-tests",
-        help="Rerun a red run's failed tests once (R5); a pass is a flake.",
-        description="Rerun the failed tests of a red run plus what the fix reaches, once; when the fix reselects no failed test, rerun the red run's whole selection in its order. A pass is a flake only on the whole selection. Exit 75 when the rerun ran no test.",
+        help="Rerun a red run once (R5): the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order; on a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id).",
+        description="Rerun a red run once: the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order. On a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id). Exit 75 when the rerun ran no test.",
     )
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
@@ -14949,8 +14912,8 @@ def main(argv: list[str]) -> int:
     sharding.add_argument("--shard", type=int)
     recording_read = commands.add_parser(
         "gate-record",
-        help="Read origin's pass record of the gate on a head's tree.",
-        description="The verifier's read of origin's pass record of the gate (or of the given command) on a head's tree, or of a step on another tree whose configured inputs match: exit 0, else 1 naming what to run.",
+        help="Read origin's pass record of the gate on a head's tree, or of a step on another tree whose configured inputs match: exit 1 names what to run (a head with no tree or a policy refusal prints that problem alone).",
+        description="The verifier's read of origin's pass record of the gate (or of the given command) on a head's tree, or of a step on another tree whose configured inputs match: exit 0, else 1 naming what to run (a head with no tree or a policy refusal prints that problem alone).",
     )
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
