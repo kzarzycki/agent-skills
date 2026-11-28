@@ -1660,11 +1660,12 @@ def configured(args: argparse.Namespace) -> None:
         )
         return
     args.model, args.effort = got["model"][0], got["effort"][0]
-    print(
-        f"model: {args.model or 'the harness default'} (from {got['model'][1]}), effort:"
-        f" {args.effort or 'the harness default'} (from {got['effort'][1]})",
-        file=sys.stderr,
-    )
+    if args.model or args.effort:
+        print(
+            f"model: {args.model or 'the harness default'} (from {got['model'][1]}), effort:"
+            f" {args.effort or 'the harness default'} (from {got['effort'][1]})",
+            file=sys.stderr,
+        )
 
 
 def command(argv: list[str] | None) -> int:
