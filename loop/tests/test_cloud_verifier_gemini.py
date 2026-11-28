@@ -126,9 +126,7 @@ def run_gemini(checkout, monkeypatch, tmp_path) -> tuple[list, str]:  # noqa: F8
         return 0
 
     monkeypatch.setattr(cv, "relay_exec", relay)
-    assert (
-        command(["verify", "--pr", "7", "--brief", str(checkout[2]), "--harness", "gemini"]) == 0
-    )
+    assert command(["verify", "--pr", "7", "--brief", str(checkout[2]), "--harness", "gemini"]) == 0
     return seen[0]
 
 
