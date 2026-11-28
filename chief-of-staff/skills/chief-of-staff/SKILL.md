@@ -370,6 +370,13 @@ manager per project, each a node.
   `digest` prints the draft and sends nothing, and `sent --via <where>` records, after you sent
   it, that the log is delivered up to there. Read it when logging a decision or drafting the
   digest.
+- **Automation changes reach the owner as diffs.** A report to the owner, or to a coordinator
+  for relay, that names a change to harness behaviour (skills, instructions, hooks, settings,
+  scheduled-task prompts, gatekeeper policy, board rules, host config) carries its diff, since a
+  prose summary can leave out or misstate what changed. A change made in a PR links the PR's
+  `/files` page. A change outside git (a host's settings file, a scheduled-task prompt, a hand
+  edit) is shown inline as a unified diff and logged with `decisions.py log --diff <file|->`,
+  which keeps the first 80 lines in the log and the whole diff beside it.
 
 ## Speaking to the owner
 

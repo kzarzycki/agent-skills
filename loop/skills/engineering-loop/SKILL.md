@@ -905,6 +905,12 @@ or the owner's private network.
   each in one decision-log issue, wait out a usage limit and resume, and leave a handoff
   (`handoff` skill) when finished or stuck. Never idle: schedule a time-gated check and
   keep working.
+- **Automation changes reach the owner as diffs.** A report to the owner, or to a coordinator
+  for relay, that names a change to harness behaviour (skills, instructions, hooks, settings,
+  scheduled-task prompts, gatekeeper policy, board rules, host config) carries its diff. A change
+  made in a PR links the PR's `/files` page. A change outside git (a host's settings file, a
+  scheduled-task prompt, a hand edit) is shown inline as a unified diff and logged with the chief
+  of staff's `decisions.py log --diff <file|->`.
 - **Owner steps park, they don't block.** A step only the owner can unblock (a GUI
   dialog, a locked screen, a device, a permission prompt or classifier denial, a
   credential, an approval link that expires) is stopped at its first sign, so a hang
