@@ -1287,7 +1287,7 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
     assert gate(said("codex", 1, "high")) == []
     # a tier word inside the model id is no tier: only a word of its own after the signature is
     assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
-    assert gate(said("claude/small-model/?, same-family", 1, "high")) == []
+    assert gate(said("claude/small-model/?", 1, "high")) == []
     assert gate(said("claude, same-family, small", 1, "high"))
 
 
@@ -3039,7 +3039,7 @@ def test_a_review_unsatisfied_or_with_a_blocker_or_major_open_lets_nothing_land(
 def test_no_verifier_review_lets_nothing_land() -> None:
     other = {**VERDICT, "body": "Looks fine.\n\nSATISFIED: yes\n"}
     assert verified(other) == ["PR #7: no verifier review posted (approvals.py verdict)"]
-    assert verified(verdict_on(HEAD, heading="Verifier (claude, same-family), pass 3")) == []
+    assert verified(verdict_on(HEAD, heading="Verifier (claude), pass 3")) == []
 
 
 def test_every_verifier_review_on_the_newest_passs_commit_must_be_satisfied() -> None:
@@ -3056,7 +3056,7 @@ def test_every_verifier_review_on_the_newest_passs_commit_must_be_satisfied() ->
     codex = verdict_on(
         OLD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (codex), pass 1"
     )
-    claude = verdict_on(HEAD, heading="Verifier (claude, same-family), pass 2")
+    claude = verdict_on(HEAD, heading="Verifier (claude), pass 2")
     assert verified(codex, claude) == []
 
 
@@ -3067,9 +3067,9 @@ def test_a_later_pass_on_the_same_commit_supersedes_an_earlier_one() -> None:
         HEAD,
         "0 blocker, 1 major, 0 minor",
         satisfied="no",
-        heading="Verifier (claude, same-family), pass 1",
+        heading="Verifier (claude), pass 1",
     )
-    accepted = verdict_on(HEAD, heading="Verifier (claude, same-family), pass 2")
+    accepted = verdict_on(HEAD, heading="Verifier (claude), pass 2")
     assert verified(rejected, accepted) == []
     codex = verdict_on(
         HEAD, "1 blocker, 0 major, 0 minor", satisfied="no", heading="Verifier (codex), pass 2"
