@@ -15,7 +15,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "engineering/tests", "gatekeeper/tests", "github/tests", "loop/tests", "chief-of-staff/tests", "omnigent/tests"]
-pythonpath = ["."]
+pythonpath = [".", "vendoring/skills/vendoring/scripts"]
 # tools/test_map_plugin.py: a nested pytest never inherits this run's PYTEST_ADDOPTS, and a subprocess runs under its test's context
 # -n auto --dist loadfile: every run is parallel by default, so a bare `pytest` costs what `mise run test` does (#1610);
 # the gate's worker count is tools/gate_workers.py (`-p`), and a serial run (the coverage nightly) passes `-n 0`.
@@ -41,8 +41,11 @@ patch = ["subprocess"]
 [tool.ruff]
 target-version = "py314"
 line-length = 100
+# the vendoring tool's package is first-party, as pytest's pythonpath imports it
+src = [".", "vendoring/skills/vendoring/scripts"]
 # Shipped scripts run on a consumer's own `python3`; macOS ships 3.9.
-per-file-target-version = { "*/skills/*/scripts/*.py" = "py39", "engineering-hooks/hooks/*.py" = "py39" }
+# The vendoring tool runs in this repo's uv environment, not on a consumer's `python3`.
+per-file-target-version = { "engineering/skills/*/scripts/*.py" = "py39", "gatekeeper/skills/*/scripts/*.py" = "py39", "loop/skills/*/scripts/*.py" = "py39", "github/skills/*/scripts/*.py" = "py39", "chief-of-staff/skills/*/scripts/*.py" = "py39", "omnigent/skills/*/scripts/*.py" = "py39", "research/skills/*/scripts/*.py" = "py39", "utilities/skills/*/scripts/*.py" = "py39", "experimental/skills/*/scripts/*.py" = "py39", "content/skills/*/scripts/*.py" = "py39", "vendoring/skills/update-delta-audit/scripts/*.py" = "py39", "engineering-hooks/hooks/*.py" = "py39", "vendoring/skills/vendoring/scripts/capability_pack/*.py" = "py314" }
 
 [tool.ruff.lint.per-file-ignores]
 # A module of approvals tests imports a non-autouse fixture it takes from the harness by name (with

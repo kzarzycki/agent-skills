@@ -46,7 +46,7 @@ jobs:
         env:
           SOURCE_TAG: ${{ inputs.source_tag }}
           SOURCE_COMMIT: ${{ inputs.source_commit }}
-        run: uv run python -m tools.capability_pack.cli prepare-consumer . "$SOURCE_TAG" "$SOURCE_COMMIT"
+        run: PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli prepare-consumer . "$SOURCE_TAG" "$SOURCE_COMMIT"
       - run: mise run agent-sync --refresh
       - name: Commit generated candidate before frozen replay
         env:
@@ -103,7 +103,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SOURCE_TAG: ${{ inputs.source_tag }}
         run: |
-          uv run python -m tools.capability_pack.cli reconcile-draft-pr . \
+          PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli reconcile-draft-pr . \
             --branch automation/engineering-consumer-sync \
             --title "chore: adopt $SOURCE_TAG" \
             --body-file /tmp/engineering-consumer-pr-body.md \

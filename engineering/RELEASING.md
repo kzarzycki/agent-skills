@@ -40,7 +40,7 @@ A release by a lead on request is replaced by these two lines. `workflow_dispatc
 `gh workflow run release.yml` (add `-f magnitude=minor` for a minor release; the default is patch) runs the same cut
 as a merge does, with no agent:
 
-1. It runs `uv run python -m tools.capability_pack.cli cut-release --magnitude <patch|minor>`, which folds every
+1. It runs `PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli cut-release --magnitude <patch|minor>`, which folds every
    package's entries in issue order under `## X.Y.Z - <date>` (or extends that heading when it is already there),
    deletes them, and sets X.Y.Z in `apm.yml`, `.claude-plugin/plugin.json` and the package's `ref: ^X.Y.Z` pins in
    its README and `tests/consumer/apm.yml`. X.Y.Z is the package's last tag moved by the magnitude, or `apm.yml`'s
@@ -119,7 +119,7 @@ input) and `RELEASE_SMOKE_TOKEN` (a token that can dispatch and read that workfl
 the squash commit as its `ref`, waits for it to pass, and tags nothing when it fails or one of them is missing.
 
 By hand, before the tag, on the commit that gets tagged (the squash commit on main, which is the smoke `ref`), run
-`uv run python -m tools.capability_pack.cli release-check engineering engineering-vX.Y.Z`.
+`PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli release-check engineering engineering-vX.Y.Z`.
 Then tag every package the commit releases and push the tags in one push, so each `release-check` finds the
 others: `git tag -a <package>-vX.Y.Z -m <package>-vX.Y.Z <merge sha>` for each, then
 `git push origin <tag> <tag> ...`.

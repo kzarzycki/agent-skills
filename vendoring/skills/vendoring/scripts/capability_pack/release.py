@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.capability_pack.qualify import (
+from capability_pack.qualify import (
     ConfigurationError,
     _next_version,
     _semver,

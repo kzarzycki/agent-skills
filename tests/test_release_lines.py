@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tools.capability_pack import release_lines as lines
-from tools.capability_pack.release_lines import (
+from capability_pack import release_lines as lines
+from capability_pack.release_lines import (
     Decision,
     full_suite_ran,
     gate,

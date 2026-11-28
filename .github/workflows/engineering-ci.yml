@@ -109,7 +109,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: uv run python -m tools.capability_pack.cli release-verify --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli release-verify --base "$BASE_SHA" --head "$HEAD_SHA"
       # Only a Mergify batch's draft PR runs the tests, what R6 selects against main (test-batch). A step-level
       # `if`, never a job-level one: a PR head's `qualify` must still run and report success, or Mergify never queues it.
       # The prefix is `.mergify.yml`'s `queue_branch_prefix`.

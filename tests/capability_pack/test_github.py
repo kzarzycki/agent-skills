@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from tools.capability_pack.github import GitHubError, reconcile_draft_pr
+from capability_pack.github import GitHubError, reconcile_draft_pr
 
 
 def _completed(arguments, returncode=0, stdout="", stderr=""):

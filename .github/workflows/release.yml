@@ -27,7 +27,7 @@ on:
     branches:
       - main
   # A `workflow_run` job gets secrets, so `gate` and `promote` accept only a green run of this repository's main on the
-  # expected event (tools/capability_pack/release_lines.py), and check out that run's commit, never `github.sha`.
+  # expected event (vendoring/skills/vendoring/scripts/capability_pack/release_lines.py), and check out that run's commit, never `github.sha`.
   workflow_run:
     workflows: ["Engineering capability pack"]
     types: [completed]
@@ -76,13 +76,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT" = workflow_run ]; then
-            uv run python -m tools.capability_pack.release_lines gate next --tested "$TESTED"
+            PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.release_lines gate next --tested "$TESTED"
           else
             echo "go=true" >> "$GITHUB_OUTPUT"; echo "sha=main" >> "$GITHUB_OUTPUT"
           fi
           # while a release PR is open its entries go out when it lands; a second one would fold the same ones twice
           open=$(gh api "repos/$REPO/pulls?state=open&base=main&per_page=100" --paginate --jq '[.[] | {state, html_url, head: {ref: .head.ref}}]' \
-            | uv run python -m tools.capability_pack.release_lines open-pr)
+            | PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.release_lines open-pr)
           if [ -n "$open" ]; then
             echo "release PR already open: $open; its entries go out when it lands" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "go=false" >> "$GITHUB_OUTPUT"
@@ -131,7 +131,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          out=$(uv run python -m tools.capability_pack.cli cut-release --magnitude "$MAGNITUDE" 2>&1)
+          out=$(PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli cut-release --magnitude "$MAGNITUDE" 2>&1)
           code=$?
           set -e
           printf '%s\n' "$out"
@@ -205,7 +205,7 @@ jobs:
             release/*) ;;
             *) echo "$SHA is not a release PR's commit (head branch '$branch'): no tags"; echo "tags=" >> "$GITHUB_OUTPUT"; exit 0 ;;
           esac
-          tags=$(uv run python -m tools.capability_pack.cli release-tags | tr '\n' ' ')
+          tags=$(PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli release-tags | tr '\n' ' ')
           echo "tags: $tags"
           echo "tags=$tags" >> "$GITHUB_OUTPUT"
       # The pre-tag smoke run engineering/RELEASING.md requires: its repository is a private organization repository
@@ -261,7 +261,7 @@ jobs:
           # every manifest the commit changes is tagged on it now, which each check requires; the step above
           # was engineering's smoke run
           for tag in $TAGS; do
-            uv run python -m tools.capability_pack.cli release-check "${tag%-v*}" "$tag" --skip-smoke
+            PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.cli release-check "${tag%-v*}" "$tag" --skip-smoke
           done
           # one push: each tag check starts with every tag of the commit already in place
           git push origin $TAGS
@@ -308,9 +308,9 @@ jobs:
           set -euo pipefail
           # the green scheduled runs, to tell a nightly that ran the suite from one that skipped it
           gh api "repos/$REPO/actions/workflows/engineering-ci.yml/runs?event=schedule&branch=main&status=success&per_page=50" > "$RUNNER_TEMP/nightlies.json"
-          uv run python -m tools.capability_pack.release_lines gate stable --nightlies "$RUNNER_TEMP/nightlies.json"
+          PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.release_lines gate stable --nightlies "$RUNNER_TEMP/nightlies.json"
           [ "$(grep '^go=' "$GITHUB_OUTPUT" | tail -1)" = go=true ] || exit 0
-          plan=$(uv run python -m tools.capability_pack.release_lines promote --head "$RUN_SHA")
+          plan=$(PYTHONPATH=vendoring/skills/vendoring/scripts uv run python -m capability_pack.release_lines promote --head "$RUN_SHA")
           if [ -z "$plan" ]; then
             echo "nothing to promote: no unpromoted next tag on a commit this nightly covered" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
           fi

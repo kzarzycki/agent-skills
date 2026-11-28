@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from tools.capability_pack import cli
-from tools.capability_pack.qualify import ConfigurationError
-from tools.capability_pack.release import (
+from capability_pack import cli
+from capability_pack.qualify import ConfigurationError
+from capability_pack.release import (
     check_changelog_names,
     cut_release,
     release_tags,
@@ -125,7 +125,7 @@ def test_verify_accepts_the_fold_and_its_tags_pass_release_check(tmp_path: Path)
     tags = release_tags(repo)
     assert tags == ["alpha-v0.2.0", "beta-v0.3.0"]
 
-    from tools.capability_pack.qualify import validate_release_candidate
+    from capability_pack.qualify import validate_release_candidate
 
     _git(repo, "tag", "alpha-v0.2.0")
     with pytest.raises(ConfigurationError, match="beta-v0.3.0 is not tagged"):
@@ -139,8 +139,8 @@ def test_a_commit_tagged_only_next_passes_the_tag_check_and_counts_as_the_last_r
     tmp_path: Path,
 ) -> None:
     """#2678: `-next` tags are releases: the tag check accepts them, and the next version moves past them."""
-    from tools.capability_pack.qualify import validate_release_candidate
-    from tools.capability_pack.release import released_versions
+    from capability_pack.qualify import validate_release_candidate
+    from capability_pack.release import released_versions
 
     repo = _repository(tmp_path)
     _cut_and_commit(repo, "minor")
@@ -212,7 +212,7 @@ def test_cli_cut_and_verify(tmp_path: Path, capsys) -> None:
 def test_an_apm_only_package_on_its_first_release_is_cut_and_tagged(tmp_path: Path) -> None:
     """`engineering-hooks` has no plugin manifest and was never tagged, so no release moves its version (#2683):
     the release still folds it, tags it and passes the release check, since `engineering` depends on its tag."""
-    from tools.capability_pack.qualify import validate_release_candidate
+    from capability_pack.qualify import validate_release_candidate
 
     repo = _repository(tmp_path)
     hooks = repo / "hooks"
@@ -239,7 +239,7 @@ def test_an_apm_only_package_is_found_versioned_bumped_and_tagged_beside_its_dep
 ) -> None:
     """A package with no plugin manifest keeps its version in `apm.yml` alone: a later release bumps it there, and
     every release tags the dependent and the package on one commit, so `^0.1.0` resolves (#2683)."""
-    from tools.capability_pack.release import packages
+    from capability_pack.release import packages
 
     repo = _repository(tmp_path)
     _package(repo, "hooks", "0.1.0", {"5": "- hooks: first (#5)"})

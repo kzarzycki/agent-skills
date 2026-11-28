@@ -7,9 +7,9 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from tools.capability_pack.consumer import assert_codex_inventory, prepare_consumer
-from tools.capability_pack.github import GitHubError, reconcile_draft_pr
-from tools.capability_pack.qualify import (
+from capability_pack.consumer import assert_codex_inventory, prepare_consumer
+from capability_pack.github import GitHubError, reconcile_draft_pr
+from capability_pack.qualify import (
     SMOKE_REPOSITORY,
     BreakingDriftError,
     ConfigurationError,
@@ -22,7 +22,7 @@ from tools.capability_pack.qualify import (
     upstream_deltas,
     validate_release_candidate,
 )
-from tools.capability_pack.release import (
+from capability_pack.release import (
     MAGNITUDES,
     check_changelog_names,
     cut_release,

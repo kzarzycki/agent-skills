@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.capability_pack.qualify import QualificationError, qualify
+from capability_pack.qualify import QualificationError, qualify
 
 NOT_RUN = (
     "Non-live test: NOT RUN (locked: the stage matches the committed package, "
