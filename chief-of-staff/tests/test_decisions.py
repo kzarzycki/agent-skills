@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -12,9 +13,10 @@ SCRIPT = (
 )
 
 
-def run(home: Path, *args: str) -> subprocess.CompletedProcess:
+def run(home: Path, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-B", str(SCRIPT), "--home", str(home), *args],
+        input=stdin,
         capture_output=True,
         text=True,
         check=False,
@@ -112,3 +114,50 @@ def test_digest_writes_nothing(home):
     before = p.read_text()
     run(home, "digest")
     assert p.read_text() == before
+
+
+def make_diff(n: int) -> str:
+    body = [f"+line {i}" for i in range(n - 3)]
+    return "\n".join(["--- a/s.md", "+++ b/s.md", "@@ -0,0 +1 @@", *body]) + "\n"
+
+
+def test_diff_is_stored_digested_cut_at_80_lines_and_round_trips(home):
+    def add(n, what, diff):
+        args = ["--now", f"2026-11-25T0{n}:00Z", "log", "--what", what, "--why", "y", "--undo", "u"]
+        return run(home, *args, "--diff", "-", stdin=diff)
+
+    log_file = home / "tmp" / "loop" / "decisions.md"
+    small, big = make_diff(5), make_diff(200)
+    assert add(1, "small", small).returncode == 0
+    assert add(2, "big", big).returncode == 0
+    text = log_file.read_text()
+    assert "```diff\n" + small + "```" in text
+
+    out = run(home, "digest").stdout
+    assert "  ```diff\n  --- a/s.md" in out and "  +line 1" in out
+
+    shown = text.split("## 2026-11-25T02:00Z big")[1].split("```diff\n")[1].split("\n```")[0]
+    shown = shown.splitlines()
+    assert shown[:80] == big.splitlines()[:80] and len(shown) == 81
+    assert shown[80].startswith("… 120 more lines (full diff: ")
+    kept = log_file.parent / shown[80].split("full diff: ")[1].rstrip(")")
+    assert kept.read_text() == big
+
+    spec = importlib.util.spec_from_file_location("decisions_mod", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(SCRIPT.parent))
+    sys.modules["decisions_mod"] = mod
+    spec.loader.exec_module(mod)
+    entries, _, _ = mod.read(log_file)
+    assert [e.what for e in entries] == ["small", "big"]
+    assert entries[0].diff == "```diff\n" + small + "```"
+    assert entries[1].diff == "```diff\n" + "\n".join(shown) + "\n```"
+
+
+def test_diff_fence_outgrows_indented_backticks_and_an_empty_diff_is_refused(home):
+    md = "--- a/s.md\n+++ b/s.md\n@@ -1 +1 @@\n ```\n-old\n+new\n"
+    args = ("--now", "2026-11-25T01:00Z", "log", "--what", "w", "--why", "y", "--undo", "u")
+    assert run(home, *args, "--diff", "-", stdin=md).returncode == 0
+    text = (home / "tmp" / "loop" / "decisions.md").read_text()
+    assert "````diff\n" + md + "````" in text
+    assert run(home, *args, "--diff", "").returncode == 1
