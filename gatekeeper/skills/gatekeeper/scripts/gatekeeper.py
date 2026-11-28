@@ -13242,6 +13242,92 @@ def mergify_rendered(policy: str | None) -> str:
     return text
 
 
+# the host command that writes what a cloud session's proxy refuses it (#3053)
+WRITE_PENDING = "`approvals.py write-pending` on the host that lands"
+# the verifier's event, which cloud_verifier.py writes and a cloud session can only push as a branch
+PENDING_EVENTS = ("verifier",)
+
+
+def gate_refused(why: str) -> bool:
+    """Whether the text of a failed write says a 403, status_refused's reading of a status write's stderr."""
+    return STATUS_REFUSED in why
+
+
+def origin_pass(held: str, step: dict[str, Any]) -> dict[str, Any] | None:
+    """Gate step `step`'s pass on tree `held` as origin's record branch holds it, or None: never this clone's own record
+    (step_pass reads that first), since a status is written only for what origin proves."""
+    if step.get("unkeyed"):
+        return None
+    if (key := inputs_key(held, step)) is not None:
+        found = origin_input_pass(key, step)
+    else:
+        found = record_ref(held, step["command"], step["sets"])
+    return found | step_field(step) if found is not None else None
+
+
+def pending_gate(number: int, head: str) -> bool:
+    """Write the `gate` status on `head` of PR `number` when origin holds a pass of each step of its gate (origin_pass) and
+    the head has no green `gate` status for its tree; whether it wrote one. It never runs the gate, writes nothing
+    without a record, and a refused write is said and left (no retry)."""
+    if (held := tree_of(head)) is None:
+        print(f"PR #{number}: no tree for {head} here, so no `gate` status")
+        return False
+    if stated(head, PUBLISHED, lambda _status, named: named[1] == held):
+        return False
+    found = []
+    for step in gate_plan(passed := gate_tier(number, project()[1])):
+        if (record := origin_pass(held, step)) is None:
+            print(
+                f"PR #{number}: origin holds no pass of {step['command']} on tree {held}: no `gate` status"
+            )
+            return False
+        found.append(record)
+    if why := shown(head, whole(found, passed, held)):
+        print(f"PR #{number}: the `gate` status on {head} was not written: {why}")
+        return False
+    print(f"PR #{number}: wrote the `gate` status on {head} from origin's pass record")
+    return True
+
+
+def pending_events(branch: str) -> int:
+    """Push the events of `branch` (PENDING_EVENTS) that a cloud session could only push as a branch to their
+    `refs/loop/<kind>/<branch>` ref, when the branch's event is newer than the ref's (seq); the number pushed.
+    A push that fails (a lost race, origin unreachable) is said and left."""
+    pushed = 0
+    for kind in PENDING_EVENTS:
+        ref = loop_events.ref_of(kind, branch)
+        try:
+            held = loop_events.remote_refs(None, ref, *loop_events.branch_refs(kind, branch))
+            via = next((r for r in loop_events.branch_refs(kind, branch) if r in held), None)
+            if via is None:
+                continue
+            new = loop_events.fetch_event(None, via)
+            old = loop_events.fetch_event(None, ref) if ref in held else {}
+            if new.get("state") == "unknown" or new.get("seq", 0) <= old.get("seq", 0):
+                continue
+            loop_events.push(None, f"{new['sha']}:{ref}", lease=f"{ref}:{held.get(ref, '')}")
+        except loop_events.UNREACHABLE as exc:
+            loop_events.warn(f"{ref} not pushed from {via}", exc)
+            continue
+        print(f"{branch}: pushed the {kind} event to {ref}")
+        pushed += 1
+    return pushed
+
+
+def write_pending() -> int:
+    """`write-pending`: for each open PR, the `gate` status its head lacks where origin holds the pass records
+    (pending_gate), and the events a cloud session left as branches (pending_events). Run twice, it writes nothing the
+    second time. It runs no gate; exit 0."""
+    wrote = 0
+    for pull in open_pulls():
+        status = pull_status(pull["number"])
+        with policy_from(status["baseRefName"]):
+            wrote += pending_gate(pull["number"], status["headRefOid"])
+        wrote += pending_events(pull["headRefName"])
+    print(f"write-pending: wrote {wrote}")
+    return 0
+
+
 def gate_record(head: str, words: list[str]) -> int:
     """`gate-record <head> [-- <command>]`: whether origin holds a pass record (record_ref) of the gate, each step of
     `gate_steps` (gate_plan), or of `<command>`, on `head`'s tree, so the verifier reads it instead of running the
@@ -14015,7 +14101,14 @@ def publish(
     if KEEP.get() or not show:
         return
     if why := shown(head, record):
-        print(f"the `gate` status, which only shows the pass on the PR, was not written: {why}")
+        hint = (
+            f"; the record is on origin, and {WRITE_PENDING} writes the status"
+            if gate_refused(why)
+            else ""
+        )
+        print(
+            f"the `gate` status, which only shows the pass on the PR, was not written: {why}{hint}"
+        )
 
 
 def now() -> str:
@@ -14205,13 +14298,19 @@ def local_ci(
         return pr_local_ci(pr, run, want)
 
 
+def gate_tier(pr: int, loop: str | None) -> list[str]:
+    """The tier names PR `pr`'s gate runs under (tier): the PR is read only for a policy with an `incubating` section, so
+    no other project pays the read."""
+    return tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
+
+
 def pr_local_ci(pr: int, run: bool, want: str | None = None) -> int:
     """local_ci for PR `pr`, under its base's policy."""
     head = settled_head(pr, want)
     why: list[str] = []
     loop = project()[1]
     # the PR is read only for a policy with an `incubating` section: no other project pays the read
-    passed = tier(pull_request(pr), loop) if INCUBATING in settings(loop) else []
+    passed = gate_tier(pr, loop)
     if record := reusable(head, passed, why=why):
         source = f"{reused(record)}\n"
         gate_event(gate_branch(), "ok", lambda: gate_url(record))
@@ -14617,6 +14716,11 @@ def main(argv: list[str]) -> int:
     )
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")
+    commands.add_parser(
+        "write-pending",
+        help="On the host: write the `gate` status of each open PR head whose pass record is on origin, and push cloud verifiers' events to their refs; runs no gate, writes nothing a record does not back.",
+        description="For each open PR head with a pass record of its gate on origin and no `gate` status, write the status the record proves, and push each verifier event a cloud session left as a branch to its refs/loop/ ref. It never runs the gate; run twice, it writes nothing the second time.",
+    )
     # every limit the policy's `timeouts` derive; --mergify renders .mergify.yml, --check refuses one out of step
     recording = commands.add_parser(
         "durations",
@@ -14752,6 +14856,8 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
         return wait_on(args.pr, args.on, args.within, args.clear)
     if args.command == "delegate":
         return delegate(args.pr)
+    if args.command == "write-pending":
+        return write_pending()
     if args.command == "gate-record":
         return gate_record(args.head, args.words[1:] if args.words[:1] == ["--"] else args.words)
     if args.command == "local-ci":

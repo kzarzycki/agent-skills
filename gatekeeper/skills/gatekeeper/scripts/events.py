@@ -216,7 +216,8 @@ def mirror_of(ref: str) -> str:
 def warn(what: str, exc: Exception) -> None:
     """One stderr line: `what` and the error's text, whitespace folded and cut at 300 characters."""
     reason = " ".join((getattr(exc, "stderr", None) or str(exc)).split())[:300]
-    print(f"events: {what}: {reason}", file=sys.stderr)
+    hint = "; the host's `approvals.py write-pending` pushes it" if "403" in reason else ""
+    print(f"events: {what}: {reason}{hint}", file=sys.stderr)
 
 
 def push(cwd: Path | str | None, *refspecs: str, lease: str | None = None) -> None:
