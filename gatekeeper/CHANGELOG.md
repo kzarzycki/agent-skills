@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.25 - 2026-11-28
+
+- `check merge` accepts a pass at the cap or later with only minors open once the PR body carries the lead's `Cap: #<follow-up>` line, as it does for majors; a blocker, a pass below the cap, a verdict with nothing open, or a verdict whose posted summary carries a `Not run:` line (a run never made) still refuses. `verdict` now keeps that `Not run:` line in the posted summary (#2925).
+
 ## 0.1.24 - 2026-11-28
 
 - `approvals.py land --json` prints, after its usual output, one JSON line per PR it judged: `pr`, `head`, `state` (`merged`, `queued`, `waiting`, `needs-owner`, `refused`), `cause` and `url`, so a caller that routes on the exit code can tell a queued PR from a merged one, a red base from a PR's fault, and a running check from a wait on a person. Exit codes and the output without `--json` are unchanged (#2829).
