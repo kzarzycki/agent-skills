@@ -480,7 +480,7 @@ def test_no_push_goes_with_rerun(gating: Gate, capsys: pytest.CaptureFixture[str
 
 REPORT = f"""# Review
 
-Verifier: claude, same-family, pass 1
+Verifier: claude, pass 1
 
 ## Criteria
 
