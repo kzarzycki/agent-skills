@@ -5,7 +5,7 @@
 # ///
 """The gatekeeper (engineering-loop): decides from proof on the forge and the team's policy whether a change may take
 its next step (be built, merge), records that proof, and lands PRs. It reads docs/agents/ from origin/<base>, the ref land merges on
-(so a PR can't loosen its own gate), and reaches the tracker, the forge and the evidence only through their ports (github_adapter.py by default).
+(so a PR can't loosen its own gate); the checkout's copy only with no origin ref or with GATEKEEPER_POLICY_FROM_WORKING_TREE set, and for queue-config and timeouts. It reaches the tracker, the forge and the evidence only through their ports (github_adapter.py by default).
 
 Run `uv run scripts/gatekeeper.py <verb> --help` for one verb; the verbs, in one line each:
 
@@ -18,7 +18,7 @@ Run `uv run scripts/gatekeeper.py <verb> --help` for one verb; the verbs, in one
     affected-tests       the tests a head affects; queue-select, rerun-tests, shards, gate-record, durations
     queue-config, timeouts, prune-records, heavy: the merge queue's config, derived limits, gate records, heavy runs
 
-Exit codes: 0 holds, 1 refused (a line per missing proof), 3 waiting (`check rerun` exits 0 once it has read the PR). `approvals.py` is this script's name before #614.
+Exit codes: 0 holds, 1 refused (a line per missing proof), 3 waiting (`check rerun` exits 0 once it has printed a state; a missing PR or an unloadable policy exits 1). `approvals.py` is this script's name before #614.
 
 Where the rules live:
     policy.md          every key of the policy block (docs/agents/gatekeeper.md) and what it decides
@@ -14318,8 +14318,8 @@ def main(argv: list[str]) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     checking = commands.add_parser(
         "check",
-        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun`: exit 0 once it has read the PR).",
-        description="Check the proofs a point needs. Points: build (the issue's spec approval, labels and claim; --issue <n> before the PR exists), merge (the PR's verdict, evidence, keyword and landing rules), ready (the PR body's evidence only), session (the Impl: line's session link), setup (a pack upgrade's gate), stalled (open PRs land would take that its queue does not hold and that are eligible to land, or verified and idle past loop.stalled_after_hours with no go or gate record) and rerun (prints `rerun: needed`, `rerun: done` or `rerun: not needed (<why>)`, and exits 0 once it has read the PR). For the other points it prints one line per missing proof: exit 0 when none, 1 when a proof is missing, 3 when it only waits.",
+        help="Check that a point's proofs are on GitHub: one line per missing proof, exit 1 (waiting: exit 3; `rerun`: exit 0 once it has printed a state).",
+        description="Check the proofs a point needs. Points: build (the issue's spec approval, labels and claim; --issue <n> before the PR exists), merge (the PR's verdict, evidence, keyword and landing rules), ready (the PR body's evidence only), session (the Impl: line's session link), setup (a pack upgrade's gate), stalled (open PRs land would take that its queue does not hold and that are eligible to land, or verified and idle past loop.stalled_after_hours with no go or gate record, where verified is a satisfied verdict on the head, or an unsatisfied one once the cap is reached) and rerun (prints `rerun: needed`, `rerun: done` or `rerun: not needed (<why>)`, and exits 0 once it has printed a state; a missing PR or an unloadable policy exits 1). For the other points it prints one line per missing proof: exit 0 when none, 1 when a proof is missing, 3 when it only waits.",
     )
     checking.add_argument(
         "point", choices=("build", "merge", "ready", "session", "rerun", "setup", "stalled")
@@ -14342,7 +14342,7 @@ def main(argv: list[str]) -> int:
     approving = records.add_parser(
         "approval",
         help="Record a person's approval of a spec, plan or merge (`--by owner|delegate`).",
-        description="Record an approval of a spec, plan or merge. An agent never approves on its own judgment: --by owner on the owner's word, --by delegate under `loop.delegate`. Merge approvals name the head with --head; --withdraw takes one back.",
+        description="Record an approval of a spec, plan or merge. An agent never approves on its own judgment: --by owner on the owner's word, --by delegate under `loop.delegate`. Merge approvals name the head with --head; --withdraw takes one back. `breakglass` is the owner's alone (--by owner, --head and --reason, or --withdraw; see breakglass.md).",
     )
     approving.add_argument("point", choices=(*POINTS, "merge", BREAKGLASS))
     approving.add_argument("number", type=int)
@@ -14471,7 +14471,7 @@ def main(argv: list[str]) -> int:
     rerunning = commands.add_parser(
         "rerun-tests",
         help="Rerun a red run's failed tests once (R5); a pass is a flake.",
-        description="Rerun the failed tests of a red run plus what the fix reaches, once. Exit 75 when the rerun ran no test.",
+        description="Rerun the failed tests of a red run plus what the fix reaches, once; when the fix reselects no failed test, rerun the red run's whole selection in its order. A pass is a flake only on the whole selection. Exit 75 when the rerun ran no test.",
     )
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")
@@ -14498,7 +14498,7 @@ def main(argv: list[str]) -> int:
     recording_read = commands.add_parser(
         "gate-record",
         help="Read origin's pass record of the gate on a head's tree.",
-        description="The verifier's read of origin's pass record of the gate (or of the given command) on a head's tree: exit 0, else 1 naming what to run.",
+        description="The verifier's read of origin's pass record of the gate (or of the given command) on a head's tree, or of a step on another tree whose configured inputs match: exit 0, else 1 naming what to run.",
     )
     recording_read.add_argument("head")
     recording_read.add_argument("words", nargs=argparse.REMAINDER, metavar="command")

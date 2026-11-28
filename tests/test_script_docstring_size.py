@@ -98,6 +98,13 @@ def test_help_says_the_policy_is_read_from_the_base_not_the_checkout():
         flat = " ".join(text.split())
         assert "origin/<base>" in flat or "origin/`<base>`" in flat
         assert "at the checkout's root" not in flat
+        assert "GATEKEEPER_POLICY_FROM_WORKING_TREE" in flat  # the working-tree reads are named too
+
+
+def test_verb_help_names_the_cases_the_runtime_tests_show():
+    assert "whole selection" in " ".join(run_help("rerun-tests").split())
+    assert "another tree whose configured inputs match" in " ".join(run_help("gate-record").split())
+    assert "breakglass" in " ".join(run_help("record", "approval").split())
 
 
 def test_check_help_says_what_check_does():
@@ -105,6 +112,8 @@ def test_check_help_says_what_check_does():
     assert "proofs" in text and "build" in text and "merge" in text
     flat = " ".join(text.split())
     assert (
-        "`rerun: not needed (<why>)`, and exits 0 once it has read the PR" in flat
+        "`rerun: not needed (<why>)`, and exits 0 once it has printed a state; a missing PR or an unloadable policy exits 1"
+        in flat
     )  # not under the exit-1 rule
     assert "eligible to land" in flat and "no go or gate record" in flat  # stalled's two cases
+    assert "an unsatisfied one once the cap is reached" in flat  # verified at the cap
