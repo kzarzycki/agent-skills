@@ -7,6 +7,7 @@ import json
 import re
 import time
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from test_omnigent_agent import (
@@ -453,3 +454,46 @@ def test_the_queue_holds_by_its_newest_check_run_or_status(
     """A queue that reports through a commit status holds a PR as one with a check run does; any queue check run still running holds it, whichever started last; a status context is read
     at its newest (statuses come newest first)."""
     assert omnigent_agent.queue_holds(QUEUED, checks, statuses) is holds
+
+
+def _card(text: str) -> dict:
+    return {
+        "elicitation_id": "question_pr12",
+        "params": {"policy_name": "sys_ask_user_question", "message": text},
+    }
+
+
+def test_a_pr_with_an_open_card_naming_it_raises_no_stall_until_the_card_closes(
+    monkeypatch,
+) -> None:
+    """#2954: a satisfied verdict with no go is no stall while a followed session's open card names the PR."""
+    p = pr(12, timeline_extra=[])
+    p["timeline"].append(verdict(12, "yes", 90 * 60))
+    open_ = [_card("Land o/r#12 now?")]
+
+    og = SimpleNamespace(cards={"mgr": open_, "other": [_card("About #120 and other/r#12")]})
+
+    def carded(repo: str, n: int) -> list[str]:
+        return omnigent_agent.cards_naming_pr(og, ["mgr", "other"], n, repo)
+
+    github(monkeypatch, [p])
+    memo: dict = {}
+    assert omnigent_agent.pr_stalls("o/r", HOUR, memo, carded=carded) == []
+    open_.clear()  # answered or closed
+    found = omnigent_agent.pr_stalls("o/r", HOUR, memo, carded=carded)
+    assert [eid.split("#")[1].split(":")[0] for eid, _ in found] == ["12"]
+
+
+@pytest.mark.parametrize(
+    "text, number, repo, named",
+    [
+        ("Land #12?", 12, "o/r", True),
+        ("Land o/r#12?", 12, "o/r", True),
+        ("see https://github.com/o/r/pull/12", 12, "o/r", True),
+        ("Land #120?", 12, "o/r", False),
+        ("Land other/x#12?", 12, "o/r", False),
+        ("Land other/x#12?", 12, None, True),
+    ],
+)
+def test_names_pr(text, number, repo, named) -> None:
+    assert omnigent_agent.names_pr(text, number, repo) is named
