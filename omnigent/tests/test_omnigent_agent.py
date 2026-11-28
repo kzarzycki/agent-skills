@@ -1,6 +1,7 @@
 """scripts/omnigent_agent.py with the Omnigent server faked."""
 
 import errno
+import fcntl
 import importlib.util
 import inspect
 import io
@@ -6335,7 +6336,7 @@ def test_without_console_the_supervisor_writes_no_state_labels_or_deadline_and_r
         supervised(og, registry, monkeypatch, 1, notify="cos")
     assert posted(og) == ["Supervisor: a t-a: turn ended\nlast message: DONE: shipped"] * 2
     assert og.labels == []
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.md", "registry"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["b.md", "registry", "registry.lock"]
 
 
 def state_of(registry: Path) -> dict:
@@ -15627,3 +15628,137 @@ def test_supervise_install_from_a_developer_checkout_refuses_and_names_the_insta
     )  # names the checkout it refused, not as the service's script
     installed_script = _pack_script(tmp_path, git=False)
     assert _service_script_of(installed_script, monkeypatch, tmp_path) == installed_script.resolve()
+
+
+def test_parallel_registry_writers_keep_every_entry_in_a_file_that_parses_2406(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry"
+    go = tmp_path / "go"
+    # every worker imports, says it is ready, then waits for `go`, so their writes really overlap
+    code = (
+        "import importlib.util,sys,time;from pathlib import Path;"
+        f"s=importlib.util.spec_from_file_location('o',{str(spec.origin)!r});"
+        "m=importlib.util.module_from_spec(s);sys.modules['o']=m;s.loader.exec_module(m);"
+        "g=Path(sys.argv[3]);Path(sys.argv[3]+'.ready'+sys.argv[2]).write_text('');"
+        "[time.sleep(0.001) for _ in iter(lambda: not g.exists(), False)];"
+        "[m.arm(Path(sys.argv[1]),f's{sys.argv[2]}_{k}',Path(f'r{sys.argv[2]}_{k}.md'))"
+        " for k in range(8)]"
+    )
+    n = 8
+    procs = [
+        subprocess.Popen([sys.executable, "-c", code, str(registry), str(i), str(go)])
+        for i in range(n)
+    ]
+    try:
+        deadline = time.time() + 60
+        while len(list(tmp_path.glob("go.ready*"))) < n and time.time() < deadline:
+            time.sleep(0.01)
+        assert len(list(tmp_path.glob("go.ready*"))) == n
+        go.write_text("")
+        assert [p.wait(60) for p in procs] == [0] * n
+    finally:  # a worker that never got ready must not leave the others polling
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
+            p.wait()
+    owed, bad = omnigent_agent.registered(registry)
+    assert bad == []
+    assert sorted(owed) == sorted(f"s{i}_{k}" for i in range(n) for k in range(8))
+
+
+def test_a_registry_writer_waits_on_the_sidecar_lock_before_it_reads_and_edits_2406(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry"
+    entered, done = threading.Event(), threading.Event()
+
+    def edit(lines: list[str]) -> list[str]:
+        entered.set()
+        return [*lines, "s0=r0.md"]
+
+    def writer() -> None:
+        omnigent_agent.edit_registry(registry, edit)
+        done.set()
+
+    with open(tmp_path / "registry.lock", "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        thread = threading.Thread(target=writer)
+        thread.start()
+        assert not entered.wait(0.5)  # blocked on the sidecar, not yet in the edit
+    assert done.wait(10)
+    thread.join()
+    assert entered.is_set()
+    assert registry.read_text() == "s0=r0.md\n"
+
+
+def test_a_first_registry_write_follows_the_umask_2406(tmp_path: Path) -> None:
+    registry = tmp_path / "registry"
+    old_umask = os.umask(0o077)
+    try:
+        omnigent_agent.arm(registry, "s0", Path("r0.md"))
+    finally:
+        os.umask(old_umask)
+    assert registry.stat().st_mode & 0o077 == 0
+
+
+def test_the_registry_temp_file_is_never_wider_than_the_registry_it_replaces_2406(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "registry"
+    registry.write_text("s0=r0.md\n")
+    registry.chmod(0o600)
+    made: list[int] = []
+    real_open = os.open
+
+    def recording(path: Any, flags: int, mode: int = 0o777, **kw: Any) -> int:
+        fd = real_open(path, flags, mode, **kw)
+        if str(path).endswith(".tmp"):
+            made.append(os.fstat(fd).st_mode & 0o777)  # the mode at creation, before any text
+        return fd
+
+    old_umask = os.umask(0o022)
+    try:
+        monkeypatch.setattr(os, "open", recording)
+        omnigent_agent.arm(registry, "s1", Path("r1.md"))
+    finally:
+        os.umask(old_umask)
+    assert made == [0o600]
+    assert registry.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_registry_write_goes_through_a_symlink_and_keeps_the_file_mode_2406(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    omnigent_agent.arm(target, "s0", Path("r0.md"))
+    target.chmod(0o600)
+    link = tmp_path / "link"
+    link.symlink_to(target)
+    omnigent_agent.arm(link, "s1", Path("r1.md"))
+    assert link.is_symlink()
+    assert "s1=" in target.read_text()
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_a_registry_write_that_fails_midway_leaves_the_old_file_whole_2406(
+    tmp_path: Path,
+) -> None:
+    registry = tmp_path / "registry"
+    omnigent_agent.arm(registry, "s0", Path("r0.md"))
+    before = registry.read_text()
+    # a file-size limit makes the longer new text fail partway, as a full disk or a kill would
+    code = (
+        "import importlib.util,resource,signal,sys;from pathlib import Path;"
+        f"s=importlib.util.spec_from_file_location('o',{str(spec.origin)!r});"
+        "m=importlib.util.module_from_spec(s);sys.modules['o']=m;s.loader.exec_module(m);"
+        "signal.signal(signal.SIGXFSZ,signal.SIG_IGN);"
+        f"resource.setrlimit(resource.RLIMIT_FSIZE,({len(before) + 4},)*2);"
+        "m.arm(Path(sys.argv[1]),'s1',Path('r1.md'))"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code, str(registry)], capture_output=True, check=False
+    )
+    assert done.returncode != 0  # the write failed
+    assert registry.read_text() == before
+    assert not list(tmp_path.glob("*.tmp"))

@@ -5,6 +5,18 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.37 - 2026-11-28
+
+- `omnigent_agent.py`: the `--registry` file is written atomically (a temp file beside it, then `os.replace`) under a lock on a sidecar `<registry>.lock` file, so parallel `send`/`run` processes no longer leave it truncated and stop child notifications (#2406).
+
+## 0.1.36 - 2026-11-28
+
+- omnigent-agents: an Antigravity session whose turn ends on the "Individual quota reached ... Resets in 129h55m" banner, reported by the harness as an error item, fails the wait with the reset time in the error, and `--verifier-route gemini` is refused while that recorded quota-out is in force, naming the reset time and the Codex route. The banner shows only in agy's terminal pane, so an agy session with no assistant item five minutes after its brief is read at its own pane through `$OMNIGENT_AGY_PANE_CMD` (unset: nothing is read and the silence is said once on stderr). A pane banner counts only with its Error ID, only if it appeared after the wait attached, keeps its first reset, and is ignored once that has passed (#2919).
+
+## 0.1.35 - 2026-11-27
+
+- omnigent-agents: `claude-cloud-run` runs a detached HEAD on the remote branch that contains it (`--pr N` names it, else the single match) instead of exiting 125, so a host verifier's worktree can use it; verifier.md says exit 125 means take the host fallback, not ask (#2918).
+
 ## 0.1.34 - 2026-11-27
 
 - A Codex verifier `start` with no model or effort runs Terra at medium effort, and one on a PR head that already has a Codex pass is refused, naming that pass (#2870).
