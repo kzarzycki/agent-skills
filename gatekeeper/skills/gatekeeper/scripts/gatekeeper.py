@@ -10447,7 +10447,7 @@ ORIGIN = re.compile(
     r"Origin:[ \t]*(prior F\d+ not fixed|regression of \S+|present at \S+|new)[ \t]*",
     re.IGNORECASE,
 )
-PATHED = re.compile(r"Path:[ \t]*\S", re.MULTILINE)
+PATHED = re.compile(r"Path:[ \t]*\S", re.IGNORECASE)
 
 
 def check_finding(report: Path, number: int, finding: tuple[str, ...]) -> None:
@@ -10456,7 +10456,8 @@ def check_finding(report: Path, number: int, finding: tuple[str, ...]) -> None:
     name, severity, _path, _at, _title, body = finding
     lines = [line.strip() for line in body.splitlines()]
     origins = [line for line in lines if line.lower().startswith("origin:")]
-    if origins and not ORIGIN.fullmatch(origins[-1]):
+    origin = ORIGIN.fullmatch(origins[-1]) if origins else None
+    if origins and not origin:
         raise Refused(
             f"{report}: {name}: can't read `{origins[-1]}`: write `Origin: prior F<n> not fixed|regression of "
             "<commit>|present at <head>|new`"
@@ -10470,7 +10471,13 @@ def check_finding(report: Path, number: int, finding: tuple[str, ...]) -> None:
             "line: a finding that breaks none of them is a minor (the verifier role, Major)"
         )
     kind = broken[-1][1].lower()
-    if kind == "standing bar" and not PATHED.search(body):
+    unfenced, fenced = [], False
+    for line in lines:  # a `Path:` line counts at the start of a line, outside a code fence
+        if line.startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced:
+            unfenced.append(line)
+    if kind == "standing bar" and not any(PATHED.match(line) for line in unfenced):
         raise Refused(
             f"{report}: {name} breaks a standing bar with no `Path: <input, steps, impact>` line: without a concrete "
             "path it is a minor"
@@ -10480,7 +10487,7 @@ def check_finding(report: Path, number: int, finding: tuple[str, ...]) -> None:
             raise Refused(
                 f"{report}: {name} is a {severity} on a delta pass with no `Origin:` line"
             )
-        if origins[-1].lower().startswith("origin: present at") and kind != "acceptance":
+        if origin and origin[1].lower().startswith("present at") and kind != "acceptance":
             raise Refused(
                 f"{report}: {name} `{origins[-1]}` breaks no Acceptance line: a finding present at an earlier head "
                 "is a minor"
