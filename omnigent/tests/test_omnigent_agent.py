@@ -4765,7 +4765,13 @@ def test_local_sessions_still_fill_the_session_cap(
 ) -> None:
     og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(6000), loadavg="1.0 1 1")
     og.others = [
-        {"id": f"x{i}", "host_id": "far", "status": "running", "harness": "acp", "agent_name": "codex"}
+        {
+            "id": f"x{i}",
+            "host_id": "far",
+            "status": "running",
+            "harness": "acp",
+            "agent_name": "codex",
+        }
         for i in range(8)
     ]
     og.harnesses["codex"] = "acp:codex"
