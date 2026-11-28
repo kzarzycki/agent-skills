@@ -112,6 +112,44 @@ def test_gemini_run_passes_model_effort_and_a_print_timeout(
     assert cmd[cmd.index("--print-timeout") + 1] == cv.AGY_PRINT_TIMEOUT
 
 
+def run_gemini(checkout, monkeypatch, tmp_path) -> tuple[list, str]:  # noqa: F811
+    """The argv and stdin text of the one `agy` run a gemini `verify` makes (#3052)."""
+    monkeypatch.setenv("HOME", str(tmp_path / "no-home"))
+    monkeypatch.setenv("CLAUDE_CODE_REMOTE", "true")
+    monkeypatch.setenv("AGY_OAUTH_JSON", "e30=")
+    monkeypatch.setattr(cv, "ensure_gemini", lambda: None)
+    seen: list = []
+
+    def relay(cmd, text, keep=None):
+        seen.append((cmd, text))
+        keep.write_text("SATISFIED: yes\n")
+        return 0
+
+    monkeypatch.setattr(cv, "relay_exec", relay)
+    assert command(["verify", "--pr", "7", "--brief", str(checkout[2]), "--harness", "gemini"]) == 0
+    return seen[0]
+
+
+def test_agy_gets_the_brief_text_as_its_prompt_argument(checkout, monkeypatch, tmp_path) -> None:  # noqa: F811
+    cmd, stdin_text = run_gemini(checkout, monkeypatch, tmp_path)
+    assert cmd[:2] == ["agy", "-p"]
+    # `agy -p` ignores stdin, so the argument is the whole brief
+    assert cmd[2] == stdin_text
+    assert "Follow the brief on stdin" not in cmd[2]
+    assert cmd[2].startswith("AGENT_SIGNATURE=")
+
+
+def test_agy_argv_keeps_its_flags_after_the_prompt(checkout, monkeypatch, tmp_path) -> None:  # noqa: F811
+    cmd, _ = run_gemini(checkout, monkeypatch, tmp_path)
+    assert cmd[3:] == [
+        "--dangerously-skip-permissions",
+        "--print-timeout",
+        cv.AGY_PRINT_TIMEOUT,
+        "--output-format",
+        "json",
+    ]
+
+
 def login(files: dict[str, bytes], extra: list[tarfile.TarInfo] | None = None) -> str:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
