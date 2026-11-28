@@ -466,6 +466,18 @@ def test_a_second_yaml_block_under_loop_settings_is_refused_naming_it() -> None:
         approvals.loop_setting(text, "gate")
 
 
+def test_a_repeated_loop_settings_heading_is_refused_naming_it() -> None:
+    text = (
+        "# Loop\n\n## Loop settings\n\n```yaml\ngate: full\n```\n\n## Notes\n\nProse.\n\n"
+        "## Loop settings\n\n```yaml\nafected_tests: mise run x\n```\n"
+    )
+    approvals.loop_block.cache_clear()
+    with pytest.raises(approvals.Refused, match="## Loop settings heading more than once"):
+        approvals.loop_setting(text, "gate")
+    with pytest.raises(approvals.Refused, match="## Loop settings"):
+        approvals.loop_migrate(text)  # the migration reads no block it would leave behind
+
+
 @pytest.mark.parametrize(
     ("body", "named"),
     [

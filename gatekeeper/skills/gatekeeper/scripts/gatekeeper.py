@@ -1088,10 +1088,15 @@ def loop_flat(data: dict[str, Any], file: str = "loop.md") -> dict[str, Any]:
 def loop_block(text: str) -> dict[str, Any]:
     """The values of loop.md's `## Loop settings` block, checked against LOOP_SCHEMA, one entry per dotted key; {}
     where `text` has no such heading. Refused, naming the key, for an unknown key, a wrong type, a key set twice, or
-    a key the block sets that its old line sets too. A heading with no `yaml` block under it is refused."""
+    a key the block sets that its old line sets too. The heading twice is refused, naming it. A heading with no `yaml` block under it is refused."""
     if not LOOP_HEAD.search(text):
         return {}
     file = "loop.md"
+    # section() reads the first heading, so a second one would hide a block unread
+    if len(LOOP_HEAD.findall(text)) > 1:
+        raise Refused(
+            f"{file} has the ## {LOOP_HEADING} heading more than once: keep one heading holding one ```yaml block"
+        )
     if SETTINGS.search(section(text, LOOP_HEADING)) is None:
         raise Refused(f"{file} has a ## {LOOP_HEADING} heading but no ```yaml block under it")
     if len(blocks := SETTINGS.findall(section(text, LOOP_HEADING))) > 1:
