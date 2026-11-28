@@ -3030,7 +3030,7 @@ def proofs(
         found += linked(pull, issues, loop)
     if not unowed(pull, loop, revert, waived):
         verdicts = passes(pull)
-        found += (unreviewed := reviewed(where, pull, loop, verdicts))
+        found += (unreviewed := reviewed(where, pull, loop, verdicts, issues))
         # only on a verdict that would land, and tier first, since risk() reads the reviews again
         if (
             not unreviewed
@@ -3085,6 +3085,10 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
             int(PASS.match(review["body"])[2]),
             {
                 "Family": PASS.match(review["body"])[1],
+                # the findings' ids and when the review was posted, which a later spec approval that closes them reads
+                # (closing)
+                "Findings": " ".join(finding_ids(review["body"])),
+                "At": review.get("submittedAt") or "",
                 **{
                     key.strip(): value.strip()
                     for key, _, value in (
@@ -3119,6 +3123,88 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     ]
     keys = [(commit, number, kin(lines["Family"])) for commit, number, lines in read]
     return [entry for i, entry in enumerate(read) if keys[i] not in keys[i + 1 :]]
+
+
+def finding_ids(body: str) -> list[str]:
+    """The ids of a review's finding headings (`### <id> (<severity>) ...`), outside a code fence, in order."""
+    found, fenced = [], False
+    for line in body.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        elif not fenced and (
+            heading := re.match(
+                r"###[ \t]+(\S+)[ \t]+\((?:blocker|major|minor)\)", line, re.IGNORECASE
+            )
+        ):
+            found.append(heading[1])
+    return found
+
+
+# a spec approval's `Closes:` clause: `<id>[, <id>...] of the pass-<n> verdict on <sha>`, several joined by `;`
+CLOSES = re.compile(
+    r"(.+?)\s+of\s+the\s+pass-(\d+)\s+verdict\s+on\s+([0-9a-f]{7,40})\b", re.IGNORECASE
+)
+
+
+def closes(record: dict[str, str]) -> list[tuple[str, int, str]]:
+    """The (finding id, pass number, commit) triples an `Approved: spec` record's `Closes:` line names."""
+    found = []
+    for clause in record.get("closes", "").split(";"):
+        if match := CLOSES.fullmatch(clause.strip().rstrip(".")):
+            ids = [word for word in re.split(r"[\s,]+", match[1]) if word.lower() != "and"]
+            found += [(word, int(match[2]), match[3].lower()) for word in ids]
+    return found
+
+
+def closing(
+    where: str,
+    pull: dict[str, Any],
+    issues: list[dict[str, Any]],
+    loop: str | None,
+    number: int,
+    head: str,
+    lines: dict[str, str],
+) -> bool:
+    """Whether a verdict that is not satisfied (pass `number` on `head`) has only findings a spec approval closes: each
+    named by the `Closes:` line of an owner's record (or the delegate's, where delegated() lets it count) of a spec
+    linked to the PR, a record of the spec's current text, posted after the verdict. The verdict's findings must add up to
+    its counts, and a verdict naming a run never made stays open. Prints each finding with the approval that closed it."""
+    ids = lines.get("Findings", "").split()
+    pair = counts(lines)
+    minor = re.search(r"(\d+)\s+minors?\b", lines.get("VERDICT", ""))
+    if not ids or pair is None or "Not run" in lines or not lines.get("At"):
+        return False
+    if len(ids) != sum(pair) + int(minor[1] if minor else 0):
+        return False
+    said: dict[str, str] = {}
+    for issue in issues:
+        holder = spec_holder(issue)
+        for note in notes(issue):
+            record = parsed(note["body"], "spec")
+            if (
+                record is None
+                or record.get("spec") not in versions(holder)
+                or (note.get("createdAt") or "")
+                <= lines["At"]  # ISO 8601 in UTC, so it orders as text
+                or not (
+                    record.get("by") == "owner"
+                    or (record.get("by") == DELEGATE and delegated(pull, loop) is None)
+                )
+            ):
+                continue
+            for found, nth, commit in closes(record):
+                if nth == number and head.startswith(commit):
+                    said.setdefault(
+                        found,
+                        f"{record['by']}'s spec approval on #{issue['number']} ({note['createdAt']})",
+                    )
+    if not all(found in said for found in ids):
+        return False
+    for found in ids:
+        print(
+            f"{where}: {found} of the pass-{number} verdict on {head} is closed by {said[found]}: no new pass"
+        )
+    return True
 
 
 def kin(family: str) -> str:
@@ -3511,6 +3597,7 @@ def reviewed(
     pull: dict[str, Any],
     loop: str | None,
     verdicts: list[tuple[str, int, dict[str, str]]] | str | None = None,
+    issues: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried: on
@@ -3518,7 +3605,9 @@ def reviewed(
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open; majors or minors with no blocker at the cap or later pass once the PR body records the
     lead's decision (CAP_DECISION). A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
-    needs none (exempt). `verdicts` is passes()'s, when the caller has read it."""
+    needs none (exempt). A verdict that is not satisfied lands when a spec approval newer than it closes each of its
+    findings by name (closing): the spec was missing a line and the code is right, so no new pass runs.
+    `verdicts` is passes()'s, when the caller has read it; `issues` the PR's linked ones, which hold those approvals."""
     verdicts = passes(pull) if verdicts is None else verdicts
     if isinstance(verdicts, str):
         return [f"{where} {verdicts}"]
@@ -3556,6 +3645,11 @@ def reviewed(
             " every commit after a verdict needs a verdict of its own"
         )
     if decided:
+        return found
+    # a not-satisfied verdict whose every finding a newer spec approval names lands without another pass
+    if issues and all(
+        held(lines) or closing(where, pull, issues, loop, last, head, lines) for lines in same
+    ):
         return found
     if any(lines["SATISFIED"].lower().split()[:1] != ["yes"] for lines in same):
         found.append(f"{where}: a verifier review on {head} is not satisfied: fix and verify again")
@@ -10331,14 +10425,19 @@ def archive_workers(number: int) -> None:
     print(f"PR #{number}: finishing its worker sessions in the background, log {log.name}")
 
 
-def approve(point: str, number: int, seen: str | None = None, by: str = "owner") -> int:
+def approve(
+    point: str, number: int, seen: str | None = None, by: str = "owner", closing: str | None = None
+) -> int:
     """Record the owner's approval of the issue's current spec or plan, on their word: the record, the label, and
     `needs-owner` removed. Every earlier record of the point is superseded and minimized. With `seen`, the version
     the owner's label was checked against (adopted), an edit since is refused: the label never covered it. With `by`
     `delegate`, the delegated approver's, under the owner's delegation: refused unless the policy on origin's default
     branch sets `loop.delegate: all`, its record opening with VOICED's line so a reader tells it from the owner's; the
     gate counts it as delegated() says. `loop.delegate_spec: false` there refuses it too, keeping the spec and plan
-    the owner's."""
+    the owner's. With `closing` (a spec's `--closes`), the record also names the verdict findings this approval closes
+    (`F1 of the pass-2 verdict on <sha>`), which `check merge` reads (closing) in place of a new verifier pass."""
+    if closing and point != "spec":
+        raise Refused("--closes belongs to `approve spec`: a plan closes no verdict finding")
     if by == DELEGATE:
         loop = project()[1]
         if delegation(loop) != "all":
@@ -10361,7 +10460,7 @@ def approve(point: str, number: int, seen: str | None = None, by: str = "owner")
         raise Refused(
             f"#{number}: the {point} was edited after the owner's `approved:{point}`: the owner adds it again"
         )
-    record = f"{point.capitalize()}: {value}\n"
+    record = f"{point.capitalize()}: {value}\n" + (f"Closes: {closing}\n" if closing else "")
     earlier = [
         (note, found) for note in notes(issue) if (found := parsed(note["body"], point)) is not None
     ]
@@ -14465,6 +14564,8 @@ def main(argv: list[str]) -> int:
     # merge only: the head the approver was shown, and their go taken back
     approving.add_argument("--head")
     approving.add_argument("--withdraw", action="store_true")
+    # spec only: the verdict findings this approval closes, `F1 of the pass-2 verdict on <sha>` (closing)
+    approving.add_argument("--closes")
     # breakglass only: why, and when the approval lapses (ISO 8601; default two days on)
     approving.add_argument("--reason")
     approving.add_argument("--expires")
@@ -14738,12 +14839,14 @@ def dispatch(args: argparse.Namespace, argv: list[str], parser: argparse.Argumen
     if args.command == "approve":
         if args.point != "merge" and (args.head or args.withdraw):
             raise Refused("--head and --withdraw belong to `approve merge`")
+        if args.closes and args.point != "spec":
+            raise Refused("--closes belongs to `approve spec`")
         if args.point == "merge" and not args.head:
             raise Refused("approve merge needs --head <sha>: the head the approver was shown")
         return (
             go(args.number, args.head, args.by, args.withdraw)
             if args.point == "merge"
-            else approve(args.point, args.number, None, args.by)
+            else approve(args.point, args.number, None, args.by, args.closes)
         )
     if args.command == "wait-on":
         return wait_on(args.pr, args.on, args.within, args.clear)
