@@ -1144,7 +1144,7 @@ def far_origin_slug(og: Omnigent, host_id: str, root: Path, what: str) -> str:
     try:  # a linked worktree's config is in its common dir; a submodule's gitdir has its own
         common = read_on_host(og, host_id, f"{gitdir}/commondir").strip()
         gitdir = posixpath.normpath(posixpath.join(gitdir, common))
-    except Gone:
+    except (Gone, Fail):
         pass
     config = f"{gitdir}/config"
     try:
@@ -14590,8 +14590,8 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
         elif verifies and not args.pr and args.cmd != "send":
             # nothing here can run git on that host, so the brief must pin the commit its verifier
             # checks out: a brief that names no head leaves the first turn to start at the base
-            named = getattr(verifies, "repo", "")
-            head = pr_head(verifies, Path.cwd(), named) if named else pr_head(verifies, Path.cwd())
+            repo = pr_repo(*pr_where(og, verifies, workspace, host))
+            head = pr_head(verifies, Path.cwd(), repo)
             if head[:12] not in brief:
                 raise Fail(
                     f"--pr {verifies}: the brief names no checkout of the PR's head {head[:12]}: a"
