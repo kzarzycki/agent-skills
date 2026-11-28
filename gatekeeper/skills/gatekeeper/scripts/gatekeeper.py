@@ -14531,8 +14531,8 @@ def main(argv: list[str]) -> int:
     queueing.add_argument("base", nargs="?", default="origin/main")
     rerunning = commands.add_parser(
         "rerun-tests",
-        help="Rerun a red run once (R5): the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order; a failed test that passes on the whole selection is a flake.",
-        description="Rerun a red run once: the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order. A failed test that passes on the whole selection is a flake. Exit 75 when the rerun ran no test.",
+        help="Rerun a red run once (R5): the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order; on a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id).",
+        description="Rerun a red run once: the failed tests plus what the change reaches when the change since the red reselects every failed test, else the red run's whole selection in its order. On a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id). Exit 75 when the rerun ran no test.",
     )
     rerunning.add_argument("failed", metavar="failed-tests.json")
     rerunning.add_argument("--red", required=True, metavar="HEAD")

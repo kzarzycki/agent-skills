@@ -166,7 +166,10 @@ def test_rerun_tests_says_when_the_whole_selection_runs_in_listing_description_a
     for text in (listing, description, usage):
         assert "when the change since the red reselects every failed test" in text
         assert "else the red run's whole selection in its order" in text
-        assert "a failed test that passes on the whole selection is a flake" in text.lower()
+        assert (
+            "on a green whole-selection rerun, only a failed test the change did not reselect is a flake (none, when the red run listed no failed test id)"
+            in text.lower()
+        )
     assert "A pass is a flake only" not in description
 
 
@@ -191,4 +194,17 @@ def test_approval_help_says_breakglass_takes_a_head_even_when_withdrawn():
     assert (
         "approve breakglass <pr> --by owner --head <sha> (--reason <why>" in usage
         and "| --withdraw)" in usage
+    )
+
+
+def test_the_review_paragraph_states_the_carry_and_cap_bounds():
+    usage = flat_text((GATEKEEPER.parent.parent / "verbs.md").read_text())
+    assert (
+        "it holds the same tree whatever its commits, or every commit since only takes the base in"
+        in usage
+    )
+    assert "clean merges of main, or a clean rebase" in usage
+    assert (
+        "no blocker, no run missing and open majors or minors lands once the PR body records"
+        in usage
     )
