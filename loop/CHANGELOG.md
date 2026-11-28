@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.19 - 2026-11-27
+
+- engineering-loop: lead.md has its Cloud lead section back, which #1878 cut by accident: how a `claude-cloud` lead starts a worker, hands the verifier to its manager, waits, keeps its notes in a `## Lead state` PR comment and lands from the VM (#2817, #1601).
+
 ## 0.1.18 - 2026-11-27
 
 - A verifier brief lists the changed files and the diff stat, carries a tool-call budget and leaves the PR body's spend lines out; `cloud_verifier.py` runs a Codex pass on Terra at medium effort when none is named and refuses a second Codex pass on a head that already has one (#2870).

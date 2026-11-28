@@ -17,7 +17,7 @@ uv run scripts/approvals.py check <build|merge> [pr]  # one line per missing pro
     uv run scripts/approvals.py check ready <pr>                # the author's step before the verifier: the PR body's `## Evidence` (and demo form) alone, the check merge runs; exit 0 or 1
     uv run scripts/approvals.py check session <pr>              # the PR body's `Impl:` line must carry `Session: <server>/c/<id>` (check merge runs it too); a body with no `Impl:` line passes; exit 0 or 1
     uv run scripts/approvals.py check stalled              # every open PR land would take that its queue does not hold, or verified and idle past loop.stalled_after_hours with no go or record: one line each, exit 1; one not judged here: its line, which changes no exit
-    uv run scripts/approvals.py land [<pr>... [--only]] [--wait]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
+    uv run scripts/approvals.py land [<pr>... [--only]] [--wait] [--json]  # land every landable PR through the base's merge queue; exit 0, 1 or 3
     uv run scripts/approvals.py approve <spec|plan> <issue> --by <owner|delegate>   # on the owner's word, or the delegate's under `loop.delegate: all`
     uv run scripts/approvals.py approve merge <pr> --head <sha> --by <owner|delegate> [--withdraw]  # a go on that head
     uv run scripts/approvals.py delegate <pr>              # the delegated approver's approved:merge, feature branch only
@@ -301,7 +301,16 @@ queue entry, one GraphQL call (two ETag reads on REST, a 304 costing no quota), 
 the same holds under `land.queue: mergify`, where a merge, Mergify's dequeued label or a push ends that read. A later
 `land <pr>` reads a removed entry's state once (above). Exit 3 stays for a PR whose conflict GitHub is still
 working out, or a base still running its checks: nothing was enqueued yet. Without `--wait`, who tells the lead of a merge or a removal
-is the project's watcher, not `land`. The first land that reads
+is the project's watcher, not `land`.
+`land --json` prints, after the usual output, one JSON line per PR the land judged (every candidate, for a bare `land`):
+`{"pr": <n>, "head": "<sha>", "state": "...", "cause": "...", "url": "..."}`, so a caller that routes on the exit code can
+tell what the exit hides. `state` is `merged` or `queued` (no `cause`, null), `waiting` (something is moving: cause
+`lock`, `checks`, `mergeability`, `base-checks` or `base-red`, a red base, which is no fault of the PR and exits as ever),
+`needs-owner` (only a person can act: `go`, `queue-timeout` or `ceiling`) or `refused` (the PR needs a fix: `proof`, `checks`,
+`conflict`, `evicted` or `github`). `url` is the comment that carries the detail where land posted one, else the PR's. Each
+line is written where its exit is picked, so the two agree, and the exit codes and the output without `--json` are unchanged.
+Under `--wait` the lines are the last round's. A PR left out before it is judged (closed, or on another base) has none.
+ The first land that reads
 a PR the queue merged (a `land <pr>` naming it, or a bare `land`, which reads every merged PR into the base that carries
 `loop:queued`, the label `land` puts on each PR before it enqueues it) comments `Landed` on it, `Base:` its merge commit, `Tree:` that commit's tree and `Gate: merge
 queue` with the links of the runs on that commit (the queue's `merge_group` CI), and finishes its worker sessions as
