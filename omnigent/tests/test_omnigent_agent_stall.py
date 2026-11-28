@@ -31,7 +31,7 @@ def detach(tmp_path: Path, command: str) -> tuple[Path, Path, int]:
     command's output, an exit line. Perl's setsid, as the recipe uses, since macOS has no
     `setsid` command; the launcher exits after its fork, so init reaps the run."""
     log, pidfile = tmp_path / "run.log", tmp_path / "pid"
-    inner = f'echo $$ > {pidfile}; echo "run $$" > {log}; {{ {command}; }} >> {log} 2>&1; echo "exit $?" >> {log}'
+    inner = f'echo $$ > {pidfile}; echo "run $$" > {log}; {{ {command}; }} >> {log} 2>&1; printf "\\nloop-exit $$ $?\\n" >> {log}'
     launcher = [
         "perl",
         "-MPOSIX=setsid",
