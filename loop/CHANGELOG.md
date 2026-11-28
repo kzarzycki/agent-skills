@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.21 - 2026-11-28
+
+- `coding-standards.md`: a script's module docstring says what the script is and points to its docs; a rule goes in the docs and in a test, never only in `--help`. A test caps package scripts' docstrings at 4 KB (#2834).
+
 ## 0.1.20 - 2026-11-28
 
 - verifier.md states when `SATISFIED:` is `yes` (no blocker or major open, every acceptance line run; open minors alone never make it `no`; a run never made goes on a `Not run:` line), and SKILL.md § The cap names the `Cap:` line for the minors-only case; the landing lines in SKILL.md and lead.md point to § The cap for what the line covers (#2925).
