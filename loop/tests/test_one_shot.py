@@ -278,26 +278,50 @@ def test_the_briefs_example_is_accepted_by_the_verdict_cli_and_blank_fields_are_
         assert not Path(f"{report}.question").exists(), field
 
 
-GATE_PY = """import os, pathlib
-print("CHILD:mode=" + os.environ.get("PROBE_GATE_MODE", "missing") + " base=" + os.environ.get("GATE_BASE", "filtered"))
-action = os.environ.get("PROBE_ACTION", "")
+STEP_PY = """import os, pathlib, subprocess, sys
+
+name = sys.argv[1]
+slot = "held" if os.environ.get("LOOP_GATE_SLOT_HELD") else "none"
+print(f"CHILD:{name} mode={os.environ.get('PROBE_GATE_MODE', 'missing')} base={os.environ.get('GATE_BASE', 'filtered')} slot={slot}")
+seen = pathlib.Path("tracked.txt").read_text()
+action = os.environ.get("PROBE_" + name.upper(), "")
 if action == "rewrite":
     pathlib.Path("tracked.txt").write_text("changed by the gate")
-if action == "marker":
-    pathlib.Path("/tmp/PROBE_MARKER_PATH").write_text("ran")
+if action == "restore":
+    pathlib.Path("tracked.txt").write_text("original")
+if action == "commit":
+    subprocess.run(["git", "commit", "--allow-empty", "-qm", "gate"], check=True)
+if action == "fail":
+    sys.exit(3)
+if name == "second":
+    pathlib.Path("MARKER").write_text("second step ran, saw " + seen)
+"""
+POLICY_STEPS = """## Policy
+
+```yaml
+loop:
+  gate_steps:
+    - name: first
+      command: PROBE_GATE_MODE=strict python3 step.py first
+      where: any
+    - name: second
+      command: PROBE_GATE_MODE=strict python3 step.py second
+      where: any
+```
 """
 
 
-def _gate_checkout(tmp_path, monkeypatch, marker=None):
-    """A clean scratch repo whose policy gate is `PROBE_GATE_MODE=strict python3 gate.py`, and a bundle argv for it."""
+def _gate_checkout(tmp_path, monkeypatch):
+    """A clean scratch repo whose policy gate has two steps (`first`, `second`) running step.py, and a bundle argv for
+    it. The second step writes MARKER outside the repo's tracked files, so a run of it is observable."""
     repo = tmp_path / "repo"
     repo.mkdir()
     git = _repo(repo)
     (repo / "docs/agents").mkdir(parents=True)
-    policy = "## Policy\n\n```yaml\nloop:\n  gate: PROBE_GATE_MODE=strict python3 gate.py\n```\n"
-    (repo / "docs/agents/gatekeeper.md").write_text(policy)
-    (repo / "gate.py").write_text(
-        GATE_PY.replace("/tmp/PROBE_MARKER_PATH", str(marker or tmp_path / "m"))
+    (repo / "docs/agents/gatekeeper.md").write_text(POLICY_STEPS)
+    marker = tmp_path / "MARKER"
+    (repo / "step.py").write_text(
+        STEP_PY.replace('pathlib.Path("MARKER")', f"pathlib.Path({str(marker)!r})")
     )
     (repo / "tracked.txt").write_text("original")
     git("add", "-A")
@@ -310,51 +334,70 @@ def _gate_checkout(tmp_path, monkeypatch, marker=None):
     (tmp_path / "spec.md").write_text("spec")
     monkeypatch.chdir(repo)
     monkeypatch.setenv("GATE_BASE", "ambient-leak")
-    argv = [
-        "bundle",
-        "--head",
-        head,
-        "--spec",
-        str(tmp_path / "spec.md"),
-        "--policy",
-        "docs/agents/gatekeeper.md",
-    ]
-    return repo, git, head, [*argv, "--against", base]
+    monkeypatch.delenv("LOOP_GATE_SLOT_HELD", raising=False)
+    monkeypatch.setattr(os_, "trusted_gate", lambda h: (0, "recorded"))
+    argv = ["bundle", "--head", head, "--spec", str(tmp_path / "spec.md")]
+    argv += ["--policy", "docs/agents/gatekeeper.md", "--against", base]
+    return repo, git, marker, argv
 
 
-def test_the_bundle_cli_runs_the_gate_in_the_gatekeepers_env_and_prints_the_childs_own_output(
+def test_the_bundle_cli_runs_each_step_in_the_gatekeepers_env_and_slot_and_prints_the_childs_own_output(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    _, _, _, argv = _gate_checkout(tmp_path, monkeypatch)
-    monkeypatch.setattr(os_, "trusted_gate", lambda h: (0, "recorded"))
+    _, _, marker, argv = _gate_checkout(tmp_path, monkeypatch)
     assert os_.main(argv) == 0
     text = capsys.readouterr().out
-    # the child's own line: the step's variable set, the ambient gate base filtered out
-    assert "\nCHILD:mode=strict base=filtered\n" in text and "[exit 0]" in text
+    # the child's own lines: the step's variable set, the ambient gate base filtered out, the gate slot held
+    for name in ("first", "second"):
+        assert f"\nCHILD:{name} mode=strict base=filtered slot=held\n" in text
+    assert "[exit 0]" in text and marker.exists()
 
 
-def test_a_gate_step_that_changes_the_checkout_or_a_dirty_start_is_refused(
+def test_a_failing_gate_step_prints_no_bundle_and_the_next_step_never_runs(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    repo, git, _, argv = _gate_checkout(tmp_path, monkeypatch)
-    monkeypatch.setattr(os_, "trusted_gate", lambda h: (0, "recorded"))
-    monkeypatch.setenv("PROBE_ACTION", "rewrite")
+    _, _, marker, argv = _gate_checkout(tmp_path, monkeypatch)
+    monkeypatch.setenv("PROBE_FIRST", "fail")
     assert os_.main(argv) == 2
-    assert "changed the checkout" in capsys.readouterr().err
+    seen = capsys.readouterr()
+    assert seen.out == "" and "fails" in seen.err and not marker.exists()
+
+
+def test_the_checkout_is_verified_before_every_step_runs(tmp_path, monkeypatch, capsys) -> None:
+    _, git, marker, argv = _gate_checkout(tmp_path, monkeypatch)
+    # the first step rewrites a tracked file and the second would restore it: only a check between them sees it
+    monkeypatch.setenv("PROBE_FIRST", "rewrite")
+    monkeypatch.setenv("PROBE_SECOND", "restore")
+    assert os_.main(argv) == 2
+    assert "changed the checkout" in capsys.readouterr().err and not marker.exists()
     git("checkout", "--", "tracked.txt")
-    monkeypatch.delenv("PROBE_ACTION")
+    # the first step makes a clean commit: HEAD moved though nothing is dirty
+    monkeypatch.setenv("PROBE_FIRST", "commit")
+    monkeypatch.delenv("PROBE_SECOND")
+    assert os_.main(argv) == 2
+    assert "changed the checkout" in capsys.readouterr().err and not marker.exists()
+
+
+def test_a_dirty_start_or_another_head_runs_no_step(tmp_path, monkeypatch, capsys) -> None:
+    repo, git, marker, argv = _gate_checkout(tmp_path, monkeypatch)
+    # a hidden untracked file is still a dirty checkout
     git("config", "status.showUntrackedFiles", "no")
     (repo / "local.cfg").write_text("x")
     assert os_.main(argv) == 2
-    assert "uncommitted" in capsys.readouterr().err
+    assert "uncommitted" in capsys.readouterr().err and not marker.exists()
+    (repo / "local.cfg").unlink()
+    # the checkout is at the PR's head, not the one asked for
+    other = git("rev-parse", "HEAD~1").strip()
+    argv[argv.index("--head") + 1] = other
+    assert os_.main(argv) == 2
+    assert "not at" in capsys.readouterr().err and not marker.exists()
 
 
 def test_a_missing_record_through_the_bundle_cli_runs_no_gate(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    marker = tmp_path / "ran-marker"
-    _, _, _, argv = _gate_checkout(tmp_path, monkeypatch, marker)
-    monkeypatch.setenv("PROBE_ACTION", "marker")
+    _, _, marker, argv = _gate_checkout(tmp_path, monkeypatch)
     monkeypatch.setattr(os_, "trusted_gate", lambda h: (1, "no record"))
     assert os_.main(argv) == 2
-    assert "no gate record" in capsys.readouterr().err and not marker.exists()
+    seen = capsys.readouterr()
+    assert "no gate record" in seen.err and not marker.exists() and "slot=" not in seen.out
