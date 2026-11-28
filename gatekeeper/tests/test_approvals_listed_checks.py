@@ -12,7 +12,6 @@ from approvals_harness import (
     approvals,
     git_in,
     lands,  # noqa: F401  (fixture)
-    required,  # noqa: F401  (fixture)
 )
 from test_approvals import VERDICT, approved, in_project, loop_md, pull
 
