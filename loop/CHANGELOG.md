@@ -5,6 +5,14 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.24 - 2026-11-28
+
+- One-shot verifier support: `scripts/one_shot.py` builds the review bundle (spec, the gatekeeper's gate record and the raw output of the gate run on the head, rules, nearby code, diff, named cuts) from one git range with rename and copy sources checked, picks gates-only or a review from the policy's build inputs, refuses a second pass on one head, and maps the Codex review's JSON to a report the gatekeeper reads (an unrun check becomes a `.question` with its command and mutation commands), with a 30-call, 2-credit guard (#2996).
+
+## 0.1.23 - 2026-11-28
+
+- `lead.md` hands a size M or larger change to "a worker" and names no model; the tier is `loop.md`'s `Worker model:` line (#1222).
+
 ## 0.1.22 - 2026-11-28
 
 - The loop's docs no longer describe a project's own merge queue, `carry_over_main` or `ci: false`; the verifier brief's `- Rerun:` line for a repo with no CI is gone with them. (#654)

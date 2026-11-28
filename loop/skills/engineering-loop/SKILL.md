@@ -711,6 +711,7 @@ it, a PR with no trail fails the gate.
   and verifiers are given theirs by the brief that starts them.
 - **Worker** ([worker.md](worker.md)): implements a piece of the spec, or a list of
   findings, on its own branch. The lead follows it too when it builds itself.
+- **One-shot verifier** ([one-shot-verifier.md](one-shot-verifier.md)): a cheap Codex pass over one bundle, built by `scripts/one_shot.py`; read it when starting that pass.
 - **Verifier** ([verifier.md](verifier.md)): reviews the PR, drives its instance, and
   leaves the tree as it found it.
 
