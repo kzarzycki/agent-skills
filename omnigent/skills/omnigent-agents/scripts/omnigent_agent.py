@@ -274,6 +274,7 @@ import fcntl
 import hashlib
 import http.client
 import importlib.util
+import inspect
 import json
 import os
 import plistlib
@@ -293,7 +294,6 @@ import threading
 import time
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import wait as wait_futures
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1818,8 +1818,9 @@ class Omnigent:
         *,
         owner: bool = False,
         timeout: float | None = None,
+        retry: bool = True,
     ) -> dict:
-        """One request, each attempt allowed ``timeout`` seconds (``HTTP_SECONDS``); a ``GET`` is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
+        """One request, each attempt allowed ``timeout`` seconds (``HTTP_SECONDS``); a ``GET`` (unless ``retry`` is off) is retried on a ``TRANSIENT`` error or a ``TRANSIENT_HTTP``
         status. A ``POST`` never is: it may have taken effect. A write to an ``APPROVAL_GATED``
         path is refused unless the owner makes it (``owner=True``)."""
         if method != "GET" and not owner and APPROVAL_GATED.match(path):
@@ -1827,7 +1828,7 @@ class Omnigent:
                 f"{method} {path}: an approval-gated write is the owner's to make (owner=True);"
                 " a tool call held for approval waits for them, never route around it"
             )
-        retries = list(RETRY_SECONDS) if method == "GET" else []
+        retries = list(RETRY_SECONDS) if method == "GET" and retry else []
         refreshed = False
         while True:
             self._token = self._token or self.token()
@@ -2173,12 +2174,15 @@ class Omnigent:
             f"{sid}: {len(matches)} sessions match:{named}"
         )  # a line each, as there may be hundreds
 
-    def info(self, sid: str, usage: bool = False) -> dict:
-        """Session snapshot: ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads).
+    def info(self, sid: str, usage: bool = False, timeout: float | None = None) -> dict:
+        """Session snapshot (one attempt of ``timeout`` seconds when given, with no retry): ``status`` and ``pending_elicitations`` (what ``sys_session_get_info`` reads).
         Without ``usage`` it skips the record's items and spawn-tree usage, which a poll never reads
         (``items`` has its own call): the full record runs about 25 times larger and costs the
         server a subtree usage read on every poll of every lead."""
-        return self.call("GET", f"/v1/sessions/{sid}{'' if usage else SLIM}")
+        path = f"/v1/sessions/{sid}{'' if usage else SLIM}"
+        if timeout is None:
+            return self.call("GET", path)
+        return self.call("GET", path, timeout=timeout, retry=False)
 
     def read_file(self, sid: str, path: str) -> str:
         """``path`` through ``sid``'s file API, whichever host the session runs on: an absolute
@@ -9593,6 +9597,13 @@ class Uncarded:
     def __getattr__(self, name: str) -> object:
         return getattr(self.og, name)
 
+    def cards_now(self, sid: str, timeout: float) -> list[dict]:
+        """``sid``'s open question cards, read in one attempt of ``timeout`` seconds and returned alone: ``cards``, which
+        the supervisor's looks keep, is neither read nor written (#2954)."""
+        sig = inspect.signature(self.og.info).parameters
+        info = self.og.info(sid, timeout=timeout) if "timeout" in sig else self.og.info(sid)
+        return [e for e in info.get("pending_elicitations") or [] if not holds_input(e)]
+
     def info(self, sid: str) -> dict:
         info = self.og.info(sid)
         pending = info.get("pending_elicitations") or []
@@ -11620,24 +11631,29 @@ def supervise_registry(
         snap: dict[str, list[dict]] | None = None  # each session's cards as read this round
 
         def read_cards() -> dict[str, list[dict]]:
-            """Each followed session's and the notify manager's open cards, read fresh once for this round and shared
-            by every due repo (#2954). A session whose read raises, or is not back within ``CARD_READ_BUDGET``
-            seconds of the round's start, holds no card in it: nothing cached from an earlier look is trusted, so a
-            card closed since can hide no stall. The reads run beside the loop; one that outlives the budget is left
-            to finish and is never read."""
+            """Each followed session's and the notify manager's open cards, read once for this round and shared by every
+            due repo (#2954), one session at a time. Each read is one attempt allowed what is left of
+            ``CARD_READ_BUDGET``, and a result that comes back after the deadline is dropped. A session not reached,
+            or whose read raises, holds no card in this round. The cards go in a dict of this lookup's own, never
+            ``og.cards``, so nothing cached or written late can reach it.
+            ponytail: a response that trickles in past the request timeout (``json.load`` keeps reading) can still
+            hold the round past the budget; the upgrade path is a total deadline in the client."""
             nonlocal snap
             if snap is None:
                 snap = {}
-                pool = ThreadPoolExecutor(max_workers=4)
-                reads = {
-                    s: pool.submit(og.info, s)
-                    for s in dict.fromkeys([*owed, *filter(None, [notify])])
-                }
-                wait_futures(reads.values(), timeout=CARD_READ_BUDGET)
-                for s, read in reads.items():
-                    if read.done() and read.exception() is None:
-                        snap[s] = list(getattr(og, "cards", {}).get(s) or [])
-                pool.shutdown(wait=False, cancel_futures=True)
+                deadline = time.monotonic() + CARD_READ_BUDGET
+                for s in dict.fromkeys([*owed, *filter(None, [notify])]):
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        break
+                    try:
+                        read = og.cards_now(s, left)
+                    except Exception:  # noqa: BLE001 - an optional lookup: no card is the safe reading
+                        read = None
+                    if time.monotonic() > deadline:
+                        break  # came back late: expired, and so is every read after it
+                    if read is not None:
+                        snap[s] = read
             return snap
 
         for repo, sid in sorted(first.items()):

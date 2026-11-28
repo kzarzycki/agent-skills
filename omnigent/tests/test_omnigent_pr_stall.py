@@ -611,35 +611,96 @@ def test_the_session_reads_for_cards_do_not_grow_with_the_due_repos(tmp_path, mo
     assert three == one
 
 
-def test_a_session_read_past_the_budget_holds_no_card_and_hides_no_stall(
-    tmp_path, monkeypatch
-) -> None:
-    """#2954 F6, F7: a manager read slower than the budget is not waited on and its card, open at the last look, is
-    not trusted: the stall is raised."""
+def _open_card() -> dict:
+    return {
+        "elicitation_id": "question_late",
+        "params": {"policy_name": "sys_ask_user_question", "message": "Land o/r#12?"},
+    }
+
+
+def _sweep(tmp_path, monkeypatch, notify: str, polls: int = 4, slow=None, holder: str = "cos"):
+    """A stalled o/r#12 (satisfied verdict, no go) under a supervisor whose ``holder`` session holds an open card
+    naming it; ``slow`` maps a session to seconds its card read takes. Returns the card reads (session) and events."""
     registry = following(tmp_path)
     og = ManagerCard(told("brief", 9000), ending("STILL WORKING: waiting on CI\nWaits: CI", 8000))
-    og.manager_cards = [
-        {
-            "elicitation_id": "question_slow",
-            "params": {"policy_name": "sys_ask_user_question", "message": "Land o/r#12?"},
-        }
-    ]
-    og.holder = "a"
-    real, reads = ManagerCard.info, []
+    og.holder, og.manager_cards = holder, [_open_card()]
+    reads: list[str] = []
+    real = omnigent_agent.Uncarded.cards_now
 
-    def info(self, sid: str) -> dict:
+    def cards_now(self, sid: str, timeout: float) -> list[dict]:
         reads.append(sid)
-        if sid == "a" and len(reads) > 3:  # the first looks are prompt; the sweep's read is slow
-            threading.Event().wait(0.3)  # time.sleep is the supervisor's poll here
-        return real(self, sid)
+        threading.Event().wait((slow or {}).get(sid, 0))  # time.sleep is the supervisor's poll here
+        return real(self, sid, timeout)
 
-    monkeypatch.setattr(ManagerCard, "info", info)
-    monkeypatch.setattr(omnigent_agent, "CARD_READ_BUDGET", 0.05)
+    monkeypatch.setattr(omnigent_agent.Uncarded, "cards_now", cards_now)
     in_checkout(og)
     p = pr(12)
     p["timeline"].append(verdict(12, "yes", 90 * 60))
     github(monkeypatch, [p])
     monkeypatch.setattr(omnigent_agent, "PR_STALL_POLL", 0.0)
     monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 1e9)
-    supervised(og, registry, monkeypatch, 6, notify="a", console=True)
+    supervised(og, registry, monkeypatch, polls, notify=notify, console=True)
+    return reads, registry.with_suffix(".events.jsonl").read_text()
+
+
+def test_a_card_read_that_comes_back_after_the_deadline_holds_no_card(
+    tmp_path, monkeypatch
+) -> None:
+    """#2954 F6: a result that arrives past the budget is expired, so its card hides no stall."""
+    monkeypatch.setattr(omnigent_agent, "CARD_READ_BUDGET", 0.05)
+    _, events = _sweep(tmp_path, monkeypatch, "cos", slow={"cos": 0.3})
+    assert "pr-stall:o/r#12" in events
+
+
+def test_a_prompt_card_read_holds_the_stall_back(tmp_path, monkeypatch) -> None:
+    _, events = _sweep(tmp_path, monkeypatch, "cos")
+    assert "pr-stall" not in events
+
+
+def test_sessions_after_the_deadline_are_not_read(tmp_path, monkeypatch) -> None:
+    """#2954 F7: the lead is slower than the budget, so the manager after it is never read."""
+    monkeypatch.setattr(omnigent_agent, "CARD_READ_BUDGET", 0.05)
+    reads, events = _sweep(tmp_path, monkeypatch, "cos", slow={"a": 0.3})
+    assert "cos" not in reads and "pr-stall:o/r#12" in events
+
+
+def test_a_notify_session_that_is_also_followed_is_read_once_per_round(
+    tmp_path, monkeypatch
+) -> None:
+    """#2954 F6: the session list names ``a`` twice; each round reads it once."""
+    reads, _ = _sweep(tmp_path, monkeypatch, "a", polls=1, holder="a")
+    assert reads == ["a"]
+
+
+def test_a_stale_cards_entry_is_ignored(tmp_path, monkeypatch) -> None:
+    """#2954 F7: the lookup reads ``og.cards`` nowhere, so an entry a late write left there holds nothing."""
+    real = omnigent_agent.Uncarded.__init__
+
+    def init(self, og) -> None:
+        real(self, og)
+        self.cards = {"cos": [_open_card()]}  # open in the cache, closed on the server
+
+    monkeypatch.setattr(omnigent_agent.Uncarded, "__init__", init)
+    registry = following(tmp_path)
+    og = ManagerCard(told("brief", 9000), ending("STILL WORKING: waiting on CI\nWaits: CI", 8000))
+    og.manager_cards = []
+    in_checkout(og)
+    p = pr(12)
+    p["timeline"].append(verdict(12, "yes", 90 * 60))
+    github(monkeypatch, [p])
+    monkeypatch.setattr(omnigent_agent, "PR_STALL_POLL", 0.0)
+    monkeypatch.setattr(omnigent_agent, "HEAD_SECONDS", 1e9)
+    supervised(og, registry, monkeypatch, 4, notify="cos", console=True)
     assert "pr-stall:o/r#12" in registry.with_suffix(".events.jsonl").read_text()
+
+
+def test_a_timed_card_read_is_one_attempt_of_the_time_left() -> None:
+    """#2954 F7: the request timeout is what is left of the budget, with no retry backoff past it."""
+    seen: dict = {}
+    og = omnigent_agent.Omnigent.__new__(omnigent_agent.Omnigent)
+    og.call = lambda method, path, body=None, **kw: seen.update(kw) or {}  # type: ignore[method-assign]
+    og.info("s", timeout=1.5)
+    assert seen == {"timeout": 1.5, "retry": False}
+    seen.clear()
+    og.info("s")
+    assert seen == {}  # a poll's own read is unchanged
