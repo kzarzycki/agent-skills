@@ -526,6 +526,199 @@ RESETS = re.compile(
 MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
 
+# Antigravity's out-of-quota banner: "Individual quota reached. Please upgrade ... Resets in 129h5m17s." The agent prints it
+# and then sits idle, so a turn that ended on it is a failure, and the reset time it names holds every later gemini
+# start (#2919). Both parts must be there, so a Claude or Codex turn that says "quota reached" is never one.
+AGY_QUOTA = re.compile(r"\bIndividual quota reached\b", re.IGNORECASE)
+AGY_RESETS_IN = re.compile(r"\bresets?\s+in\s+((?:\d+\s*[dhms]\s*)+)", re.IGNORECASE)
+
+
+def agy_quota_reset(text: str, now: float) -> tuple[float, str] | None:
+    """The instant (epoch seconds) and the printed duration of an Antigravity quota banner in ``text``, else None:
+    text with no ``Individual quota reached`` and a ``Resets in`` time is no banner."""
+    if not AGY_QUOTA.search(text) or not (match := AGY_RESETS_IN.search(text)):
+        return None
+    seconds = sum(
+        int(n) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[u.lower()]
+        for n, u in re.findall(r"(\d+)\s*([dhms])", match[1], re.IGNORECASE)
+    )
+    return now + seconds, match[1].strip()
+
+
+def agy_quota_path() -> Path:
+    """Where the last Antigravity quota-out is recorded, one file per host account."""
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "engineering-loop"
+    return cache / "agy-quota.json"
+
+
+AGY_ERROR_ID = re.compile(r"\bError ID:\s*([0-9a-f][0-9a-f-]{7,})", re.IGNORECASE)
+
+
+def agy_quota_state() -> dict:
+    """The recorded quota-out: ``until`` (its latest reset) and ``seen`` (each banner's Error ID with its reset)."""
+    try:
+        state = json.loads(agy_quota_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def record_agy_quota(reset: float, key: str | None = None) -> None:
+    """Record that Antigravity's quota is out until ``reset``, never lowering an earlier, later reset, and the banner's
+    Error ID ``key`` as seen, so the same banner left in a pane later is no new quota-out."""
+    state = agy_quota_state()
+    seen = state.get("seen") if isinstance(state.get("seen"), dict) else {}
+    if key:
+        seen[key] = reset
+    try:
+        until = max(float(state.get("until", 0.0)), reset)
+    except (TypeError, ValueError):
+        until = reset
+    path = agy_quota_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"until": until, "seen": seen}))
+    except OSError:
+        pass  # the failed turn still names the reset; only the start's refusal is lost
+
+
+def agy_quota_until(now: float) -> float | None:
+    """The reset instant of a recorded quota-out still in force at ``now``, else None."""
+    try:
+        until = float(agy_quota_state().get("until", 0.0))
+    except (TypeError, ValueError):
+        return None
+    return until if until > now else None
+
+
+def agy_banner(
+    text: str, now: float, need_id: bool = False, baseline: frozenset[str] | set[str] = frozenset()
+) -> tuple[float, str, str | None] | None:
+    """The newest fresh Antigravity quota banner in ``text`` as (reset instant, printed duration, Error ID), else None.
+    Each banner is the text from its ``Individual quota reached`` to the next one. One whose Error ID was recorded
+    keeps its first reset and counts only while that is ahead (an old one left in scrollback is none). One whose ID is
+    in ``baseline`` (the pane's IDs when the wait attached) is older than this wait, and none: a pane holds no
+    timestamp, so only a banner that appeared after the wait attached is fresh. With ``need_id`` (a pane, which may hold
+    anything an agent quoted) a banner with no Error ID is none."""
+    starts = [m.start() for m in AGY_QUOTA.finditer(text)]
+    seen = agy_quota_state().get("seen")
+    seen = seen if isinstance(seen, dict) else {}
+    for i in reversed(range(len(starts))):
+        block = text[starts[i] : starts[i + 1] if i + 1 < len(starts) else None]
+        if not (found := agy_quota_reset(block, now)):
+            continue
+        match = AGY_ERROR_ID.search(block)
+        key = match[1] if match else None
+        if need_id and not key:
+            continue
+        if key and key in seen:
+            try:
+                first = float(seen[key])
+            except (TypeError, ValueError):
+                continue
+            if first > now:
+                return first, found[1], key
+            continue
+        if key and key in baseline:
+            continue
+        return found[0], found[1], key
+    return None
+
+
+def agy_quota_banner(info: dict, items: list[dict]) -> tuple[float, str, str | None] | None:
+    """The quota banner the harness reported since the last user message, else None: an agy session's non-assistant
+    items only (an error), since an assistant that quotes the banner has said nothing of its own quota, and
+    another harness's session never has one."""
+    if not agy_session(info):
+        return None
+    now = time.time()
+    for item in reversed(items):
+        if item.get("role") == "user":
+            break
+        if item.get("role") == "assistant":
+            continue
+        if found := agy_banner(text_of(item), now):
+            return found
+    return None
+
+
+AGY_SILENT_SECONDS = (
+    300.0  # an agy session with no assistant item this long after its brief is read at its pane
+)
+
+
+def agy_session(info: dict) -> bool:
+    """Whether ``info`` is an Antigravity session (its harness or agent name says so)."""
+    return "antigravity" in f"{info.get('harness') or ''} {info.get('agent_name') or ''}".lower()
+
+
+def agy_pane(sid: str) -> str:
+    """The text of the terminal pane agy runs in, which is the only place its quota banner appears (the session's
+    history holds the brief and nothing else). ``$OMNIGENT_AGY_PANE_CMD`` names the command that prints ``sid``'s own
+    pane (``{sid}`` is replaced by its id); with none set, nothing is read, since a scan of every pane would
+    attribute another session's banner to this one. Empty when it reads nothing: the pane then lives where this
+    script can't see it (the harness-side fix)."""
+    template = os.environ.get("OMNIGENT_AGY_PANE_CMD")
+    if not template:
+        return ""
+    try:
+        return subprocess.run(
+            template.replace("{sid}", sid),
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def agy_quota_failure(sid: str, banner: tuple[float, str, str | None]) -> Fail:
+    """Record the quota-out ``banner`` and the failure of session ``sid`` naming its reset time."""
+    record_agy_quota(banner[0], banner[2])
+    return Fail(
+        f"session {sid} ended: Antigravity's quota is out (resets in {banner[1]}, at"
+        f" {datetime.fromtimestamp(banner[0], timezone.utc):%Y-%m-%d %H:%MZ}); start the verifier on"
+        " the Codex route (--verifier-route codex) until then"
+    )
+
+
+def agy_pane_ids(sid: str) -> set[str]:
+    """The Error IDs the pane of ``sid`` already shows: what a wait that attaches now did not see arrive."""
+    return set(AGY_ERROR_ID.findall(agy_pane(sid)))
+
+
+AGY_NOTED: set[str] = set()
+
+
+def agy_silent_banner(
+    sid: str, info: dict, items: list[dict], baseline: set[str] | None = None
+) -> tuple[float, str, str | None] | None:
+    """The quota banner that appeared in the pane of an agy session that has said nothing since its brief,
+    ``AGY_SILENT_SECONDS`` on: the banner never reaches its history, so the history alone reads as a stall or an
+    endless turn. Read only through ``$OMNIGENT_AGY_PANE_CMD``; with none set the session's silence is said once on
+    stderr, naming it."""
+    if not agy_session(info) or any(
+        i.get("type") == "message" and i.get("role") == "assistant" for i in items
+    ):
+        return None
+    sent = [float(i.get("created_at") or 0) for i in items if i.get("role") == "user"]
+    if not sent or time.time() - max(sent) < AGY_SILENT_SECONDS:
+        return None
+    if not os.environ.get("OMNIGENT_AGY_PANE_CMD"):
+        if sid not in AGY_NOTED:
+            AGY_NOTED.add(sid)
+            print(
+                f"session {sid} is Antigravity and has said nothing for {AGY_SILENT_SECONDS:.0f}s: its quota banner"
+                " shows only in its terminal pane, which this wait reads only through $OMNIGENT_AGY_PANE_CMD"
+                " (unset); check the pane if it stays silent",
+                file=sys.stderr,
+            )
+        return None
+    return agy_banner(agy_pane(sid), time.time(), need_id=True, baseline=baseline or set())
+
+
 def backoff(count: int) -> float:
     """The seconds before the revive after ``count`` earlier ones in a transient chain."""
     return BACKOFF_MINUTES[min(count, len(BACKOFF_MINUTES) - 1)] * 60.0
@@ -5739,6 +5932,9 @@ def wait(
     recovered: dict[str, str] = {}  # what each recovery so far did, by its kind
     continued: float | None = None  # when the stalled session was told to continue
     ended: dict[str, float] = {}
+    pane_ids: set[str] | None = (
+        None  # the Error IDs an Antigravity pane showed when this wait attached
+    )
     question = question_of(report)
     missing = (
         f"a verdict in {report}"
@@ -5792,6 +5988,10 @@ def wait(
                     file=sys.stderr,
                 )
             break
+        if pane_ids is None and agy_session(info):
+            pane_ids = agy_pane_ids(sid)
+        if not counts() and (banner := agy_silent_banner(sid, info, items, pane_ids)):
+            raise agy_quota_failure(sid, banner)
         prompts = prompts_of(info)
         if prompts and not counts():  # a report that counts is taken once settled
             raise Fail(
@@ -5856,6 +6056,8 @@ def wait(
         if turn_ended and not counts():
             if stamp(question) is not None:
                 raise Asked(str(question))
+            if banner := agy_quota_banner(info, items):
+                raise agy_quota_failure(sid, banner)
             if status == "failed":
                 error = (info.get("last_task_error") or {}).get("message") or "(no last_task_error)"
                 kind = recovery(error, items)
@@ -8758,6 +8960,12 @@ def apply_route(args: argparse.Namespace) -> None:
                 "--verifier-route gemini cannot start from a cloud VM: it has no Omnigent server route to drive agy."
                 " The verifier must be started by the coordinator on a host with an Omnigent server route: ask"
                 " your coordinator to start it, or use --verifier-route claude only if it says Gemini can't run (#2572)"
+            )
+        if (until := agy_quota_until(time.time())) is not None:
+            raise Fail(
+                "--verifier-route gemini: Antigravity's quota is out until"
+                f" {datetime.fromtimestamp(until, timezone.utc):%Y-%m-%d %H:%MZ} (a recorded banner); use the Codex"
+                " route (--verifier-route codex) until then"
             )
         if not args.host:
             raise Fail(
