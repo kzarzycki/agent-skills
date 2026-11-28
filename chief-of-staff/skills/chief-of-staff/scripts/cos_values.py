@@ -188,6 +188,25 @@ def _keys() -> dict[str, Key]:
             "Model that route runs; None: the agent's own default",
             (),
         ),
+        *(
+            Key(
+                f"verifier.models.{level}",
+                "str",
+                None,
+                f"Codex verifier model id for a PR the gate rates {level}"
+                if level != "default"
+                else "Codex verifier model id for every level `models` doesn't name, an unrated PR included",
+                (),
+            )
+            for level in ("low", "high", "critical", "default")
+        ),
+        Key(
+            "verifier.effort",
+            "str",
+            None,
+            "Codex verifier reasoning effort; None: Codex's own config",
+            (),
+        ),
         Key(
             "verifier.fallback",
             "strs",

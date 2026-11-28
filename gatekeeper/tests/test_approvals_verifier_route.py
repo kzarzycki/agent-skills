@@ -1,4 +1,4 @@
-"""approvals.py: a satisfied verdict from a fallback verifier (Gemini through agy) lands a high-risk change; a same-family one lands only under loop.md's verifier.same_family (#609); a Codex mid/small tier does not (#1115)."""
+"""approvals.py: a satisfied verdict from a fallback verifier (Gemini through agy) lands a high-risk change; a same-family one lands only under loop.md's verifier.same_family (#609); a tier word after a Codex family holds nothing (#2979)."""
 
 from __future__ import annotations
 
@@ -45,29 +45,16 @@ def test_a_satisfied_fallback_verdict_lands_at_any_risk(
 
 
 @pytest.mark.parametrize("tier", ["mid", "small"])
-def test_a_lower_codex_tier_is_still_refused_for_high_risk(
+def test_a_tier_word_after_a_codex_family_holds_no_risk_level(
     monkeypatch: pytest.MonkeyPatch, tier: str
 ) -> None:
-    assert gate(f"codex/terra-6.1/med {tier}", "low — a fixture", monkeypatch) == []
-    assert (
-        f"lower tier ({tier})"
-        in gate(f"codex/terra-6.1/med {tier}", "high — CI permissions", monkeypatch)[0]
-    )
+    for risk in ("low — a fixture", "high — CI permissions"):
+        assert gate(f"codex/terra-6.1/med {tier}", risk, monkeypatch) == []
 
 
 def test_the_dated_override_is_gone(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The key is unknown now: it warns (#2475) and has no effect, so the lower tier stays the default tier's."""
+    """The key is unknown now: it warns (#2475) and has no effect."""
     gate("codex/terra-6.1/med", "low", monkeypatch, "lower_tier_until: 2099-01-01\n")
     assert "lower_tier_until" in capsys.readouterr().err
-
-
-def test_a_codex_family_naming_no_fallback_is_the_default_tier() -> None:
-    def said(family: str) -> list[tuple[str, int, dict[str, str]]]:
-        return [(HEAD, 1, {"Family": family})]
-
-    assert approvals.lower(said("codex/terra-6.1/med")) is None
-    assert approvals.lower(said("agy/gemini-4-argon-high/?")) is None
-    assert approvals.lower(said("claude, same-family")) is None
-    assert approvals.lower(said("codex/terra-6.1/med mid")) == "mid"

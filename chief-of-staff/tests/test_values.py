@@ -226,6 +226,27 @@ def test_verifier_block_is_optional_and_checked(tmp_path, monkeypatch):
     assert set(e.value.keys) == {"verifier.route", "verifier.fallback", "verifier.mode"}
 
 
+def test_verifier_models_and_effort_are_keys_of_the_block(tmp_path, monkeypatch):
+    monkeypatch.delenv(cv.ENV_VAR, raising=False)
+    assert cv.load(home=tmp_path).get("verifier.effort") is None
+    assert cv.load(home=tmp_path).get("verifier.models.default") is None
+    _write(
+        tmp_path,
+        "verifier:\n  route: codex\n  models: {low: id-a, default: id-b}\n  effort: medium\n",
+    )
+    v = cv.load(home=tmp_path)
+    assert [v.get(f"verifier.models.{k}") for k in ("low", "high", "default")] == [
+        "id-a",
+        None,
+        "id-b",
+    ]
+    assert v.get("verifier.effort") == "medium"
+    _write(tmp_path, "verifier:\n  models: {medium: id-a}\n  effort: [high]\n")
+    with pytest.raises(cv.ValuesError) as e:
+        cv.load(home=tmp_path)
+    assert set(e.value.keys) == {"verifier.models.medium", "verifier.effort"}
+
+
 DROPPED = [
     *("hosts." + k for k in ("cloud_bridge", "no_local_loop", "orchestration", "memory_floor")),
     "decisions.cos_line",

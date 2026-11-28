@@ -30,7 +30,6 @@ Where the rules live:
 from __future__ import annotations
 
 import argparse
-import ast
 import atexit
 import contextlib
 import contextvars
@@ -122,10 +121,7 @@ ROW = re.compile(r"\A\s*Part of #(\d+) \(row ([^)\n]+)\)", re.IGNORECASE)
 WAITING = 3
 # a verifier pass's PR review starts with this; same-family included, as `Verifier (claude, same-family), pass 2`
 PASS = re.compile(r"Verifier \((.+?)\), pass (\d+)")
-# a tier below the default a `Verifier model:` line names, a word of its own after the signature in the review's
-# family (`codex/terra-6.1/med mid`, SKILL.md § Verifier report): a model id holding the word (`sol-mid-preview`) names no tier
 SAME_FAMILY = re.compile(r"(?<![^\s,])same-family(?![^\s,])", re.IGNORECASE)
-LOWER_TIER = re.compile(r"(?<![^\s,])(mid|small)(?![^\s,])", re.IGNORECASE)
 # The cap, the last pass the loop runs on its own (a core finding open after it is the lead's call), is defined once:
 # its default in SKILL.md § The cap, a project's own in loop.md's `cap` setting.
 CAP_DEFAULT = re.compile(r"^The cap is (\d+) passes\b", re.MULTILINE)
@@ -431,7 +427,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
         "merge_paths": list,
     },
     # which verifier family may land a PR (#609): see same_family()
-    "verifier": {"same_family": Choice(SAME_FAMILY_LIMITS), "same_family_until": str},
+    # and which model and effort a Codex verifier start runs on (#2979): `models` maps a risk level (LEVELS) to a model id,
+    # `default` for any level it does not name; the start's own flags outrank both
+    "verifier": {
+        "same_family": Choice(SAME_FAMILY_LIMITS),
+        "same_family_until": str,
+        "models": {**dict.fromkeys((*LEVELS, "default"), str)},
+        "effort": str,
+    },
     "levels": {
         level: {"spec": Choice(SPEC_ACTIONS), "merge": Choice(MERGE_ACTIONS), "rerun": bool}
         for level in LEVELS
@@ -1575,8 +1578,7 @@ def judged(pull: dict[str, Any], loop: str | None = None) -> str | None:
 
 
 def risk(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str | None:
-    """Why the change rates `high` or `critical` (terms), as the gate shows it with `risk:high` (flag) and as the
-    verifier's tier rule reads it, or None: the first term but one the spec's own hold answered, a term read before the
+    """Why the change rates `high` or `critical` (terms), as the gate shows it with `risk:high` (flag), or None: the first term but one the spec's own hold answered, a term read before the
     spec (`after` false) at a level whose `spec` is `owner` and `merge` is `gates`, since there the owner approved the
     change before it was built, and the label, read back as a term after the spec, would ask for a go that approval
     already made needless. By default that is a risk rule's `labels`, `paths` and `always` under `spec.auto: true`."""
@@ -3031,16 +3033,6 @@ def proofs(
     if not unowed(pull, loop, revert, waived):
         verdicts = passes(pull)
         found += (unreviewed := reviewed(where, pull, loop, verdicts))
-        # only on a verdict that would land, and tier first, since risk() reads the reviews again
-        if (
-            not unreviewed
-            and (tier := tiered(pull, verdicts))
-            and (why := risk(pull, issues, loop))
-        ):
-            found.append(
-                f"{where} is high risk ({why}), and its newest verdict came from a lower tier ({tier}): a"
-                " default-tier verifier pass on the head first"
-            )
         if not unreviewed and (why := same_family(pull, issues, loop, verdicts)):
             found.append(f"{where}: {why}")
         # only on a verdict that would land, since the verifier's pass is one of the two proofs it reads
@@ -3075,7 +3067,7 @@ def passes(pull: dict[str, Any]) -> list[tuple[str, int, dict[str, str]]] | str:
     if (reviews.get("totalCount") or 0) > len(reviews["nodes"]):
         return f"has more than {len(reviews['nodes'])} reviews: the gate reads one page"
     found = [review for review in reviews["nodes"] if PASS.match(review.get("body") or "")]
-    # the lines read, plus the heading's family, which names the verifier's tier when it ran below the default
+    # the lines read, plus the heading's family
     trusted = {(pull.get("author") or {}).get("login"), viewer() if found else None} - {None}
     others = {(review.get("author") or {}).get("login") for review in found} - trusted - {None}
     trusted |= {login for login in others if writer(login)}
@@ -3129,40 +3121,14 @@ def kin(family: str) -> str:
     return "claude" if word == "cc" else word
 
 
-def lower(verdicts: list[tuple[str, int, dict[str, str]]] | str) -> str | None:
-    """The tier below the default (LOWER_TIER) the newest verifier pass names in its heading's family, the newest
-    commit's highest pass (a mixed PR's two verifiers share one), or None; a fallback family (`agy`, `gemini`,
-    `same-family`) names no tier and counts as the default, as does a heading naming none, so verdicts written before tiers were named keep landing. `verdicts` is passes()'s."""
-    if isinstance(verdicts, str) or not verdicts:
-        return None
-    head = verdicts[-1][0]
-    on_head = [(number, lines) for commit, number, lines in verdicts if commit == head]
-    last = max(number for number, _ in on_head)
-    tiers = [
-        found[1]
-        for number, lines in on_head
-        if number == last and (found := LOWER_TIER.search(lines["Family"]))
-    ]
-    return tiers[0].lower() if tiers else None
-
-
 # A PR that only bumps the engineering pack's pin (#1218): the pack's repository and release tags, the pin files apm
 # reads, and a skill file apm vendors (`.agents/skills/<skill>/...`, `.claude/skills/<skill>/...`) from the pack's
-# `<virtual_path>/skills/`. The tag's own copy of the rule sits in one of SCRIPTS, the gatekeeper's file or, before
-# the split, approvals.py's.
+# `<virtual_path>/skills/`.
 PACK_REPO = "kzarzycki/agent-skills"
 PACK_TAG = re.compile(r"engineering-v(\d+)\.(\d+)\.(\d+)")
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 PIN_FILES = ("apm.yml", "apm.lock.yaml")
-ANNOTATIONS = __import__("__future__").annotations.compiler_flag
 VENDORED = re.compile(r"\.[^/]+/skills/(.+)")
-RULE_FILES = (
-    "gatekeeper/skills/gatekeeper/scripts/gatekeeper.py",
-    *(
-        f"engineering/skills/engineering-loop/scripts/{name}"
-        for name in ("gatekeeper.py", "approvals.py")
-    ),
-)
 
 
 def valid_date(text: str) -> bool:
@@ -3197,6 +3163,13 @@ def author_family(pull: dict[str, Any]) -> str | None:
     return "?" if word in ("", "?", "unknown") else word
 
 
+def risk_level(pull: dict[str, Any], issues: list[dict[str, Any]], loop: str | None) -> str:
+    """The level the change rates (LEVELS): its highest risk term (terms), `low` when none holds. The start of a
+    verifier reads it to pick the model its risk asks for (#2979)."""
+    found = [level for level, _, _ in terms(pull, issues, loop)]
+    return "critical" if "critical" in found else "high" if found else "low"
+
+
 def same_family(
     pull: dict[str, Any],
     issues: list[dict[str, Any]],
@@ -3223,8 +3196,7 @@ def same_family(
     until = terms_.get("same_family_until")
     if until and (today or datetime.now(timezone.utc).date()) <= date.fromisoformat(until):
         limit = "high"
-    found = [level for level, _, _ in terms(pull, issues, loop)]
-    level = "critical" if "critical" in found else "high" if found else "low"
+    level = risk_level(pull, issues, loop)
     order = (
         "never",
         "low",
@@ -3238,24 +3210,6 @@ def same_family(
         f" `verifier.same_family: {limit}`: a verdict of the other family first"
         " (or the owner's `verifier.same_family_until` date for an outage)"
     )
-
-
-def tiered(
-    pull: dict[str, Any], verdicts: list[tuple[str, int, dict[str, str]]] | str
-) -> str | None:
-    """lower() of the verdicts by the rule that judges this PR: the pin target's, read from its tag (pinned_rule), on
-    a PR that only bumps the pack to a released tag (pin_target), since the base's rule there is the one the pin
-    retires; main's otherwise, and wherever the tag's rule can't be read or fails."""
-    if isinstance(verdicts, str) or not verdicts or (tag := pin_target(pull)) is None:
-        return lower(verdicts)
-    rule = pinned_rule(tag)
-    if rule is None:
-        return lower(verdicts)
-    try:
-        found = rule(verdicts)
-    except Exception:  # noqa: BLE001 - a rule the tag ships that fails on these verdicts is no rule: main's judges
-        return lower(verdicts)
-    return found if found is None or isinstance(found, str) else lower(verdicts)
 
 
 def pin_target(pull: dict[str, Any]) -> str | None:
@@ -3421,63 +3375,6 @@ def pins(manifest: str | None, tag: str) -> bool:
         or (isinstance(entry, dict) and entry.get("git") == want and entry.get("ref") == tag)
         for entry in entries
     )
-
-
-def pinned_rule(tag: str) -> Callable[[Any], Any] | None:
-    """The tag's lower(), read from the pack's repository at `tag` (RULE_FILES, the first that defines it); None when
-    no file there defines it, so main's rule applies. Only that function runs, with the module-level names it reads,
-    each an assignment of the tag's file: the tier rule is a pure function of the verdicts, so no other code of the
-    tag (its I/O, its other checks) can change how this run judges."""
-    for path in RULE_FILES:
-        try:
-            text = file_at(tag, path, PACK_REPO)
-        except (subprocess.CalledProcessError, OSError):
-            return None
-        if text and (rule := rule_in(text)):
-            return rule
-    return None
-
-
-def rule_in(text: str) -> Callable[[Any], Any] | None:
-    """lower() of a gatekeeper source's text, built with only the module-level assignments it reads (and theirs); None
-    when the text defines no lower() of one argument or can't be built."""
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return None
-    defined = {
-        node.targets[0].id: node
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-    }
-    rule = next(
-        (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "lower"),
-        None,
-    )
-    if rule is None or len(rule.args.args) != 1:
-        return None
-    pending: list[ast.AST] = [rule]
-    seen: set[str] = set()
-    while pending:
-        for node in ast.walk(pending.pop()):
-            if isinstance(node, ast.Name) and node.id in defined and node.id not in seen:
-                seen.add(node.id)
-                pending.append(defined[node.id])
-    # in the file's order, so a name is assigned before one that reads it
-    needed = [node for name, node in defined.items() if name in seen] + [rule]
-    space: dict[str, Any] = {"re": re, "Any": Any}
-    code = ast.Module(body=needed, type_ignores=[])
-    try:
-        # annotations stay unevaluated, as under the file's own `from __future__ import annotations`
-        exec(  # noqa: S102 - a released tag's own tier rule, the pack's code as main's copy is
-            compile(code, f"<{PACK_REPO} lower>", "exec", flags=ANNOTATIONS, dont_inherit=True),
-            space,
-        )
-    except Exception:  # noqa: BLE001 - a file shape this can't rebuild: main's rule
-        return None
-    return space["lower"]
 
 
 def counts(lines: dict[str, str]) -> tuple[int, int] | None:

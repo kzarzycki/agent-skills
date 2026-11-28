@@ -211,9 +211,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    and loop.md's `## Verifier brief` (the project's own lines, such as host load rules)
    appended; it refuses a proof log whose first line isn't the head. It first checks that the head merges cleanly into the PR's own base (`git merge-tree --write-tree origin/<base> <head>`, after fetching both): a head that conflicts exits 1 naming the conflicted files and writes no brief, since CI doesn't run and `land` skips it, so merge the base in first, and one pass covers the fix and the merge; `--allow-conflict` writes the brief anyway, for a pass meant to review the conflicting head. The report path matters:
    outside its workspace a Codex child's sandbox refuses the write and a Claude Code child is
-   prompted for a read (denied in auto mode), which nobody answers. Its model: SKILL.md, Models, in the verifier's family, and the brief names that tier so the verdict's `Verifier:` line carries it. A lower-tier
-   verdict that says `Risk: high`, even a satisfied one, calls for a default-tier pass on the head before landing,
-   and `check merge` refuses the change until one is posted. Name the family that wrote the diff when the backend takes it
+   prompted for a read (denied in auto mode), which nobody answers. A Codex verifier's model and effort are configuration (SKILL.md, Models): `--model` and `--effort` flags, then loop.md's `verifier:` section, then the setup's values file, then Codex's own config. Start it with neither flag unless the owner named one; the start prints where each came from. Name the family that wrote the diff when the backend takes it
    (Omnigent: `--author`, plus `--same-family` when the verifier shares it), and keep the
    brief silent about it (SKILL.md, Independent verification). When the change has something to see, first
    bring your instance up on that head from the verifier's worktree (loop.md § Proof on a branch),
@@ -252,8 +250,7 @@ When loop.md has a `Standing decisions: <path>` line, `git fetch`, then read tha
    the host route above; the VM runs the same `agy`, so use an id the host's `agy models` lists; `claude`, only when Gemini fails or can't be driven, starts a fresh Claude session with no
    author context, the report labelled `Verifier: claude,
    same-family, pass <n> (Codex out of quota)` and the PR body's review line "same-family verifier (Codex out
-   of quota)". A satisfied Gemini fallback verdict lands a change of any risk the way a Codex one does: `check merge` reads
-   its family as no tier, and refuses only a `mid` or `small` Codex tier on a high-risk change. A same-family verdict lands only up to the risk level loop.md's `verifier.same_family` names (default `never`, or `low` or `high`), or through the date of its `verifier.same_family_until`, and `check merge` names the setting when it refuses. agy on another host takes the brief
+   of quota)". A satisfied Gemini fallback verdict lands a change of any risk the way a Codex one does. A same-family verdict lands only up to the risk level loop.md's `verifier.same_family` names (default `never`, or `low` or `high`), or through the date of its `verifier.same_family_until`, and `check merge` names the setting when it refuses. agy on another host takes the brief
    as a file there (backends/omnigent.md, Antigravity). Triage every finding (SKILL.md) and hand the fixes to a worker,
    or make them yourself (`worker.md`, Trail), and
    the fix round runs the PR's affected tests only (worker.md, Gates and push). A correctness finding's fix

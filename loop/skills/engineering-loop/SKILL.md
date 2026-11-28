@@ -473,6 +473,7 @@ gatekeeper.md's policy (Settings) holds:
   author's own family (a heading naming `same-family`, or the family of the PR body's `Impl:` signature) may land;
   `verifier.same_family_until`, a quoted `YYYY-MM-DD`, lifts it to `high` through that day for an outage the owner
   approved. `check merge` and `land` refuse above it, naming the setting (#609).
+  `verifier.models` and `verifier.effort` name a Codex verifier start's model and effort (Models, #2979).
 - `levels` says what each level of the rating needs, so a project changes the rule without
   changing the rating: `low` (everything the rating doesn't raise), `high` and `critical`,
   each with `spec`, `policy` (`spec.auto` decides) or `owner` (a spec rated at that level
@@ -489,8 +490,7 @@ gatekeeper.md's policy (Settings) holds:
   or `go` where that level's `spec` is `owner` and its `merge` is `gates`, since the owner
   never saw that rating. `high: {merge: gates}` lands high risk on the gates in a low-stakes
   repo, and the rating still shows as `risk:high`; `low: {merge: go}` holds every merge for
-  a go. The verifier's tier rule stays tied to the rating: a `high` or `critical` change
-  needs a default-tier verdict whatever its `merge` says. `check merge` and `land` print the
+  a go. `check merge` and `land` print the
   level and the action they applied on stderr (`PR #7: risk: high (it matches a risk rule
   (path `.github/**`)); merge: go`).
 - `plan` asks for the owner's approval of a matching plan.
@@ -839,7 +839,7 @@ or the owner's private network.
   brief to a file, run that command detached, poll it and end its turn with the URL it prints, changing and
   reviewing nothing itself. `wait --pr` writes the comment to the report path, and the lead posts the verdict
   from it as for a host verifier. The VM has no Codex configuration, so the lead passes the model and effort
-  the host's Codex is configured with as `--model` and `--effort` (or the `Verifier model:` tier's model);
+  the host's Codex is configured with as `--model` and `--effort` (or the ones loop.md's `verifier:` section names, Models);
   without them the CLI's own default runs. It also passes `--requested <unix seconds>`, the time the lead asked for
   the pass (`date +%s` when it sends the brief), so the comment's `Seconds:` footer and the run's JSON line can
   show how long the pass waited to start. Exit 3 means the verifier stopped on a question, posted as that
@@ -1093,23 +1093,27 @@ or the owner's private network.
   Claude lead: `start --top-level` reads it on the lead's host and starts the lead on the tier
   when the issues its brief names match the condition (`size:<S> or smaller`, size order XS < S < M < L < XL,
   or a bare label; a brief naming no issue, or issues with no size label, never matches),
-  and `--model` outranks it. A line it can't parse fails the start. A `Verifier model:` line does the same for a verifier whose PR
-  matches, judged as `check merge` judges risk: on the labels of the PR and its issues and
-  on the PR's files, so a PR that `check merge` rates high never gets a lower tier. The
-  verifier's own `Risk:` line comes after the launch: a lower-tier verdict that says
-  `Risk: high` takes the PR out of the condition, so the PR needs a default-tier verdict on
-  its head before it lands, even when the lower-tier verdict is satisfied; `check merge`
-  reads the tier from the verdict's `Verifier:` line (verifier.md) and refuses until then. It applies within the verifier's own family: it lowers the tier, never the family, which
-  stays the other one from the author's (Independent verification). The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
-  Codex's Astra, Sol, Terra, Luna; each family names its own), so one line holds for every family
+  and `--model` outranks it. A line it can't parse fails the start.
+  A Codex verifier's model and effort are configuration, never code (#2979): there is no `Verifier model:` line, and no
+  tier or model id is in the pack's scripts. Loop.md's `verifier:` policy section (where `same_family` lives) takes
+  `models`, a map from the PR's risk level (`low`, `high`, `critical`) to a model id, and `effort`:
+  `models: {low: <model id>, default: <model id>}` runs the first on a PR `check merge` rates low and the second on
+  any other, an unrated one included (`default` covers every level the map doesn't name). The risk is the PR's at
+  start time: the labels of the PR and its issues and its files, so a PR the gate rates high never gets the `low`
+  model. The setup's values file (`verifier.models`, `verifier.effort`, for the block's `route`) takes the same keys, and
+  the project's override it key by key. Precedence: the start's `--model` and `--effort` flags, then the project's
+  `verifier:` section, then the setup's, then nothing: the start passes no model or effort, and Codex runs on its own
+  config (`~/.codex/config.toml`). The start prints which of `flag`, `project`, `setup` and `codex config` each came from.
+  A configured id older than the host's newest generation is refused as a flag's is. A second Codex pass on a head that
+  already has one is refused at start, naming it (#2870).
+  The tier is `frontier`, `top`, `mid` or `small` (Claude's Fable, Opus, Sonnet, Haiku;
+  each family names its own), so one line holds for every family
   and outlives a release. Resolve the tier
   at launch from the newest generation of the family's tier models only: its model of that
   tier, else its closest higher tier (its highest when none is higher), never an older
   generation's model, which the family has already superseded (`omnigent_agent.py start` refuses a Codex model when the host lists a newer generation). A lead that can't read the
-  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them. A Codex verifier start that names
-  no model or effort runs Terra at medium effort, never Codex's own defaults, which cost several times as much per
-  pass; a start asks for Sol or another effort itself. A second Codex pass on a head that already has one is refused
-  at start, naming it (#2870). A launch that fails on
+  family's current lineup (the backend's Model section) names the tier's alias, and when the backend refuses a model it can't check (its Model section), waits for a host that lists them.
+  A launch that fails on
   capacity takes the next placement option (Where work runs); with none left it is retried
   later on the same model (the backend's Model section). When one
   family is out of quota, continue on the other in a fresh session briefed from the run's

@@ -1253,9 +1253,11 @@ def test_one_job_name_in_two_workflows_is_two_checks() -> None:
     assert approvals.ci("PR #7", pr, {"check"}) == ["PR #7: `check` is FAILURE on the head commit"]
 
 
-def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A satisfied lower-tier verdict saying `Risk: high` blocks the merge; a default-tier verdict on the same head
-    clears it, and a heading naming no tier reads as the default."""
+def test_a_tier_word_in_a_verdict_heading_holds_no_high_risk_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tier word retired with the check that read it (#2979): a satisfied verdict saying `Risk: high` lands whatever
+    its heading names after the family, since the model a PR gets is the config's, by its rating."""
     monkeypatch.setattr(approvals, "writer", lambda _login: False)
     judged = add(loop_md("spec:\n  auto: true\n"), "risk", "verifier: true\n")
 
@@ -1273,22 +1275,14 @@ def test_a_high_risk_change_needs_a_default_tier_verdict(monkeypatch: pytest.Mon
             judged,
         )
 
-    assert gate(said("codex/terra-6.1/med mid", 1, "high — CI permissions")) == [
-        (
-            "PR #7 is high risk (it matches a risk rule's `verifier` term: the verifier's pass 1 on aaaaaaa says"
-            " `Risk: high — CI permissions`), and its newest verdict came from a lower tier (mid): a default-tier"
-            " verifier pass on the head first"
-        )
-    ]
-    assert (
-        gate(said("codex/terra-6.1/med mid", 1, "high"), said("codex/sol-6.1/med", 2, "high")) == []
-    )
+    assert gate(said("codex/terra-6.1/med mid", 1, "high — CI permissions")) == []
+    assert gate(said("codex/terra-6.1/med small", 1, "high — CI permissions")) == []
     assert gate(said("codex/terra-6.1/med mid", 1, "low — a fixture")) == []
     assert gate(said("codex", 1, "high")) == []
     # a tier word inside the model id is no tier: only a word of its own after the signature is
     assert gate(said("codex/sol-mid-preview/med", 1, "high")) == []
     assert gate(said("claude/small-model/?", 1, "high")) == []
-    assert gate(said("claude, same-family, small", 1, "high"))
+    assert gate(said("claude, same-family, small", 1, "high"))  # same_family's rule, not a tier's
 
 
 def test_check_merge_passes_on_the_verifiers_record_with_no_local_ci_pass(

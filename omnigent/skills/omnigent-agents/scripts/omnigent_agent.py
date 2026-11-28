@@ -3924,35 +3924,6 @@ EFFORTS = {
 AGY_HARNESS, AGY_BYPASS = "antigravity-native", "--dangerously-skip-permissions"
 # the verifier's routes (`--verifier-route`): with no setting the default stays Codex, the other two are its fallback when it refuses
 VERIFIER_ROUTES = ("codex", "gemini", "claude")
-# a Codex verifier start with no model or effort named runs on these (cloud_verifier.py's CODEX_MODEL and CODEX_EFFORT)
-# (the model is a tier, never an id: a generation drops tiers, and `start` refuses an older generation's)
-CODEX_VERIFIER_TIER, CODEX_VERIFIER_EFFORT = "terra", "medium"
-CODEX_TIERS = (
-    "luna",
-    "terra",
-    "sol",
-    "astra",
-)  # smallest to largest, as engineering-loop SKILL.md, Models, names them
-
-
-def tier_model(listed: list[str], tier: str) -> str | None:
-    """The model of `tier` among Codex ids `listed` (`gpt-<generation>-<tier>`): the newest generation's, else that
-    generation's closest higher tier, else its highest, never an older generation's; None when none is listed."""
-    found: dict[tuple[int, ...], dict[str, str]] = {}
-    for i in listed:
-        if m := re.fullmatch(r"gpt-(\d+(?:\.\d+)*)-([a-z]+)", i):
-            found.setdefault(tuple(map(int, m[1].split("."))), {})[m[2]] = i
-    if not found:
-        return None
-    tiers = found[max(found)]
-    above = [t for t in CODEX_TIERS[CODEX_TIERS.index(tier) :] if t in tiers]
-    return (
-        tiers[above[0]]
-        if above
-        else tiers[max(tiers, key=lambda t: CODEX_TIERS.index(t) if t in CODEX_TIERS else -1)]
-    )
-
-
 CODEX_PASS = re.compile(r"Verifier(?: \(|: )(codex[^,)\n]*)\)?, pass (\d+)")
 
 
@@ -4024,6 +3995,100 @@ def codex_pass_on_head(pr: int | None) -> str | None:
 
 
 VALUES_FILE, VALUES_ENV = "cos-values.yml", "COS_VALUES"
+# the levels a verifier's `models` names (gatekeeper.py's LEVELS), and `default` for any it doesn't
+RISK_LEVELS = ("low", "high", "critical", "default")
+
+
+def project_verifier() -> tuple[dict[str, Any], str | None]:
+    """The project's `verifier:` policy section (`models`, `effort`, #2979) and the policy text it came from, read
+    from the checkout's docs/agents/gatekeeper.md or loop.md by the gatekeeper's own reader: `({}, None)` where the
+    project has no settings block, the gatekeeper is not installed, or its policy can't be read (one line says so,
+    and the setup's values apply)."""
+    gk = _load_gatekeeper()
+    if gk is None:
+        return {}, None
+
+    def read(path: Path) -> str | None:
+        try:
+            return path.read_text()
+        except OSError:
+            return None
+
+    try:
+        loop, policy = read(gk.LOOP), read(gk.POLICY)
+        if policy is None and not (loop and gk.SETTINGS.search(gk.section(loop, "Settings"))):
+            return {}, None
+        text = gk.chosen(loop, policy)
+        return dict(gk.settings(text).get("verifier") or {}), text
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - an unreadable policy leaves the setup's values
+        print(
+            f"verifier config: the project's policy is not read ({reason(e)}): the setup's values apply",
+            file=sys.stderr,
+        )
+        return {}, None
+
+
+def verifier_risk(pr: int | None, policy: str | None) -> str | None:
+    """The level (`low`, `high`, `critical`) the gate rates PR `pr` at, as `check merge` reads it: the labels of the
+    PR and its issues and its files (gatekeeper's `risk_level`); None for no PR or a rating that can't be read."""
+    gk = _load_gatekeeper()
+    if not pr or gk is None:
+        return None
+    try:
+        pull = gk.pull_request(pr)
+        return str(gk.risk_level(pull, gk.rated_issues(pull), policy))
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - unrated: the default model
+        print(
+            f"verifier config: PR #{pr}'s risk is not read ({reason(e)}): unrated", file=sys.stderr
+        )
+        return None
+
+
+def codex_verifier_config(args: argparse.Namespace, setting: dict[str, Any]) -> tuple[str, str]:
+    """Set the model and effort of a Codex verifier start from configuration, never from code (#2979), and return
+    the two phrases the start prints (`<value> (<source>)`, else `codex config`). Highest first: the flags (the
+    effort and model variables are flags' kin), the project's `verifier:` section, the setup's values file, then
+    nothing, so Codex runs on its own config. `models` maps the PR's risk level (verifier_risk) to a model id,
+    `default` for any level it doesn't name or a PR it can't rate; a project's `models` and the setup's merge key by
+    key, and `models` outranks the setup's `model`. The setup's keys apply to its block's `route` (Codex when it names
+    none)."""
+    project, policy = project_verifier()
+    ours = (setting.get("route") or "codex") == "codex"
+    models = {
+        **{k: (v, "setup") for k, v in ((setting.get("models") if ours else None) or {}).items()},
+        **{k: (v, "project") for k, v in (project.get("models") or {}).items()},
+    }
+    if setting.get("route") == "codex" and setting.get("model") and setting.get("models"):
+        print(
+            f"verifier.model {setting['model']} in the setup values file is ignored: verifier.models is set",
+            file=sys.stderr,
+        )
+    model = ""
+    if args.model:
+        model = f"{args.model} (flag)"
+    elif models:
+        level = verifier_risk(args.pr, policy)
+        found = models.get(level or "") or models.get("default")
+        if found:
+            args.model, model = found[0], f"{found[0]} ({found[1]})"
+    if not model and setting.get("route") == "codex" and setting.get("model"):
+        args.model = setting["model"]
+        model = f"{args.model} (setup)"
+    if not model and (named := model_for(args.agent, None)[0]):
+        model = f"{named} (${model_for(args.agent, None)[1].split('=')[0]})"
+    variable = f"OMNIGENT_EFFORT_{args.agent.upper()}"
+    effort = ""
+    if args.effort:
+        effort = f"{args.effort} (flag)"
+    elif args.agent in AGENTS and (named := os.environ.get(variable)):
+        effort = f"{named} (${variable})"
+    elif project.get("effort"):
+        args.effort, effort = project["effort"], f"{project['effort']} (project)"
+    elif ours and setting.get("effort"):
+        args.effort, effort = setting["effort"], f"{setting['effort']} (setup)"
+    return model or "codex config", effort or "codex config"
+
+
 GEMINI_AGENT = "antigravity-native-ui"
 BYPASS = "bypassPermissions"
 # codex's own flag for approval_policy "never" with the danger-full-access sandbox; CODEX_DEFAULT is the
@@ -5340,7 +5405,7 @@ def signature(
     config: tuple[dict[str, str], Path] | None = None,
 ) -> str:
     """``<harness>/<model>/<effort>``: ``cc``, ``codex``, ``agy`` or ``omp`` by harness, the model id without its vendor
-    prefix and dotted (``claude-sonnet-5-5`` is ``sonnet-5.5``, ``gpt-6.1-terra`` is ``terra-6.1``), the effort
+    prefix and dotted (``claude-sonnet-5-5`` is ``sonnet-5.5``, a Codex id of generation 6.1 and tier T is ``T-6.1``), the effort
     (``medium`` is ``med``), and ``?`` for anything unknown. A session about to start knows only what it is
     started with, as the server recorded it (``model_override``, ``reasoning_effort``); the effort it was not given
     comes from the model's name, then from the harness's own config (``config``: see ``resolve_effort``).
@@ -5359,7 +5424,7 @@ def signature(
         "?",
     )
     short = re.sub(r"^(claude|gpt)-", "", model or "")
-    if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", short):  # gpt-6.1-terra
+    if found := re.fullmatch(r"(\d+)[.-](\d+)-([a-z]+)", short):  # a Codex id
         short = f"{found[3]}-{found[1]}.{found[2]}"
     elif found := re.fullmatch(r"([a-z]+)-(\d+)-(\d+)", short):  # claude-sonnet-5-5
         short = f"{found[1]}-{found[2]}.{found[3]}"
@@ -8952,12 +9017,13 @@ def record_collected(og: Omnigent, sid: str, report: Path, pr: int, far: bool) -
 
 
 def verifier_setting() -> dict[str, Any]:
-    """The setup's default verifier, the `verifier:` block (`route`, `model`, `fallback`) of its values file (the
+    """The setup's default verifier, the `verifier:` block (`route`, `model`, `models`, `effort`, `fallback`) of its values file (the
     setup's own checker, `cos_values.py`, owns the schema): `$COS_VALUES`, else `cos-values.yml` in the current
     folder. Empty where the folder has no file or the file no block, so the pack's own order holds (#2840). A
     `$COS_VALUES` that names a file that can't be read is refused, as the checker does, since a broken variable is
     no "no setting". Read with the standard library only, since this script runs without PyYAML: the block in its
-    block or flow form, `fallback` as a `[a, b]` list or a `- a` list."""
+    block or flow form, `fallback` as a `[a, b]` list or a `- a` list, `models` (a risk level to a model id, `default`
+    for the levels it doesn't name) as a `{low: a, default: b}` map or an indented one."""
     named = os.environ.get(VALUES_ENV)
     path = Path(named).expanduser() if named else Path(VALUES_FILE)
     try:
@@ -8970,35 +9036,50 @@ def verifier_setting() -> dict[str, Any]:
     def scalar(text: str) -> str:
         return text.strip().strip("'\"")
 
+    def items(text: str) -> list[str]:
+        """`text` split at the commas outside a `[]` or `{}`."""
+        depth, part, parts = 0, "", []
+        for ch in text:
+            depth += ch in "[{"
+            depth -= ch in "]}"
+            if ch == "," and depth == 0:
+                parts.append(part)
+                part = ""
+            else:
+                part += ch
+        return [*parts, part]
+
+    def entry(setting: dict[str, Any], key: str, value: str) -> None:
+        """One `level: id` of `models`, else nothing: the checker refuses a level it doesn't know."""
+        if key and scalar(value) and key in RISK_LEVELS:
+            setting.setdefault("models", {})[key] = scalar(value)
+
     def put(setting: dict[str, Any], key: str, value: str) -> None:
         if key == "fallback":
             setting[key] = [scalar(x) for x in value.strip().strip("[]").split(",") if x.strip()]
-        elif key in ("route", "model") and scalar(value):
+        elif key == "models":  # {low: a, default: b}, or the indented map under it
+            for item in items(value.strip().removeprefix("{").removesuffix("}")):
+                k, _, v = item.strip().partition(":")
+                entry(setting, k.strip(), v)
+        elif key in ("route", "model", "effort") and scalar(value):
             setting[key] = scalar(value)
 
     setting: dict[str, Any] = {}
-    inside = False
+    inside, models_at = False, -1  # models_at: the indent of a `models:` whose map follows it
     for raw in lines:
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
         text = raw.split(" #")[0].strip()
         if not raw.startswith((" ", "\t")):
-            inside = False
+            inside, models_at = False, -1
             key, _, rest = text.partition(":")
             if key != "verifier":
                 continue
             rest = rest.strip()
-            if rest.startswith("{"):  # {route: gemini, model: m, fallback: [codex, claude]}
-                depth, part, parts = 0, "", []
-                for ch in rest.strip("{}"):
-                    depth += ch == "["
-                    depth -= ch == "]"
-                    if ch == "," and depth == 0:
-                        parts.append(part)
-                        part = ""
-                    else:
-                        part += ch
-                for item in [*parts, part]:
+            if rest.startswith(
+                "{"
+            ):  # {route: codex, models: {low: a, default: b}, fallback: [claude]}
+                for item in items(rest[1 : rest.rfind("}")] if "}" in rest else rest[1:]):
                     k, _, v = item.strip().partition(":")
                     put(setting, k.strip(), v)
             else:
@@ -9006,11 +9087,18 @@ def verifier_setting() -> dict[str, Any]:
             continue
         if not inside:
             continue
-        if text.startswith("-") and "fallback" in setting:
+        indent = len(raw) - len(raw.lstrip())
+        if models_at >= 0 and indent > models_at:
+            k, _, v = text.partition(":")
+            entry(setting, k.strip(), v)
+        elif text.startswith("-") and "fallback" in setting:
             setting["fallback"].append(scalar(text[1:]))
         elif ":" in text:
+            models_at = -1
             key, _, value = text.partition(":")
             put(setting, key.strip(), value)
+            if key.strip() == "models" and not value.strip():
+                models_at = indent
     return setting
 
 
@@ -14294,32 +14382,23 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                 raise Fail(
                     f"verifier route {args.verifier_route!r} is none of {', '.join(VERIFIER_ROUTES)}"
                 )
-            # the setting's model belongs to the setting's route: another route (a flag or the variable) is not
-            # the model's
-            if verifier and not args.model and args.verifier_route == setting.get("route"):
-                args.model = setting.get("model")
-            if (
+            codex = (
                 verifier
                 and args.verifier_route == "codex"
                 and (args.agent == "codex" or "codex" in og.harness(args.agent))
+            )
+            # the setting's model belongs to the setting's route: another route (a flag or the variable) is not
+            # the model's. Codex's model and effort come from config alone, never from code (#2979)
+            if (
+                verifier
+                and not args.model
+                and args.verifier_route == setting.get("route")
+                and not codex
             ):
-                # never Codex's own defaults: a Sol model and an unset effort resend ~100k tokens of context per
-                # tool call at the larger model's rate (#2870); a start asks for Sol or another effort itself
-                if not model_for(args.agent, args.model)[
-                    0
-                ]:  # no flag, no $OMNIGENT_MODEL_CODEX, no setting
-                    with contextlib.suppress(
-                        Fail
-                    ):  # a host that lists none leaves the agent's own model
-                        args.model = tier_model(
-                            og.models(args.agent, og.host(args.host) if args.host else None),
-                            CODEX_VERIFIER_TIER,
-                        )
-                # `$OMNIGENT_EFFORT_CODEX` (read by `start` for the two aliases) outranks the default effort
-                if not (
-                    args.agent in AGENTS and os.environ.get(f"OMNIGENT_EFFORT_{args.agent.upper()}")
-                ):
-                    args.effort = args.effort or CODEX_VERIFIER_EFFORT
+                args.model = setting.get("model")
+            chosen_from = ("codex config", "codex config")
+            if verifier and codex:
+                chosen_from = codex_verifier_config(args, setting)
                 if again := codex_pass_on_head(args.pr):
                     raise Fail(again)
             if verifier:
@@ -14332,6 +14411,11 @@ def command(argv: list[str] | None, ended: dict[str, str]) -> int:
                     ),
                     file=sys.stderr,
                 )
+                if codex:
+                    print(
+                        f"verifier model: {chosen_from[0]}, effort: {chosen_from[1]}",
+                        file=sys.stderr,
+                    )
         if verifier and args.verifier_route != "codex":
             apply_route(args)
         verifies = args.pr if verifier else None

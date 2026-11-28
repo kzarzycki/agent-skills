@@ -30,6 +30,8 @@ decisions:
 hygiene:
   repos: [owner-a/repo-a, owner-a/repo-b]
 verifier:
-  route: gemini
-  model: model-v
-  fallback: [codex, claude]
+  route: codex
+  # model ids by the PR's risk level; `default` covers every level not named, an unrated PR included
+  models: {low: model-low, default: model-default}
+  effort: medium
+  fallback: [gemini, claude]

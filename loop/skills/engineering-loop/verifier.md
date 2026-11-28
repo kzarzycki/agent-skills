@@ -234,15 +234,11 @@ gate reads):
 - Near the top, `Verifier: <family>, pass <n>`, such as `Verifier: claude, same-family,
   pass 2` when you are the model family that wrote the diff. Give your signature as the family: what omnigent-agents'
   `scripts/omnigent_agent.py signature` prints in your session, else the `AGENT_SIGNATURE=` line atop your brief
-  (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`.
-  When your brief names your tier (`mid` or `small`, loop.md's `Verifier model:` line), write it after the
-  signature, `Verifier: codex/terra-6.1/med mid, pass 1`: `check merge` refuses a high-risk change whose newest
-  verdict names a lower tier, and reads a line without one as the default tier.
-  Text after the pass number is a qualifier the posted review's first line carries, such as
+  (`<harness>/<model>/<effort>`, `?` for any part you can't know): `Verifier: codex/terra-6.1/med, pass 5`. Text after the pass number is a qualifier the posted review's first line carries, such as
   `Verifier: claude, same-family, pass 2 (merge of main)`.
   A Gemini pass through agy gives its signature, `Verifier: agy/gemini-4-hydrogen-medium/?, pass 1`, and a
-  same-family one on the Codex fallback `Verifier: claude, same-family, pass 1 (Codex out of quota)`: `check
-  merge` reads either as the default tier. A Gemini one lands a high-risk change too; a same-family one lands only up to the risk level loop.md's `verifier.same_family` allows (default `never`), or at `high` through the date of its `verifier.same_family_until`.
+  same-family one on the Codex fallback `Verifier: claude, same-family, pass 1 (Codex out of quota)`.
+  A Gemini one lands a high-risk change too; a same-family one lands only up to the risk level loop.md's `verifier.same_family` allows (default `never`), or at `high` through the date of its `verifier.same_family_until`.
 - Sections: `## Criteria` first (Criteria first), then the Review skill's (code-review's
   Standards and Spec), then Correctness.
 - Per finding, a heading `### <id> (<blocker|major|minor>) <path>:<line>: <title>`, the

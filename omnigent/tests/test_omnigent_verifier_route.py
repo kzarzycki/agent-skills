@@ -559,14 +559,14 @@ def test_setting_route_and_model_start_agy_on_that_model_without_flags(
     )
 
 
-def test_no_setting_keeps_the_codex_default(
+def test_no_setting_starts_codex_with_no_model(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role_file: Callable[[str], str]
 ) -> None:
     for values in (None, "hygiene:\n  repos: [a/b]\n"):
         created = verifier_start(tmp_path, monkeypatch, role_file, values)
         assert created == [
-            ("codex", "gpt-6.1-terra")
-        ]  # no setting: the Terra tier, not Codex's own default (#2870)
+            ("codex", None)
+        ]  # no setting: Codex's own config, no model in code (#2979)
 
 
 def test_flags_and_the_variable_override_the_setting(
