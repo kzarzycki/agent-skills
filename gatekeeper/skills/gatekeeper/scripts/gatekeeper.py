@@ -3514,7 +3514,9 @@ def reviewed(
 ) -> list[str]:
     """One line per reason the verifier's PR reviews (passes) let nothing land: the newest pass is not on the head,
     since every commit after a verdict needs one of its own, unless the head carries that commit's proofs (carried: on
-    the same tree, or where loop.md opts in, which prints a line either way), or on its commit the highest pass (a mixed PR's two
+    the same tree, or when every commit since only takes the base in with no hand edit, a clean merge of the base or a clean
+    rebase (catch_up), with no setting needed; it prints the proof's line when it carries and nothing when it doesn't,
+    so a head that doesn't needs a verdict of its own), or on its commit the highest pass (a mixed PR's two
     verifiers share one, and a later pass on the same commit supersedes an earlier one) is not satisfied, or has a
     blocker or a major open; majors or minors with no blocker at the cap or later pass once the PR body records the
     lead's decision (CAP_DECISION). A triage or comment is no verdict. An allow-listed bot's lock- or manifest-only PR
@@ -4101,7 +4103,7 @@ def unforced(pull: dict[str, Any]) -> str | None:
 
 def carries(where: str, pull: dict[str, Any], loop: str | None, verified: str) -> bool:
     """Whether the PR's head carries the proofs of `verified`, the newest verdict's commit (carried), printing the
-    lines that say so, or where gatekeeper.md opts in, why it carries nothing."""
+    lines that say so when it does; a refusal prints nothing, so reviewed() asks for a verdict on the head."""
     carry = carried(pull, loop, verified)
     if carry is None:
         return False
@@ -12037,8 +12039,9 @@ def rerun_tests(path: str, red: str, given: str | None) -> int:
     - the change since the red reselects every failed test (rerun_plan): the selection against `red`, the failed tests
       plus what the change reaches;
     - otherwise (nothing changed, or a change that misses a failed test): the selection against HEAD's own base now,
-      the red run's whole selection (after a rebase, its PR files on the newer base, not the files the base moved). A failed test that passes there is a flake (a `Flaky:` issue, the run counted green),
-      and one that is red again stays red: the change caused it. Never the failed tests alone, and never the whole
+      the red run's whole selection (after a rebase, its PR files on the newer base, not the files the base moved). A failed test the change did not reselect (rerun_plan's flake candidates) that passes there is a flake only when
+      the whole selection exits green (a `Flaky:` issue, the run counted green); a failed test the change did reselect
+      is never named one, and a red whole selection is red again, whichever candidates passed: the change caused it. Never the failed tests alone, and never the whole
       suite. One line says which and why; the exit is the run's.
     The selection is the red run's own, so its command comes from the red head's loop.md, never the base's: a head
     behind its base lacks a task the base's line names (ponytail: the R1 record would name the command too, but only a
