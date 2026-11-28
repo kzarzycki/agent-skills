@@ -4743,6 +4743,22 @@ def test_idle_sessions_leave_room_under_the_session_cap_and_running_ones_fill_it
         assert omnigent_agent.host_capacity(og, "far", "epic-t1")[0] is False
 
 
+def test_an_archived_session_never_counts_toward_the_cap_even_while_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    og = far_host(monkeypatch, tmp_path, "epic-t1", meminfo=mem(6000), loadavg="1.0 1 1")
+    live = [{"id": f"r{i}", "host_id": "far", "status": "running"} for i in range(7)]
+    gone = [  # archived, yet their runner is still online and running a turn
+        {"id": f"a{i}", "host_id": "far", "status": "running", "archived": True} for i in range(5)
+    ]
+    og.others = live + gone
+    ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
+    assert ok and "live sessions" not in line  # 7 count, the 5 archived do not
+    og.others = live + [{"id": "r7", "host_id": "far", "status": "running"}] + gone
+    ok, line = omnigent_agent.host_capacity(og, "far", "epic-t1")
+    assert ok is False and "8 live sessions (max 8)" in line
+
+
 def test_bridged_cloud_sessions_neither_hit_nor_fill_the_session_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
