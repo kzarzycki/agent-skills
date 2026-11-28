@@ -32,8 +32,8 @@ def verified(*reviews: dict[str, Any]) -> list[str]:
         # one family: the verdict written after its question was answered stands, whichever effort it names
         (
             [
-                review("cc/opus-5.5/med, same-family", "no"),
-                review("cc/opus-5.5/?, same-family", "yes"),
+                review("cc/opus-5.5/med", "no"),
+                review("cc/opus-5.5/?", "yes"),
             ],
             [],
         ),
