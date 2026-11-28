@@ -5,6 +5,10 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.29 - 2026-11-28
+
+- `gatekeeper.py --help`, `SKILL.md` and `verbs.md` say what the code does, in six places: check setup's Mergify drift check is named among the reads of the checkout's policy (and the differing-copy warning only where the base's copy is read); the verifier-review paragraph states its two exceptions; the `check`, `rerun-tests`, `gate-record` and `record approval` listings and usages say when the whole selection reruns, how a step is found by its inputs, what a head with no tree prints, and that a breakglass withdrawal still takes `--head`. Tests pin the wording (#2952).
+
 ## 0.1.28 - 2026-11-28
 
 - `check merge`, `land` and `record verdict` print the risk a PR's `risk:*` label and the verifier's `Risk:` line state (`risk: medium`) instead of `risk: low` when no gate rule rates it higher, and name both when they disagree; `land` no longer reports "the PR closes no open issue" for a merged PR whose `Closes #n` issue the merge closed (#2876).
