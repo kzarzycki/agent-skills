@@ -1,5 +1,5 @@
 name: loop
-version: 0.1.24
+version: 0.1.26
 description: "The engineering loop: a lead, workers and an independent verifier take a change from intent through a spec, build, gates and proof to a landed PR."
 author: Krzysztof Zarzycki
 targets:

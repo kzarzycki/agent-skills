@@ -5,6 +5,14 @@
 New entries are files in [changelog.d/](changelog.d/), one per issue, until a release moves
 them here.
 
+## 0.1.26 - 2026-11-28
+
+- The skill says a report that names an automation change carries its diff: the PR's files page, or an inline unified diff logged with the chief of staff's decision log (#3028).
+
+## 0.1.25 - 2026-11-28
+
+- `engineering-loop`'s R5 says only a failed test the change did not select again is a flake candidate, as `rerun-tests` does (#2966).
+
 ## 0.1.24 - 2026-11-28
 
 - One-shot verifier support: `scripts/one_shot.py` builds the review bundle (spec, the gatekeeper's gate record and the raw output of the gate run on the head, rules, nearby code, diff, named cuts) from one git range with rename and copy sources checked, picks gates-only or a review from the policy's build inputs, refuses a second pass on one head, and maps the Codex review's JSON to a report the gatekeeper reads (an unrun check becomes a `.question` with its command and mutation commands), with a 30-call, 2-credit guard (#2996).

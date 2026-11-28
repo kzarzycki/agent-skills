@@ -7,6 +7,7 @@ owner is sent it by hand, never by a scheduled send: this script has no way to s
 It only writes the log and prints a draft.
 
     decisions.py log --what <text> --why <text> --undo <text> [--by <who>] [--ref <link>]
+                     [--diff <file|->]   # a unified diff of the change, shown to the owner
     decisions.py digest [--all]        # print the draft; changes nothing
     decisions.py sent --via <where>    # after you sent it by hand: marks the log up to here as sent
 
@@ -18,11 +19,16 @@ The log is Markdown, one ``## <time> <what>`` section per decision with ``Why``,
 and ``Ref`` bullets, and a ``## sent <time> via <where>`` line each time a digest went out. The
 next digest covers only what came after the last ``sent`` line, so a morning's digest never
 repeats the one before.
+
+A `--diff` is stored under its entry as a fenced `diff` block, cut at 80 lines with `… N more lines`
+and where the whole diff is kept (`<log name>-diffs/`, beside the log). `read` keeps the block
+intact and `digest` prints it under the entry.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 from dataclasses import dataclass
@@ -35,6 +41,8 @@ import cos_values
 HEADER = "# Decision log\n\nEach decision taken for the owner, with how to undo it.\n"
 SENT = re.compile(r"^## sent (\S+) via (.+)$")
 NO_UNDO = "NO UNDO LINE (add one to the log before sending)"
+DIFF_MAX = 80  # lines of a diff kept in the log; the rest sits in a file beside it
+FENCE = re.compile(r"^(`{3,})diff$")
 
 
 class LogError(ValueError):
@@ -49,6 +57,7 @@ class Entry:
     undo: str = ""
     by: str = ""
     ref: str = ""
+    diff: str = ""  # the fenced ```diff block as written, fences included
 
 
 def _now(now: str | None) -> str:
@@ -62,7 +71,26 @@ def _one_line(label: str, text: str | None) -> str:
     return text
 
 
-def append(path: Path, what: str, why: str, undo: str, *, by="", ref="", now=None) -> Entry:
+def _diff_block(path: Path, diff: str, stamp: str) -> str:
+    """The fenced block for a diff. Over DIFF_MAX lines it is cut there, followed by
+    `… N more lines` and where the whole diff is kept (a file beside the log)."""
+    lines = diff.rstrip("\n").splitlines()
+    if len(lines) > DIFF_MAX:
+        digest = hashlib.sha1(diff.encode()).hexdigest()[:8]
+        name = re.sub(r"\W", "", stamp) + "-" + digest + ".diff"
+        keep = path.parent / f"{path.stem}-diffs" / name
+        keep.parent.mkdir(parents=True, exist_ok=True)
+        keep.write_text("\n".join(lines) + "\n")
+        rel = keep.relative_to(path.parent)
+        lines = lines[:DIFF_MAX] + [f"… {len(lines) - DIFF_MAX} more lines (full diff: {rel})"]
+    ticks = max([3] + [len(m.group(1)) + 1 for ln in lines if (m := re.match(r" {0,3}(`+)", ln))])
+    fence = "`" * ticks
+    return "\n".join([f"{fence}diff", *lines, fence])
+
+
+def append(
+    path: Path, what: str, why: str, undo: str, *, by="", ref="", diff="", now=None
+) -> Entry:
     """Add a decision. An entry without an undo line is refused, since the skill's rule is
     "with how to undo it"."""
     e = Entry(
@@ -73,9 +101,12 @@ def append(path: Path, what: str, why: str, undo: str, *, by="", ref="", now=Non
         " ".join(by.split()),
         " ".join(ref.split()),
     )
+    if diff.strip():
+        e.diff = _diff_block(path, diff, e.time)
     lines = [f"\n## {e.time} {e.what}", f"- Why: {e.why}", f"- Undo: {e.undo}"]
     lines += [f"- By: {e.by}"] if e.by else []
     lines += [f"- Ref: {e.ref}"] if e.ref else []
+    lines += ["", e.diff] if e.diff else []
     path.parent.mkdir(parents=True, exist_ok=True)
     head = "" if path.exists() and path.stat().st_size else HEADER
     with path.open("a") as f:
@@ -89,8 +120,15 @@ def read(path: Path) -> tuple[list[Entry], list[Entry], str | None]:
     since: list[Entry] = []
     last_sent: str | None = None
     cur: Entry | None = None
+    fence = ""  # the closing fence while inside a diff block
     for line in path.read_text().splitlines() if path.exists() else []:
-        if m := SENT.match(line):
+        if fence:
+            cur.diff += "\n" + line
+            fence = "" if line == fence else fence
+            continue
+        if cur and not cur.diff and (m := FENCE.match(line)):
+            cur.diff, fence = line, m.group(1)
+        elif m := SENT.match(line):
             since, cur, last_sent = [], None, m.group(1)
         elif line.startswith("## "):
             time, _, what = line[3:].partition(" ")
@@ -134,6 +172,8 @@ def digest(values: cos_values.Values, *, include_sent: bool = False) -> str:
         out.append(f"  - Undo: {e.undo or NO_UNDO}")
         if e.ref:
             out.append(f"  - Ref: {e.ref}")
+        if e.diff:
+            out += [""] + [f"  {ln}" if ln else "" for ln in e.diff.splitlines()] + [""]
     if not entries:
         out.append("- No decision was taken for you.")
     out += [
@@ -169,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--undo")
     g.add_argument("--by", default="")
     g.add_argument("--ref", default="")
+    g.add_argument("--diff", help="a unified diff of the change: a file, or - for stdin")
     d = sub.add_parser("digest", help="print the draft digest; it sends nothing")
     d.add_argument("--all", action="store_true", help="include decisions already sent")
     s = sub.add_parser("sent", help="record that you sent the digest by hand")
@@ -178,7 +219,19 @@ def main(argv: list[str] | None = None) -> int:
         v = cos_values.load(a.file, home=a.home)
         path = v.path("decisions.file")
         if a.cmd == "log":
-            e = append(path, a.what, a.why, a.undo, by=a.by, ref=a.ref, now=a.now)
+            diff = ""
+            if a.diff is not None:
+                try:
+                    if not a.diff:
+                        raise LogError(
+                            "--diff is empty: give a unified diff or leave the option out"
+                        )
+                    diff = sys.stdin.read() if a.diff == "-" else Path(a.diff).read_text()
+                except OSError as err:
+                    raise LogError(f"--diff: {err}") from err
+                if not diff.strip():
+                    raise LogError("--diff is empty: give a unified diff or leave the option out")
+            e = append(path, a.what, a.why, a.undo, by=a.by, ref=a.ref, diff=diff, now=a.now)
             print(f"logged: {e.what} (undo: {e.undo})")
         elif a.cmd == "digest":
             sys.stdout.write(digest(v, include_sent=a.all))
