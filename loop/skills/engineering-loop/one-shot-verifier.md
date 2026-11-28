@@ -27,12 +27,19 @@ touches; that is where earlier passes' misses cluster.
 Report only what the change introduced, with provable impact, citing the AGENTS.md rule each finding breaks. Priority: P0 (blocks
 release), P1 (urgent), P2 (normal), P3 (low). Answer with one JSON block:
 
-`{"findings": [{"priority": "P1", "title": "...", "location": "path:line", "body": "...", "rules": ["..."]}],
-"acceptance_not_run": ["..."], "overall_correctness": "patch is correct" | "patch is incorrect", "risk": "low — why"}`
+```json
+{"criteria": ["<Acceptance line: how it was checked>"],
+ "findings": [{"priority": "P1", "title": "...", "location": "path:line", "body": "...", "rules": ["..."]}],
+ "acceptance_not_run": [
+   {"check": "<what could not run>", "command": "<exact command>"},
+   {"check": "<mutation not run>", "command": "<exact test command>",
+    "mutation": {"patch": "<the change to make>", "undo": "<command>", "redo": "<command>"}}],
+ "overall_correctness": "patch is correct",
+ "risk": "low — why"}
+```
 
-Add `"criteria": ["<Acceptance line: how it was checked>"]`. `one_shot.py verdict` maps it to a report `approvals.py report` reads
-(`Verifier:`, `## Criteria`, `### Fn (severity) path:line: title`, `VERDICT:`, `SATISFIED:`, `Risk:`; P0 blocker, P1 major, P2 and
-P3 minor), so `approvals.py verdict` is unchanged. A check you could not run goes in `acceptance_not_run` as `{"check", "command"[, "mutation": {"patch", "undo", "redo"}]}`, the
-exact command and, for a mutation, its patch and the commands that undo and redo it: the script then writes `<report>.question` for
+`overall_correctness` is `"patch is correct"` or `"patch is incorrect"`. `acceptance_not_run` is `[]` when every check ran; every
+`check`, `command`, `patch`, `undo` and `redo` is a nonblank string. `one_shot.py verdict` maps it to a report `approvals.py report` reads (`Verifier:`, `## Criteria`, `### Fn (severity) path:line: title`, `VERDICT:`, `SATISFIED:`, `Risk:`; P0 blocker, P1 major, P2 and
+P3 minor), so `approvals.py verdict` is unchanged. A check you could not run goes in `acceptance_not_run` (the example above): the script then writes `<report>.question` for
 the lead's proof run (exit 3), never a report. A step only the owner can take goes in `owner_only_not_run`
 with `owner_action`. Over 30 model calls or 2 credits the `Verifier:` line says so; the pass is not stopped.

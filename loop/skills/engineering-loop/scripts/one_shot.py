@@ -118,9 +118,11 @@ def run_gate(head: str, plan=None, run=subprocess.run) -> str:
     head (the checkout must be that clean commit) and to the gate the base's policy defines (the gatekeeper's
     `gate_plan`). A CI job that reused an existing record ran nothing, so no log fetched from one counts. A step that
     fails is refused; a host-only step is named as not run here."""
-    if _git("rev-parse", "HEAD").strip() != head:
+    # the gatekeeper's own cleanliness rule (untracked files and index-flag-hidden changes count), not a second copy
+    at, changes = gatekeeper.checkout_state()
+    if at.strip() != head:
         raise Refused(f"the checkout is not at {head}: the gate runs on the head's own tree")
-    if _git("status", "--porcelain").strip():
+    if changes.strip():
         raise Refused(
             "the checkout has uncommitted changes: the gate output would not be the head's"
         )
@@ -129,7 +131,14 @@ def run_gate(head: str, plan=None, run=subprocess.run) -> str:
         if step.get("where") == "host":
             out.append(f"$ {step['command']}\n[host-only step, not run in this session]")
             continue
-        done = run(step["words"], capture_output=True, text=True, check=False)
+        # the gatekeeper's own environment for the step: its filtering, and the variables the command sets
+        done = run(
+            step["words"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=gatekeeper.gate_env(step),
+        )
         out.append(f"$ {step['command']}\n{done.stdout}{done.stderr}[exit {done.returncode}]")
         if done.returncode:
             raise Refused(
@@ -211,8 +220,20 @@ def bundle(
     return "\n".join(out)
 
 
+def gate_evidence(head: str) -> tuple[int, str, str]:
+    """The trusted record first (a missing one is refused before any gate run), then the raw gate output."""
+    code, record = trusted_gate(head)
+    if code != 0:
+        raise Refused(f"no gate record on {head} (gate-record exit {code}): {record}")
+    return code, record, run_gate(head)
+
+
+def _filled(*values: object) -> bool:
+    return all(isinstance(v, str) and v.strip() for v in values)
+
+
 def _unrun(item: object) -> str:
-    if not isinstance(item, dict) or not item.get("check") or not item.get("command"):
+    if not isinstance(item, dict) or not _filled(item.get("check"), item.get("command")):
         raise Refused(
             "each `acceptance_not_run` item is {check, command[, mutation: {patch, undo, redo}]}: "
             "the lead builds the proof run from the question alone"
@@ -220,7 +241,7 @@ def _unrun(item: object) -> str:
     text = f"- {item['check']}\n  command: {item['command']}"
     if "mutation" in item:
         m = item["mutation"]
-        if not isinstance(m, dict) or not all(m.get(k) for k in ("patch", "undo", "redo")):
+        if not isinstance(m, dict) or not _filled(*(m.get(k) for k in ("patch", "undo", "redo"))):
             raise Refused("a mutation not run needs its `patch` and the `undo` and `redo` commands")
         text += f"\n  mutation patch: {m['patch']}\n  undo: {m['undo']}\n  redo: {m['redo']}"
     return text
@@ -401,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
                     read(a.spec),
                     diff,
                     paths,
-                    (*trusted_gate(a.head), run_gate(a.head)),
+                    gate_evidence(a.head),
                     build_inputs(read(a.policy)),
                     nearby,
                     read(a.rules) if a.rules else None,

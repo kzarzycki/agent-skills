@@ -102,8 +102,13 @@ def test_the_raw_gate_output_comes_from_running_the_gate_on_the_clean_head(
         return subprocess.CompletedProcess(words, 0, "RAW lint ok\n", "")
 
     plan = [
-        {"command": "mise run check-fast", "words": ["mise", "run", "check-fast"], "where": "any"},
-        {"command": "on host", "words": ["h"], "where": "host"},
+        {
+            "command": "mise run check-fast",
+            "words": ["mise", "run", "check-fast"],
+            "sets": {},
+            "where": "any",
+        },
+        {"command": "on host", "words": ["h"], "sets": {}, "where": "host"},
     ]
     out = os_.run_gate(head, plan, run)
     assert "RAW lint ok" in out and "[exit 0]" in out and "host-only step, not run" in out
@@ -165,6 +170,8 @@ def test_a_copy_whose_source_is_unchanged_keeps_its_source(tmp_path, monkeypatch
     head = git("rev-parse", "HEAD").strip()
     monkeypatch.chdir(tmp_path)
     paths = os_.changed_paths(head, None, base)
+    patch = os_.range_diff(head, None, base)
+    assert "copy from mise.toml" in patch and "copy to copied.md" in patch
     assert paths == ["mise.toml", "copied.md"]
     assert os_.tier(paths, ["*.md"], INPUTS)["review"] is True
 
@@ -289,3 +296,49 @@ def test_the_cli_writes_a_question_file_and_exits_3_for_an_unrun_check(tmp_path)
         and "undo: git checkout -- one_shot.py" in question
         and UNRUN["command"] in question
     )
+
+
+def test_the_briefs_example_is_accepted_by_the_verdict_cli_and_blank_fields_are_not(
+    tmp_path,
+) -> None:
+    brief = (ROOT / "loop/skills/engineering-loop/one-shot-verifier.md").read_text()
+    example = json.loads(brief.split("```json\n")[1].split("```")[0])
+    review = tmp_path / "r.json"
+    review.write_text(json.dumps(example))
+    argv = ["verdict", "--json", str(review), "--head", H, "--family", "codex", "--pass", "1"]
+    assert os_.main([*argv, "--report", str(tmp_path / "a.md")]) == 3
+    for blank in (
+        {"check": "x", "command": " "},
+        {**MUTATION, "mutation": {**MUTATION["mutation"], "undo": ""}},
+    ):
+        review.write_text(json.dumps({**example, "acceptance_not_run": [blank]}))
+        assert os_.main([*argv, "--report", str(tmp_path / "b.md")]) == 2
+
+
+def test_the_gate_runs_in_the_gatekeepers_env_on_a_clean_checkout_and_a_missing_record_runs_nothing(
+    tmp_path, monkeypatch
+) -> None:
+    git = _repo(tmp_path)
+    (tmp_path / "docs/agents").mkdir(parents=True)
+    (tmp_path / "docs/agents/gatekeeper.md").write_text(
+        "## Policy\n\n```yaml\nloop:\n  gate: PROBE_GATE_MODE=strict python3 gate.py\n```\n"
+    )
+    (tmp_path / "gate.py").write_text(
+        'import os\nprint("MODE=" + os.environ.get("PROBE_GATE_MODE", "missing"))\n'
+    )
+    git("add", "-A")
+    git("commit", "-qm", "c")
+    head = git("rev-parse", "HEAD").strip()
+    monkeypatch.chdir(tmp_path)
+    out = os_.run_gate(head)  # the real gate_plan(), not a supplied one
+    assert "MODE=strict" in out and "[exit 0]" in out
+    # an untracked file counts as dirty even where git is told to hide it
+    git("config", "status.showUntrackedFiles", "no")
+    (tmp_path / "local.cfg").write_text("x")
+    with pytest.raises(os_.Refused):
+        os_.run_gate(head)
+    # a missing record is refused before the gate runs once
+    monkeypatch.setattr(os_, "trusted_gate", lambda h: (1, "no record"))
+    monkeypatch.setattr(os_, "run_gate", lambda h: pytest.fail("the gate ran with no record"))
+    with pytest.raises(os_.Refused):
+        os_.gate_evidence(head)
